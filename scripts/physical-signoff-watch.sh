@@ -47,7 +47,7 @@ while (( SECONDS <= deadline )); do
           MESSAGE="User cancelled this action on the phone."
         else
           OK=true
-          MESSAGE="Physical build-19 sign-off completed."
+          MESSAGE="Physical sign-off completed."
         fi
         RESULT="$(curl -sf -X POST "$BRIDGE_API_URL/v1/actions/$ACTION_ID/result" \
           -H "X-Agent-Key: $BRIDGE_AGENT_KEY" \

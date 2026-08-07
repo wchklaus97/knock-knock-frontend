@@ -33,8 +33,9 @@ placeholders and the non-secret D1/URL shape.
 
 The repository workflow runs the health check every ten minutes and opens a
 `production-alert` GitHub issue on failure. The daily D1 backup workflow is
-ready but requires the GitHub Actions secrets `CLOUDFLARE_API_TOKEN` and
-`CLOUDFLARE_ACCOUNT_ID` before it can access the remote database.
+ready but requires the GitHub Actions secret `CLOUDFLARE_API_TOKEN` and the
+repository variable `KNOCK_KNOCK_CLOUDFLARE_ACCOUNT_ID` before it can access
+the remote database.
 
 The old Docker/Caddy deployment is intentionally not the canonical path. If it
 is used for migration diagnostics, keep it single-replica with its SQLite

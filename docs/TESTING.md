@@ -12,14 +12,15 @@ pairing code → copy. The Rust Worker contract smoke, Codex canonical multi-tur
 Paperclip boundary smoke, TypeScript checks, MCP build, and APNs unit tests are green.
 The legacy Node API remains an explicit migration diagnostic, not the product source of
 truth. The RC smoke additionally verifies refresh-token rotation, scoped Agent-key
-rotation, audit history, and Prometheus metrics. Build21 is the current iOS release
-candidate uploaded to TestFlight; until App Store processing completes, Build20 remains
-the installed build on the user's iPhone 13 Pro (iOS 26.6 Beta).
+rotation, audit history, and Prometheus metrics. Build25 is the current iOS release
+candidate archive; Build21 is the last uploaded build. Until the account-first Build25
+is uploaded and processed, Build20 remains the installed build on the user's iPhone 13
+Pro (iOS 26.6 Beta).
 
 The physical UI-test runner is signed and installs, but Xcode 26.6 times out before the test
 body while enabling automation mode on this iOS 26.6 Beta device. The app itself remains
 reachable. An earlier build has passed a manual two-turn physical flow on one session/chat;
-the current production account creation, Build21 installation, and final taps remain
+the current production account creation, latest-build installation, and final taps remain
 human-controlled steps.
 
 ## Architecture under test
@@ -170,7 +171,8 @@ the local Mac/iPhone loop.
   target; health and metrics checks pass.
 - [x] Build21 is archived with official Apple Distribution signing and production APNs
   entitlement, and uploaded to TestFlight.
-- [ ] Build21 finishes App Store processing and is installed on the iPhone 13 Pro.
+- [ ] Build25 (the account-first release candidate) is uploaded, finishes App Store
+  processing, and is installed on the iPhone 13 Pro.
 - [ ] User creates the production account with a self-chosen password and signs in on the
   phone; no password is stored in the repository or accessible to automation.
 - [ ] The final real-phone two-turn flow is observed after the new production account is
@@ -214,7 +216,7 @@ vab pair --code XXXXXX --label "codex-mac" --write-env .env.agent
 
 Physical-device sign-off: connect and unlock the iPhone 13 Pro, then run
 `pnpm signoff:phone` (or set `KNOCK_DEVICE_UDID` explicitly). It verifies the API, LAN
-address, installed build-19, and launch before emitting a fresh
+address, installed expected build, and launch before emitting a fresh
 knock. Then tap **Review request**, choose an action, confirm if required, and run the
 MCP `pending`/`result` commands.
 
