@@ -4,6 +4,11 @@ import XCTest
 final class ModelsDecodingTests: XCTestCase {
     private let decoder = JSONDecoder()
 
+    func testLegacyFixtureEmailMigrationIsScoped() {
+        XCTAssertTrue(DemoConfig.isLegacyDemoEmail("E2E-1785931570@LOCAL.TEST"))
+        XCTAssertFalse(DemoConfig.isLegacyDemoEmail("user@example.com"))
+    }
+
     func testReleaseEndpointPolicyMigratesDevelopmentAddress() {
         XCTAssertTrue(
             DemoConfig.isLegacyDevelopmentApiBase(

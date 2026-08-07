@@ -6,7 +6,7 @@ production steps on the iPhone 13 Pro.
 App display name: **Knock Knock**.
 
 Latest verification: the Rust backend has 9 passing unit tests, and the iOS simulator
-regression passes 8 model tests plus 3 UI tests: login/create-account mode → knock → exact
+regression passes 9 model tests plus 3 UI tests: login/create-account mode → knock → exact
 session → destructive action → second confirmation → queued, and Settings → generate
 pairing code → copy. The Rust Worker contract smoke, Codex canonical multi-turn smoke,
 Paperclip boundary smoke, TypeScript checks, MCP build, and APNs unit tests are green.
@@ -125,7 +125,7 @@ cd apps/ios && xcodebuild test \
   -destination 'platform=iOS Simulator,name=iPhone SE (3rd generation),OS=17.5'
 
 # Full iOS Simulator regression: create a fresh Rust-backed fixture, generate
-# the project, then run 8 model tests + 3 UI tests. Override IOS_TEST_DESTINATION
+# the project, then run 9 model tests + 3 UI tests. Override IOS_TEST_DESTINATION
 # when a different simulator is required.
 pnpm test:ios
 

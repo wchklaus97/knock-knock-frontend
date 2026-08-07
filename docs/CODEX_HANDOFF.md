@@ -38,7 +38,7 @@ Agent (MCP/CLI) → bridge API :8787 → iPhone app
 | iOS | SwiftUI app; Build25 release candidate archive with production onboarding defaulting to account creation; iOS 15.0 deployment floor; warm/cute production visual system with vector mascot; decision-inbox filters (Needs me / Active / All) plus search; offline/connection state with retry; agent/skill/facts/expiry/progress detail; one-time pairing-code generation + copy; iOS 15-compatible navigation and empty states; full-screen knock overlay with direct session review; safe destructive confirmation with alternate-action path; Keychain JWT storage; APNs deep-link handling; notification diagnostics; simulator UI tests |
 | E2E script | `pnpm test:e2e` runs the canonical Rust Worker/D1 contract smoke; `pnpm test:e2e:node` is migration-only |
 | Canonical host | Codex MCP/CLI; `pnpm test:canonical:codex` verifies the configured Codex bridge, and `pnpm test:canonical:codex:multiturn` verifies two replies on one session/chat |
-| iOS tests | Xcode simulator passes 8/8 model tests and 3/3 formal UI tests (search/filter, decision confirmation, pairing); physical UI runner is blocked before test execution by the iOS 26.6 Beta automation service timeout |
+| iOS tests | Xcode simulator passes 9/9 model tests and 3/3 formal UI tests (search/filter, decision confirmation, pairing); physical UI runner is blocked before test execution by the iOS 26.6 Beta automation service timeout |
 | MCP smoke | Direct stdio MCP server loop passes create/progress/needs_user/phone reply/claim/result/retry |
 | Real phone | Target is the iPhone 13 Pro (iOS 26.6 Beta). Build21 was archived and uploaded; Build25 now has a verified offline IPA but still needs owner upload/authentication. Build20 remains installed. Production account creation, pairing, APNs token registration, and the final two-turn manual flow are still pending. |
 | Remaining external step | Unlock the Mac, install Build21 from TestFlight, create the production account with a user-chosen password, pair Codex, and observe two decisions on one `session_id/chat_id`. Pilot users are not a P0 gate. |
@@ -134,7 +134,7 @@ pnpm demo:phone
 pnpm signoff:phone
 pnpm signoff:phone:watch
 pnpm test:e2e
-pnpm test:ios              # seeds a live decision and runs 8 model + 3 UI tests
+pnpm test:ios              # seeds a live decision and runs 9 model + 3 UI tests
 
 cd apps/ios && xcodegen generate
 xcodebuild -scheme VoiceAgentBridge -destination 'generic/platform=iOS' build
@@ -149,7 +149,7 @@ cd apps/api && node ../../scripts/apns-test.mjs
 
 - [x] Rust Worker/D1 contract, Paperclip boundary, canonical Codex multi-turn, RC security, installer, and type checks pass.
 - [x] Rust backend has 9 unit tests plus fmt, Clippy, and WASM checks passing.
-- [x] iOS simulator regression passes 8 model tests and 3 UI tests.
+- [x] iOS simulator regression passes 9 model tests and 3 UI tests.
 - [x] Production Worker health, metrics, migrations, secrets presence, and D1 backup evidence are verified.
 - [x] Build21 is officially signed with production APNs entitlement and uploaded to TestFlight.
 - [x] Frontend and backend are published in their independent GitHub repositories and synchronized by the root submodules.

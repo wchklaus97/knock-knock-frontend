@@ -84,7 +84,7 @@ final class AppStore: ObservableObject {
         // without recording whether the user had configured them. Clear that
         // one-time legacy state so a stale address cannot silently win.
         if UserDefaults.standard.integer(forKey: Self.settingsSchemaKey) < Self.settingsSchemaVersion {
-            if UserDefaults.standard.string(forKey: "vab.email") == DemoConfig.legacyDemoEmail {
+            if DemoConfig.isLegacyDemoEmail(UserDefaults.standard.string(forKey: "vab.email")) {
                 UserDefaults.standard.removeObject(forKey: "vab.email")
             }
             #if !DEBUG

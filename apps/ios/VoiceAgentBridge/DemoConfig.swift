@@ -7,7 +7,6 @@ import Foundation
 /// `KNOCK_API_BASE_URL` bundle setting or entered by the user in Settings.
 enum DemoConfig {
     static let productionApiBase = "https://knock-knock-backend-production.wch-klaus.workers.dev"
-    static let legacyDemoEmail = "e2e-1785931570@local.test"
 
     static var buildLabel: String {
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
@@ -25,6 +24,18 @@ enum DemoConfig {
     static let email = ""
     static let password = ""
     #endif
+
+    /// Recognize an old local-fixture email persisted by pre-release builds
+    /// without embedding the fixture identity in a Release binary.
+    static func isLegacyDemoEmail(_ raw: String?) -> Bool {
+        guard let raw else { return false }
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        #if DEBUG
+        return normalized == email.lowercased()
+        #else
+        return normalized.hasSuffix("@local.test")
+        #endif
+    }
 
     static var defaultApiBase: String {
         if let bundled = Bundle.main.object(forInfoDictionaryKey: "KNOCK_API_BASE_URL") as? String {
