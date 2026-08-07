@@ -4,7 +4,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BACKEND_DIR="${KNOCK_KNOCK_BACKEND_DIR:-$ROOT/../knock-knock/backend}"
+DEFAULT_BACKEND_DIR="$ROOT/../backend"
+if [[ ! -f "$DEFAULT_BACKEND_DIR/wrangler.toml" && -f "$ROOT/../knock-knock/backend/wrangler.toml" ]]; then
+  DEFAULT_BACKEND_DIR="$ROOT/../knock-knock/backend"
+fi
+BACKEND_DIR="${KNOCK_KNOCK_BACKEND_DIR:-$DEFAULT_BACKEND_DIR}"
 API="${BRIDGE_API_URL:-http://127.0.0.1:8787}"
 
 [[ -x "$BACKEND_DIR/scripts/contract-smoke.sh" ]] || {

@@ -2,7 +2,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BACKEND_DIR="${KNOCK_KNOCK_BACKEND_DIR:-$ROOT/../knock-knock/backend}"
+DEFAULT_BACKEND_DIR="$ROOT/../backend"
+if [[ ! -f "$DEFAULT_BACKEND_DIR/wrangler.toml" && -f "$ROOT/../knock-knock/backend/wrangler.toml" ]]; then
+  DEFAULT_BACKEND_DIR="$ROOT/../knock-knock/backend"
+fi
+BACKEND_DIR="${KNOCK_KNOCK_BACKEND_DIR:-$DEFAULT_BACKEND_DIR}"
 PORT="${KNOCK_KNOCK_API_PORT:-8787}"
 BIND_IP="${KNOCK_KNOCK_BIND_IP:-0.0.0.0}"
 
