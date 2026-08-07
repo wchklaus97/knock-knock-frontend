@@ -14,7 +14,7 @@ Knock Knock 已达到“自动化验证通过、Rust Cloudflare Worker 已部署
 
 - Rust Worker 是生产 source of truth；旧 Node API 仅保留为迁移诊断路径。
 - Worker 地址：`https://knock-knock-backend-production.wch-klaus.workers.dev`。
-- 当前部署版本：`2026.08.08-build-23`。
+- 当前部署版本：`2026.08.08-build-24`。
 - `/health` 返回 `ok=true`、`api=rust`、`runtime=cloudflare-worker`、`push_mode=both`、`apns_ready=true`、`apns_production=true`；`/metrics` 返回 Rust Worker 指标。
 - 远程 D1 migration 检查通过：没有待应用 migration。
 - D1 备份已生成到本机受限路径，权限为 `600`，并通过非空及 `CREATE TABLE` 校验：
@@ -23,6 +23,7 @@ Knock Knock 已达到“自动化验证通过、Rust Cloudflare Worker 已部署
 - GitHub Actions 已加入：Rust CI、十分钟健康检查/告警 issue、每日 D1 backup workflow。
 - 最新 backend commit 的 Rust CI 已成功；生产健康 workflow 手动运行也成功，并执行了恢复告警分支。
 - GitHub repository variables 已配置；每日备份仍需要人工添加唯一的敏感配置 `CLOUDFLARE_API_TOKEN` Actions secret。
+- APNs readiness 现在会解析并验证 `.p8` 私钥格式，不再只判断 secret 是否非空。
 
 ### Rust 与协议
 
