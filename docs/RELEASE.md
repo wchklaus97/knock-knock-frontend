@@ -20,7 +20,7 @@ From the backend checkout, keep the real production config and secrets local or
 in the deployment system; never commit them:
 
 ```bash
-cd /Users/klaus_mac/Projects/01-Active/knock-knock/backend
+cd /path/to/knock-knock/backend
 wrangler d1 migrations apply knock-knock --remote --config wrangler.production.toml
 wrangler deploy --config wrangler.production.toml
 ./scripts/production-healthcheck.sh \

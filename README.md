@@ -74,7 +74,7 @@ User installation and one-time agent pairing: [docs/INSTALL.md](docs/INSTALL.md)
 Paperclip connection and same-session MCP handoff: [docs/PAPERCLIP.md](docs/PAPERCLIP.md).
 
 For a physical iPhone on the same Wi-Fi, use the Mac LAN URL shown in Settings
-(`http://192.168.8.17:8787` on the current dev network), allow notifications, and verify
+(`http://<mac-lan-ip>:8787` on the current dev network), allow notifications, and verify
 the APNs token before running `pnpm signoff:phone`. The current physical target is the
 iPhone 13 Pro; set `KNOCK_DEVICE_NAME` or `KNOCK_DEVICE_UDID` when using a different
 connected iPhone. To verify the real two-turn interaction on one session, run

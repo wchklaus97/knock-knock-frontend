@@ -7,7 +7,7 @@ final class ModelsDecodingTests: XCTestCase {
     func testReleaseEndpointPolicyMigratesDevelopmentAddress() {
         XCTAssertTrue(
             DemoConfig.isLegacyDevelopmentApiBase(
-                "http://192.168.8.17:8787",
+                "http://10.0.0.1:8787",
                 requireHTTPS: true
             )
         )

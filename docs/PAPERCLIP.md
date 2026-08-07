@@ -33,7 +33,7 @@ The equivalent connection shape, with the secret intentionally omitted, is:
   "name": "knock-knock",
   "command": "pnpm",
   "args": ["--filter", "@vab/mcp", "dev"],
-  "cwd": "/Users/klaus_mac/Projects/01-Active/voice-agent-bridge",
+  "cwd": "/path/to/knock-knock-frontend",
   "env": {
     "BRIDGE_API_URL": "http://127.0.0.1:8787",
     "BRIDGE_AGENT_KEY": "INJECT_FROM_PAPERCLIP_SECRET"

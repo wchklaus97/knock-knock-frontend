@@ -71,7 +71,7 @@ Add to Cursor MCP settings (e.g. `~/.cursor/mcp.json` or project `.cursor/mcp.js
     "voice-agent-bridge": {
       "command": "pnpm",
       "args": ["--filter", "@vab/mcp", "dev"],
-      "cwd": "/Users/klaus_mac/Projects/01-Active/voice-agent-bridge",
+      "cwd": "/path/to/knock-knock-frontend",
       "env": {
         "BRIDGE_API_URL": "http://127.0.0.1:8787",
         "BRIDGE_AGENT_KEY": "REPLACE_WITH_AGENT_KEY"
@@ -87,7 +87,7 @@ Add to Cursor MCP settings (e.g. `~/.cursor/mcp.json` or project `.cursor/mcp.js
 [mcp_servers.voice-agent-bridge]
 command = "pnpm"
 args = ["--filter", "@vab/mcp", "dev"]
-cwd = "/Users/klaus_mac/Projects/01-Active/voice-agent-bridge"
+cwd = "/path/to/knock-knock-frontend"
 
 [mcp_servers.voice-agent-bridge.env]
 BRIDGE_API_URL = "http://127.0.0.1:8787"

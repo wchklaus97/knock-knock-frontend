@@ -8,7 +8,7 @@ Copy this entire file into a long-running Codex task. Work **only** in this repo
 
 **Product:** Knock Knock (`hk.knockknock.app`)  
 **Repo / MCP id:** `voice-agent-bridge` at  
-`/Users/klaus_mac/Projects/01-Active/voice-agent-bridge`
+`/path/to/knock-knock-frontend`
 
 **Purpose:** When a coding agent (Cursor / Codex / CLI) finishes work or needs a human decision, it knocks the user’s iPhone. The user sees a summary, answers by UI (voice later), and the answer routes back to the **same** agent session.
 
@@ -34,16 +34,16 @@ Agent (MCP/CLI) → bridge API :8787 → iPhone app
 | MCP | 5 tools + `vab` CLI; loads `.env.agent` |
 | Agent installation | One command generates Codex, Cursor, and Paperclip skill/rule plus isolated MCP snippets; installer smoke passes |
 | Paperclip boundary | `pnpm test:paperclip` passes the local governed stdio boundary: all 5 tools, exact session resume, simulated phone reply, claim/result, and idempotent retry |
-| Release path | Docker + Caddy HTTPS deployment, production APNs fail-closed config, App Store export options, archive script, and TestFlight/App Store runbook |
-| iOS | SwiftUI app; **build-19** markers; iOS 15.0 deployment floor for compatibility; warm/cute production visual system with vector mascot; decision-inbox filters (Needs me / Active / All) plus search; offline/connection state with retry; agent/skill/facts/expiry/progress detail; one-time pairing-code generation + copy; iOS 15-compatible navigation and empty states; full-screen knock overlay with direct session review; safe destructive confirmation with alternate-action path; Keychain JWT storage; APNs deep-link handling; notification diagnostics; formal simulator UI test for the destructive decision path |
+| Release path | Rust Cloudflare Worker/D1 HTTPS deployment, production APNs fail-closed config, monitoring/backup workflows, App Store export options, manual signing archive script, and TestFlight/App Store runbook |
+| iOS | SwiftUI app; Build21 release candidate; iOS 15.0 deployment floor; warm/cute production visual system with vector mascot; decision-inbox filters (Needs me / Active / All) plus search; offline/connection state with retry; agent/skill/facts/expiry/progress detail; one-time pairing-code generation + copy; iOS 15-compatible navigation and empty states; full-screen knock overlay with direct session review; safe destructive confirmation with alternate-action path; Keychain JWT storage; APNs deep-link handling; notification diagnostics; simulator UI tests |
 | E2E script | `pnpm test:e2e` runs the canonical Rust Worker/D1 contract smoke; `pnpm test:e2e:node` is migration-only |
 | Canonical host | Codex MCP/CLI; `pnpm test:canonical:codex` verifies the configured Codex bridge, and `pnpm test:canonical:codex:multiturn` verifies two replies on one session/chat |
-| iOS tests | Xcode simulator passes 6/6 model tests and 2/2 formal UI tests (decision + pairing); physical UI runner is blocked before test execution by the iOS 26.6 Beta automation service timeout |
+| iOS tests | Xcode simulator passes 8/8 model tests and 3/3 formal UI tests (search/filter, decision confirmation, pairing); physical UI runner is blocked before test execution by the iOS 26.6 Beta automation service timeout |
 | MCP smoke | Direct stdio MCP server loop passes create/progress/needs_user/phone reply/claim/result/retry |
-| Real phone | The user's physical target is the iPhone 13 Pro (iOS 26.6 Beta), which macOS reports as paired, unlocked, and running build-19. Build-19 has now passed a manual two-turn knock → review/rollback/confirm → result → follow-up knock/ack → result flow on one session/chat. Xcode's physical UI runner is signed but still times out while enabling automation mode before the test body. |
-| Remaining external step | Continue the owner dogfood and invite external pilot users; the P0 real-device same-session evidence is complete. The iOS 15 deployment floor remains available for older compatible devices. |
+| Real phone | Target is the iPhone 13 Pro (iOS 26.6 Beta). Build21 was archived and uploaded; until TestFlight processing is confirmed, Build20 remains the installed build. Production account creation, pairing, APNs token registration, and the final two-turn manual flow are still pending. |
+| Remaining external step | Unlock the Mac, install Build21 from TestFlight, create the production account with a user-chosen password, pair Codex, and observe two decisions on one `session_id/chat_id`. Pilot users are not a P0 gate. |
 | Entitlements | Debug uses `aps-environment=development`; Release switches to `production` |
-| Demo user | Owns real 64-char APNs token |
+| Production device metadata | iOS device rows exist in D1, but current push-token lengths are null; real APNs delivery is not yet verified |
 
 ---
 
@@ -58,7 +58,7 @@ Agent (MCP/CLI) → bridge API :8787 → iPhone app
 | API iPhone | Current Mac LAN URL entered in the app's Advanced connection settings |
 | Team | Spotlight Platform Limited / `TXKDW2YS44` |
 | Bundle | `hk.knockknock.app` |
-| APNs key | `secrets/AuthKey_664Y4CM7M3.p8` (gitignored), Key ID `664Y4CM7M3` |
+| APNs key | Configured as Cloudflare Worker secrets; local `.p8` files remain gitignored |
 | `APNS_PRODUCTION` | `false` (Xcode debug → sandbox) |
 
 Do **not** commit secrets, `.env`, `.env.agent`, or `.p8` files.
@@ -127,14 +127,14 @@ Fix and retest anything that blocks the loop:
 ## Useful commands
 
 ```bash
-cd /Users/klaus_mac/Projects/01-Active/voice-agent-bridge
+cd /path/to/knock-knock-frontend
 pnpm dev:api
 source scripts/use-agent-env.sh
 pnpm demo:phone
 pnpm signoff:phone
 pnpm signoff:phone:watch
 pnpm test:e2e
-pnpm test:ios              # seeds a live decision and runs 4 model + 2 UI tests
+pnpm test:ios              # seeds a live decision and runs 8 model + 3 UI tests
 
 cd apps/ios && xcodegen generate
 xcodebuild -scheme VoiceAgentBridge -destination 'generic/platform=iOS' build
@@ -145,25 +145,24 @@ cd apps/api && node ../../scripts/apns-test.mjs
 
 ---
 
-## Definition of Done (hand this back as done)
+## Definition of Done (current release candidate)
 
-- [x] `pnpm test:e2e` green  
-- [x] stale waiting-session metadata is reconciled before phone rendering  
-- [x] iOS `xcodebuild` green with iOS 15.0 deployment target; compatibility Simulator full scheme passes (6/6 model tests + 2/2 UI tests)  
-- [x] Simulator decision inbox shows build-19, search, Needs me / Active / All filters, facts/expiry detail, and pairing-code UI
-- [x] Historical physical-device build-11 in-app popup and destructive loop verified  
-- [x] Install build-16 and run the fresh knock/destructive loop on the currently connected iPhone 13 Pro
-- [x] APNs sandbox transport and SpringBoard user-visible delivery logs verified on the currently connected iPhone; the iPhone Mirroring screenshot did not capture the transient banner
-- [x] Install build-19 and launch the refreshed UI on the user's iPhone 13 Pro
-- [x] Run the fresh build-19 two-turn knock/destructive/follow-up loop on the user's iPhone 13 Pro (manual taps; current runner still times out before test execution)
-- [x] `AGENTS.md` + `docs/TESTING.md` updated if commands/credentials/IP changed  
-- [x] Short summary of what was broken, what was fixed, and remaining risks  
+- [x] Rust Worker/D1 contract, Paperclip boundary, canonical Codex multi-turn, RC security, installer, and type checks pass.
+- [x] Rust backend has 9 unit tests plus fmt, Clippy, and WASM checks passing.
+- [x] iOS simulator regression passes 8 model tests and 3 UI tests.
+- [x] Production Worker health, metrics, migrations, secrets presence, and D1 backup evidence are verified.
+- [x] Build21 is officially signed with production APNs entitlement and uploaded to TestFlight.
+- [x] Frontend and backend are published in their independent GitHub repositories and synchronized by the root submodules.
+- [ ] Build21 is confirmed processed and installed on the iPhone 13 Pro.
+- [ ] User creates/signs into the production account and the phone registers a real APNs token.
+- [ ] Codex pairing and the real two-turn `needs_user → phone reply → agent resume` flow are observed on the same `session_id/chat_id`.
+- [ ] GitHub Actions D1 backup runs once after `CLOUDFLARE_API_TOKEN` is added as an Actions secret.
 
 ---
 
 ## Constraints
 
-- Stack: API (TypeScript/Hono), MCP, Swift/SwiftUI iOS, SQLite, shell.  
+- Stack: Rust Cloudflare Worker/D1, MCP, Swift/SwiftUI iOS, shell; legacy TypeScript/Hono is migration-only.  
 - Progress updates must **never** push; only `needs_user` / decision events.  
 - Prefer fixing over redesign. No force-push, no committing secrets.  
 - Ask the human only when a physical phone tap/permission dialog is required; otherwise automate.  
