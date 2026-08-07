@@ -845,6 +845,13 @@ struct ProductionLoginView: View {
                                     systemImage: isCreatingAccount ? "person.badge.plus" : "person.crop.circle.fill"
                                 )
                                     .font(.headline)
+                                Text(
+                                    isCreatingAccount
+                                        ? "Choose a new Knock Knock password. It is separate from Apple, TestFlight, and Codex."
+                                        : "Use the password you created for Knock Knock."
+                                )
+                                    .font(.footnote)
+                                    .foregroundStyle(KnockDesign.muted)
                                 TextField("Email", text: $store.email)
                                     .textInputAutocapitalization(.never)
                                     .keyboardType(.emailAddress)
