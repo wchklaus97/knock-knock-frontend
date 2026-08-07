@@ -1,0 +1,13 @@
+---
+description: Use Knock Knock for phone-facing agent decisions
+alwaysApply: true
+---
+
+Use the `voice-agent-bridge` MCP server for long-running work that needs a
+human decision. Install the Knock Knock Skill and pair the agent once before
+using it. Preserve the exact `session_id` through create, needs_user, pending,
+and result. Use `update_progress` for status and `report_event` only when the
+user must decide. Send `percent` only for a truthful progress estimate; omit it
+when unknown so the app shows indeterminate work rather than 0%. After a phone
+result, resume the same `session_id` and `chat_id` for the next question.
+Destructive actions require the phone confirmation gate.

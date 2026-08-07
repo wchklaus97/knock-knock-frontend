@@ -1,0 +1,10 @@
+[mcp_servers.voice-agent-bridge]
+command = "pnpm"
+args = ["--filter", "@vab/mcp", "dev"]
+# Set this to the Knock Knock repository directory.
+cwd = "/path/to/voice-agent-bridge"
+
+[mcp_servers.voice-agent-bridge.env]
+# Use the API URL reachable from the agent host.
+BRIDGE_API_URL = "http://127.0.0.1:8787"
+# The MCP process loads BRIDGE_AGENT_KEY from .env.agent in cwd after pairing.

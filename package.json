@@ -1,0 +1,28 @@
+{
+  "name": "voice-agent-bridge",
+  "private": true,
+  "packageManager": "pnpm@9.1.1",
+  "scripts": {
+    "dev:api": "bash scripts/dev-rust-api.sh",
+    "dev:api:node": "pnpm --filter @vab/api dev",
+    "dev:mcp": "pnpm --filter @vab/mcp dev",
+    "build": "pnpm -r build",
+    "test:unit": "pnpm --filter @vab/api test",
+    "test:paperclip": "pnpm --filter @vab/mcp test:paperclip",
+    "test:e2e": "bash scripts/e2e-rust.sh",
+    "test:e2e:node": "bash scripts/e2e-mvp.sh",
+    "test:canonical:codex": "bash scripts/canonical-codex-smoke.sh",
+    "test:canonical:codex:multiturn": "bash scripts/canonical-codex-multiturn-smoke.sh",
+    "test:ios": "bash scripts/ios-simulator-regression.sh",
+    "test:installer": "bash scripts/install-agent-skill.test.sh",
+    "test:rc": "bash scripts/rc-security-smoke.sh",
+    "test:production-config": "bash scripts/production-config-smoke.sh",
+    "release:ios": "bash scripts/ios-archive.sh",
+    "skill:install": "bash scripts/install-agent-skill.sh",
+    "signoff:phone": "bash scripts/physical-signoff.sh",
+    "signoff:phone:watch": "bash scripts/physical-signoff-watch.sh",
+    "signoff:phone:multiturn": "bash scripts/physical-multiturn-signoff.sh",
+    "demo:phone": "bash scripts/agent-daily-demo.sh",
+    "typecheck": "pnpm -r typecheck"
+  }
+}

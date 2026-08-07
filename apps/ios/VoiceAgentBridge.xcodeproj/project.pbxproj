@@ -1,0 +1,566 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		076FADC6BA10C0B686162DAC /* VoiceAgentBridgeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D30B279968994BB440B903C /* VoiceAgentBridgeUITests.swift */; };
+		137762B8BE34597AEC835FE1 /* ProductionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A8C292E2E86149C5183D6F7 /* ProductionViews.swift */; };
+		2114B9779C001BA980B4E436 /* DemoConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1CB585C4D196C26E5F29DFC /* DemoConfig.swift */; };
+		2EE756E3BB3E391BDAC57087 /* ModelsDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3595E8A4AF7E21EAE30D6879 /* ModelsDecodingTests.swift */; };
+		6E080537F813A6B4165CBB31 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FFF4D3F41311E57CBB0335F /* APIClient.swift */; };
+		791A02F6291122E43A1302B8 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 743C16B034EDDD0B1135C4D4 /* Assets.xcassets */; };
+		7DC56E6FE546F4CBC07CE55E /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E57AE4EFF7BDE36581D6F5B /* AppDelegate.swift */; };
+		8AE8C32B44D75BEB55918927 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BEAF2F2CA23A5162A99B79E /* Models.swift */; };
+		A17DC2B4DBF67D961CE4EBDE /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D395F5693E39802D84A2DE0 /* AppStore.swift */; };
+		A4F7B8446C4AAAC4DE5C5037 /* NotificationDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A3102CC0FD64B33E8C6512 /* NotificationDiagnostics.swift */; };
+		B049614B0D5B76A5CAEFD5FC /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3B75AF8190D9C92C0C3CD6F /* RootView.swift */; };
+		C0C08D2DE6E9A140CC5C3D0D /* VoiceAgentBridgeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19C24F29A3BD81FEBD216B85 /* VoiceAgentBridgeApp.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		42EB5A437F9FF069E18830A5 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 04D5438232F1B050E05FECD4 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 95B2F73CA8EAD5AB4E6FF270;
+			remoteInfo = VoiceAgentBridge;
+		};
+		A83632EAD01C32C15EF0E794 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 04D5438232F1B050E05FECD4 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 95B2F73CA8EAD5AB4E6FF270;
+			remoteInfo = VoiceAgentBridge;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		19C24F29A3BD81FEBD216B85 /* VoiceAgentBridgeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceAgentBridgeApp.swift; sourceTree = "<group>"; };
+		2E57AE4EFF7BDE36581D6F5B /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		32DC4074DC9D2EA6A41D3174 /* VoiceAgentBridgeTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = VoiceAgentBridgeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		3595E8A4AF7E21EAE30D6879 /* ModelsDecodingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelsDecodingTests.swift; sourceTree = "<group>"; };
+		4D30B279968994BB440B903C /* VoiceAgentBridgeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceAgentBridgeUITests.swift; sourceTree = "<group>"; };
+		5A8C292E2E86149C5183D6F7 /* ProductionViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionViews.swift; sourceTree = "<group>"; };
+		743C16B034EDDD0B1135C4D4 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		7C7AD1AA432BE939E245DA12 /* VoiceAgentBridgeUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = VoiceAgentBridgeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		7D395F5693E39802D84A2DE0 /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
+		7D49A56708A5256649EFEAEF /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		7FFF4D3F41311E57CBB0335F /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
+		8BEAF2F2CA23A5162A99B79E /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		A1CB585C4D196C26E5F29DFC /* DemoConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoConfig.swift; sourceTree = "<group>"; };
+		A870B09F37E0388AC4950D5C /* VoiceAgentBridge.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = VoiceAgentBridge.entitlements; sourceTree = "<group>"; };
+		C4A3102CC0FD64B33E8C6512 /* NotificationDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationDiagnostics.swift; sourceTree = "<group>"; };
+		D3B75AF8190D9C92C0C3CD6F /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		FB51484FA608CC2A692E7A0B /* VoiceAgentBridge.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = VoiceAgentBridge.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		0468E8690A41473FE4548D43 = {
+			isa = PBXGroup;
+			children = (
+				2B954E283BFA591894598998 /* VoiceAgentBridge */,
+				2A70FF0079F783B3E78FA5A2 /* VoiceAgentBridgeTests */,
+				95B01F585F4E19FD6A9213E0 /* VoiceAgentBridgeUITests */,
+				FF7EB3BAB2C0E30249C42E67 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		2A70FF0079F783B3E78FA5A2 /* VoiceAgentBridgeTests */ = {
+			isa = PBXGroup;
+			children = (
+				3595E8A4AF7E21EAE30D6879 /* ModelsDecodingTests.swift */,
+			);
+			path = VoiceAgentBridgeTests;
+			sourceTree = "<group>";
+		};
+		2B954E283BFA591894598998 /* VoiceAgentBridge */ = {
+			isa = PBXGroup;
+			children = (
+				7FFF4D3F41311E57CBB0335F /* APIClient.swift */,
+				2E57AE4EFF7BDE36581D6F5B /* AppDelegate.swift */,
+				7D395F5693E39802D84A2DE0 /* AppStore.swift */,
+				743C16B034EDDD0B1135C4D4 /* Assets.xcassets */,
+				A1CB585C4D196C26E5F29DFC /* DemoConfig.swift */,
+				7D49A56708A5256649EFEAEF /* Info.plist */,
+				8BEAF2F2CA23A5162A99B79E /* Models.swift */,
+				C4A3102CC0FD64B33E8C6512 /* NotificationDiagnostics.swift */,
+				5A8C292E2E86149C5183D6F7 /* ProductionViews.swift */,
+				D3B75AF8190D9C92C0C3CD6F /* RootView.swift */,
+				A870B09F37E0388AC4950D5C /* VoiceAgentBridge.entitlements */,
+				19C24F29A3BD81FEBD216B85 /* VoiceAgentBridgeApp.swift */,
+			);
+			path = VoiceAgentBridge;
+			sourceTree = "<group>";
+		};
+		95B01F585F4E19FD6A9213E0 /* VoiceAgentBridgeUITests */ = {
+			isa = PBXGroup;
+			children = (
+				4D30B279968994BB440B903C /* VoiceAgentBridgeUITests.swift */,
+			);
+			path = VoiceAgentBridgeUITests;
+			sourceTree = "<group>";
+		};
+		FF7EB3BAB2C0E30249C42E67 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				FB51484FA608CC2A692E7A0B /* VoiceAgentBridge.app */,
+				32DC4074DC9D2EA6A41D3174 /* VoiceAgentBridgeTests.xctest */,
+				7C7AD1AA432BE939E245DA12 /* VoiceAgentBridgeUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		88316352B2D23303A8BD9E7C /* VoiceAgentBridgeUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 940FF2FB1C07A5FE254CF136 /* Build configuration list for PBXNativeTarget "VoiceAgentBridgeUITests" */;
+			buildPhases = (
+				D69DC0760613678504A26371 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				2EEE1DCFBD17753B16B024C3 /* PBXTargetDependency */,
+			);
+			name = VoiceAgentBridgeUITests;
+			packageProductDependencies = (
+			);
+			productName = VoiceAgentBridgeUITests;
+			productReference = 7C7AD1AA432BE939E245DA12 /* VoiceAgentBridgeUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		95B2F73CA8EAD5AB4E6FF270 /* VoiceAgentBridge */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A557707B699BFE740750E368 /* Build configuration list for PBXNativeTarget "VoiceAgentBridge" */;
+			buildPhases = (
+				CDC1A2F54D008E423C8D5E36 /* Sources */,
+				698D81D2DA8EBF5746CEECF5 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = VoiceAgentBridge;
+			packageProductDependencies = (
+			);
+			productName = VoiceAgentBridge;
+			productReference = FB51484FA608CC2A692E7A0B /* VoiceAgentBridge.app */;
+			productType = "com.apple.product-type.application";
+		};
+		C1014640451ADE67F8E70780 /* VoiceAgentBridgeTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0BE386BF9A903A143CA2EF41 /* Build configuration list for PBXNativeTarget "VoiceAgentBridgeTests" */;
+			buildPhases = (
+				2E8812C7188D9D138DD60CF3 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				7122A97DEC207257046040DE /* PBXTargetDependency */,
+			);
+			name = VoiceAgentBridgeTests;
+			packageProductDependencies = (
+			);
+			productName = VoiceAgentBridgeTests;
+			productReference = 32DC4074DC9D2EA6A41D3174 /* VoiceAgentBridgeTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		04D5438232F1B050E05FECD4 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					88316352B2D23303A8BD9E7C = {
+						DevelopmentTeam = TXKDW2YS44;
+						ProvisioningStyle = Automatic;
+						TestTargetID = 95B2F73CA8EAD5AB4E6FF270;
+					};
+					95B2F73CA8EAD5AB4E6FF270 = {
+						DevelopmentTeam = TXKDW2YS44;
+						ProvisioningStyle = Automatic;
+					};
+					C1014640451ADE67F8E70780 = {
+						DevelopmentTeam = TXKDW2YS44;
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 1E45D20FE80F77518CAE900D /* Build configuration list for PBXProject "VoiceAgentBridge" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 0468E8690A41473FE4548D43;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = FF7EB3BAB2C0E30249C42E67 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				95B2F73CA8EAD5AB4E6FF270 /* VoiceAgentBridge */,
+				C1014640451ADE67F8E70780 /* VoiceAgentBridgeTests */,
+				88316352B2D23303A8BD9E7C /* VoiceAgentBridgeUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		698D81D2DA8EBF5746CEECF5 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				791A02F6291122E43A1302B8 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		2E8812C7188D9D138DD60CF3 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2EE756E3BB3E391BDAC57087 /* ModelsDecodingTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		CDC1A2F54D008E423C8D5E36 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6E080537F813A6B4165CBB31 /* APIClient.swift in Sources */,
+				7DC56E6FE546F4CBC07CE55E /* AppDelegate.swift in Sources */,
+				A17DC2B4DBF67D961CE4EBDE /* AppStore.swift in Sources */,
+				2114B9779C001BA980B4E436 /* DemoConfig.swift in Sources */,
+				8AE8C32B44D75BEB55918927 /* Models.swift in Sources */,
+				A4F7B8446C4AAAC4DE5C5037 /* NotificationDiagnostics.swift in Sources */,
+				137762B8BE34597AEC835FE1 /* ProductionViews.swift in Sources */,
+				B049614B0D5B76A5CAEFD5FC /* RootView.swift in Sources */,
+				C0C08D2DE6E9A140CC5C3D0D /* VoiceAgentBridgeApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D69DC0760613678504A26371 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				076FADC6BA10C0B686162DAC /* VoiceAgentBridgeUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		2EEE1DCFBD17753B16B024C3 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 95B2F73CA8EAD5AB4E6FF270 /* VoiceAgentBridge */;
+			targetProxy = A83632EAD01C32C15EF0E794 /* PBXContainerItemProxy */;
+		};
+		7122A97DEC207257046040DE /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 95B2F73CA8EAD5AB4E6FF270 /* VoiceAgentBridge */;
+			targetProxy = 42EB5A437F9FF069E18830A5 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		016306626058D41F8A69E475 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = TXKDW2YS44;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = hk.knockknock.app.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = VoiceAgentBridge;
+			};
+			name = Debug;
+		};
+		1D25E5F448355487F4EB5331 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = TXKDW2YS44;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = hk.knockknock.app.tests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/VoiceAgentBridge.app/VoiceAgentBridge";
+			};
+			name = Debug;
+		};
+		22623BFB9A3D811D97F46629 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				APS_ENVIRONMENT = development;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 20;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				KNOCK_API_BASE_URL = "";
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		2D17610244E0429ABE2B812A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = VoiceAgentBridge/VoiceAgentBridge.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Distribution";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = TXKDW2YS44;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = VoiceAgentBridge/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = hk.knockknock.app;
+				SDKROOT = iphoneos;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		45116334036CB642AE9B21D9 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = TXKDW2YS44;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = hk.knockknock.app.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = VoiceAgentBridge;
+			};
+			name = Release;
+		};
+		5E5C183441E0D796C954E0FD /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				APS_ENVIRONMENT = production;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_IDENTITY = "Apple Distribution";
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 20;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				KNOCK_API_BASE_URL = "https://knock-knock-backend-production.wch-klaus.workers.dev";
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		7AC039F50B4CD3CA6BBD5E80 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = TXKDW2YS44;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = hk.knockknock.app.tests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/VoiceAgentBridge.app/VoiceAgentBridge";
+			};
+			name = Release;
+		};
+		D9DCBC03093E9BE9F06454BD /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = VoiceAgentBridge/VoiceAgentBridge.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = TXKDW2YS44;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = VoiceAgentBridge/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = hk.knockknock.app;
+				SDKROOT = iphoneos;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		0BE386BF9A903A143CA2EF41 /* Build configuration list for PBXNativeTarget "VoiceAgentBridgeTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1D25E5F448355487F4EB5331 /* Debug */,
+				7AC039F50B4CD3CA6BBD5E80 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		1E45D20FE80F77518CAE900D /* Build configuration list for PBXProject "VoiceAgentBridge" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				22623BFB9A3D811D97F46629 /* Debug */,
+				5E5C183441E0D796C954E0FD /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		940FF2FB1C07A5FE254CF136 /* Build configuration list for PBXNativeTarget "VoiceAgentBridgeUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				016306626058D41F8A69E475 /* Debug */,
+				45116334036CB642AE9B21D9 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		A557707B699BFE740750E368 /* Build configuration list for PBXNativeTarget "VoiceAgentBridge" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D9DCBC03093E9BE9F06454BD /* Debug */,
+				2D17610244E0429ABE2B812A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 04D5438232F1B050E05FECD4 /* Project object */;
+}

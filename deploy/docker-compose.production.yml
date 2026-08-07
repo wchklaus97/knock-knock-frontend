@@ -1,0 +1,44 @@
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env.production
+    environment:
+      DATABASE_PATH: /data/bridge.db
+      PUBLIC_BASE_URL: https://${BRIDGE_DOMAIN}
+      NODE_ENV: production
+      TRUST_PROXY: "true"
+    volumes:
+      - bridge-data:/data
+      - ../secrets:/app/secrets:ro
+    expose:
+      - "8787"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r => { if (!r.ok) process.exit(1) })"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  caddy:
+    image: caddy:2.9-alpine
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      BRIDGE_DOMAIN: ${BRIDGE_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  bridge-data:
+  caddy-data:
+  caddy-config:

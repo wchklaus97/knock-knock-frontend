@@ -1,0 +1,28 @@
+{
+  "name": "@vab/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "start:prod": "node dist/index.js",
+    "build": "tsc -p tsconfig.json --noEmit false",
+    "test": "tsx --test src/apns.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.14.1",
+    "bcryptjs": "^3.0.2",
+    "dotenv": "^16.5.0",
+    "hono": "^4.7.7",
+    "jose": "^6.0.10",
+    "nanoid": "^5.1.5",
+    "zod": "^3.24.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.1",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3"
+  }
+}

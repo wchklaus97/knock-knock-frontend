@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "voice-agent-bridge": {
+      "command": "pnpm",
+      "args": ["--filter", "@vab/mcp", "dev"],
+      "cwd": "/path/to/voice-agent-bridge",
+      "env": {
+        "BRIDGE_API_URL": "http://127.0.0.1:8787"
+      }
+    }
+  }
+}

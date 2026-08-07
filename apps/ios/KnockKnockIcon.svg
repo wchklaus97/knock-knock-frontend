@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5B4BFF"/>
+      <stop offset="0.52" stop-color="#7A68FF"/>
+      <stop offset="1" stop-color="#26C6E8"/>
+    </linearGradient>
+    <linearGradient id="door" x1="0" y1="0" x2="0.9" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E8F7FF"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="24"/>
+      <feOffset dy="24"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.24"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="1024" height="1024" rx="224" fill="url(#background)"/>
+  <circle cx="160" cy="140" r="188" fill="#FFFFFF" opacity="0.10"/>
+  <circle cx="910" cy="870" r="250" fill="#FFFFFF" opacity="0.08"/>
+  <path d="M140 760C290 860 416 886 564 842" fill="none" stroke="#FFFFFF" stroke-width="18" stroke-linecap="round" opacity="0.16"/>
+
+  <g filter="url(#shadow)">
+    <rect x="220" y="186" width="584" height="692" rx="116" fill="#FFFFFF" opacity="0.22"/>
+    <rect x="256" y="214" width="512" height="650" rx="92" fill="url(#door)"/>
+    <rect x="306" y="278" width="412" height="526" rx="62" fill="#FFFFFF" opacity="0.62"/>
+    <circle cx="632" cy="548" r="32" fill="#5B4BFF"/>
+    <circle cx="632" cy="548" r="13" fill="#FFFFFF" opacity="0.92"/>
+  </g>
+
+  <g fill="none" stroke="#FFFFFF" stroke-width="24" stroke-linecap="round" opacity="0.96">
+    <path d="M404 440C372 472 372 530 404 562"/>
+    <path d="M348 392C292 448 292 554 348 610"/>
+  </g>
+  <g fill="#FFD86B">
+    <circle cx="390" cy="192" r="18"/>
+    <circle cx="452" cy="160" r="12"/>
+    <circle cx="506" cy="186" r="9"/>
+  </g>
+  <path d="M840 268l16 42 42 16-42 16-16 42-16-42-42-16 42-16z" fill="#FFFFFF" opacity="0.9"/>
+</svg>

@@ -1,0 +1,30 @@
+---
+description: Use Voice Agent Bridge MCP for phone-facing long tasks
+alwaysApply: true
+---
+
+# Knock Knock (daily use)
+
+Product name: **Knock Knock**. MCP server id: `voice-agent-bridge`.
+
+When a task may take a while, need a decision, or should notify the user's iPhone, use the **voice-agent-bridge** MCP tools (not ad-hoc curl).
+
+## Tool order
+
+1. `create_or_resume_session` — at the start of a skillful/long task (`skill_id` e.g. `deploy.result`)
+2. `update_progress` — status updates only; **never** notifies the phone
+3. `report_event` with `status=needs_user` + `actions` — **only** when the user must decide (this may push)
+4. Poll `get_pending_actions` until the user replies on the phone
+5. Execute the action, then `submit_action_result`
+
+## Rules
+
+- Do **not** call `report_event(needs_user)` for routine progress.
+- Prefer short facts; Skill template renders the phone summary.
+- Destructive actions (e.g. `rollback`) require phone second confirm — wait for claim after confirm.
+- If MCP is unavailable, fall back to CLI: `source scripts/use-agent-env.sh` then `pnpm --filter @vab/mcp exec tsx src/cli.ts …`
+- API must be running: `pnpm dev:api` on `http://127.0.0.1:8787`
+
+## Env
+
+Agent auth comes from `.env.agent` / MCP env (`BRIDGE_AGENT_KEY`). Never commit keys.

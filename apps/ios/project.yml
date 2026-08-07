@@ -1,0 +1,75 @@
+name: VoiceAgentBridge
+options:
+  bundleIdPrefix: hk.knockknock
+  deploymentTarget:
+    iOS: "15.0"
+  xcodeVersion: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: "Apple Development"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "20"
+    KNOCK_API_BASE_URL: ""
+    APS_ENVIRONMENT: development
+  configs:
+    Release:
+      CODE_SIGN_IDENTITY: "Apple Distribution"
+      KNOCK_API_BASE_URL: "https://knock-knock-backend-production.wch-klaus.workers.dev"
+      APS_ENVIRONMENT: production
+targets:
+  VoiceAgentBridge:
+    type: application
+    platform: iOS
+    sources:
+      - path: VoiceAgentBridge
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: hk.knockknock.app
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_FILE: VoiceAgentBridge/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1"
+        SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: NO
+        DEVELOPMENT_TEAM: TXKDW2YS44
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: VoiceAgentBridge/VoiceAgentBridge.entitlements
+      configs:
+        Release:
+          CODE_SIGN_IDENTITY: "Apple Distribution"
+    entitlements:
+      path: VoiceAgentBridge/VoiceAgentBridge.entitlements
+      properties:
+        aps-environment: $(APS_ENVIRONMENT)
+    scheme:
+      testTargets:
+        - VoiceAgentBridgeTests
+        - VoiceAgentBridgeUITests
+
+  VoiceAgentBridgeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: VoiceAgentBridgeTests
+    dependencies:
+      - target: VoiceAgentBridge
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: hk.knockknock.app.tests
+        GENERATE_INFOPLIST_FILE: YES
+        DEVELOPMENT_TEAM: TXKDW2YS44
+
+  VoiceAgentBridgeUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: VoiceAgentBridgeUITests
+    dependencies:
+      - target: VoiceAgentBridge
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: hk.knockknock.app.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        DEVELOPMENT_TEAM: TXKDW2YS44

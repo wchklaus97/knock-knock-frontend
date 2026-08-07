@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://voice-agent-bridge.local/schemas/mcp-tools.json",
+  "title": "Voice Agent Bridge MCP Tools",
+  "description": "Five MCP tools for @vab/mcp. Auth: BRIDGE_AGENT_KEY → X-Agent-Key. Base URL: BRIDGE_API_URL (default http://127.0.0.1:8787).\n\nPush semantics:\n- update_progress NEVER pushes (push: false).\n- report_event MAY push when status is needs_user, or succeeded/failed with actions / force_push (push: maybe).",
+  "tools": [
+    {
+      "name": "create_or_resume_session",
+      "description": "Create a session for skill_id, or resume when session_id matches an open session for this agent.",
+      "http": { "method": "POST", "path": "/v1/sessions", "auth": "AgentKey" },
+      "push": false,
+      "input": {
+        "type": "object",
+        "required": ["skill_id"],
+        "additionalProperties": false,
+        "properties": {
+          "skill_id": { "type": "string", "description": "e.g. deploy.result" },
+          "session_id": { "type": "string", "description": "Resume if still open" },
+          "idempotency_key": { "type": "string", "minLength": 1 },
+          "chat_id": { "type": "string" },
+          "title": { "type": "string" },
+          "facts": { "type": "object", "additionalProperties": true },
+          "metadata": { "type": "object", "additionalProperties": true }
+        }
+      }
+    },
+    {
+      "name": "update_progress",
+      "description": "Mirror progress/status to the bridge. NEVER triggers phone push — use report_event to notify the user. Send percent only when it is a truthful estimate; omit it when unknown so the phone shows indeterminate work instead of 0%.",
+      "http": {
+        "method": "POST",
+        "path": "/v1/sessions/{session_id}/progress",
+        "auth": "AgentKey"
+      },
+      "push": false,
+      "input": {
+        "type": "object",
+        "required": ["session_id", "status"],
+        "additionalProperties": false,
+        "properties": {
+          "session_id": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["started", "running", "blocked", "succeeded", "failed", "cancelled"],
+            "description": "ProgressStatus — never causes push"
+          },
+          "message": { "type": "string", "maxLength": 280 },
+          "percent": { "type": "number", "minimum": 0, "maximum": 100 },
+          "facts": { "type": "object", "additionalProperties": true }
+        }
+      }
+    },
+    {
+      "name": "report_event",
+      "description": "Agent-decided event. MAY push for needs_user (always), or succeeded/failed when actions present or force_push. needs_user requires actions (skill action id strings). Center does not guess needs_user.",
+      "http": {
+        "method": "POST",
+        "path": "/v1/sessions/{session_id}/events",
+        "auth": "AgentKey"
+      },
+      "push": "maybe",
+      "input": {
+        "type": "object",
+        "required": ["session_id", "status", "idempotency_key"],
+        "additionalProperties": false,
+        "properties": {
+          "session_id": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["needs_user", "succeeded", "failed"],
+            "description": "EventStatus — may push"
+          },
+          "idempotency_key": { "type": "string", "minLength": 1 },
+          "summary": { "type": "string", "maxLength": 280 },
+          "facts": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Facts for skill template rendering"
+          },
+          "actions": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Skill action ids, e.g. [\"rollback\",\"ack\"]"
+          },
+          "force_push": { "type": "boolean" }
+        }
+      }
+    },
+    {
+      "name": "get_pending_actions",
+      "description": "Fetch user-approved queued actions for this agent (or a session). claim defaults true.",
+      "http": {
+        "sessionScoped": {
+          "method": "GET",
+          "path": "/v1/sessions/{session_id}/actions/pending"
+        },
+        "agentScoped": {
+          "method": "GET",
+          "path": "/v1/agents/me/actions/pending"
+        },
+        "auth": "AgentKey"
+      },
+      "push": false,
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "session_id": { "type": "string" },
+          "claim": { "type": "boolean", "default": true },
+          "wait_ms": { "type": "integer", "minimum": 0, "maximum": 30000 }
+        }
+      }
+    },
+    {
+      "name": "submit_action_result",
+      "description": "Report result after executing a claimed action. Does not push.",
+      "http": {
+        "method": "POST",
+        "path": "/v1/actions/{action_id}/result",
+        "auth": "AgentKey"
+      },
+      "push": false,
+      "input": {
+        "type": "object",
+        "required": ["action_id", "ok"],
+        "additionalProperties": false,
+        "properties": {
+          "action_id": { "type": "string" },
+          "ok": { "type": "boolean" },
+          "message": { "type": "string" },
+          "output": { "type": "object", "additionalProperties": true }
+        }
+      }
+    }
+  ]
+}
