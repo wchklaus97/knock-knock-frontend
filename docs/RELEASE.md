@@ -67,7 +67,8 @@ DEVELOPMENT_TEAM=TXKDW2YS44 IOS_BUILD_NUMBER=25 pnpm release:ios
 The script generates the Xcode project, archives a generic iOS device, and
 exports/uploads according to `apps/ios/ExportOptions-TestFlight.plist`. To
 export without uploading, set `IOS_EXPORT_OPTIONS_PLIST` to a local export
-plist. The script also accepts `IOS_CODE_SIGN_IDENTITY`,
+plist (relative paths are resolved from the repository root). The script also
+accepts `IOS_CODE_SIGN_IDENTITY`,
 `IOS_PROVISIONING_PROFILE_SPECIFIER`, and `IOS_SIGNING_STYLE` overrides.
 When the local Xcode account is not authenticated, use
 `apps/ios/ExportOptions-TestFlight-Local.plist` to export an IPA without an

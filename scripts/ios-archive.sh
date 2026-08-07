@@ -13,6 +13,20 @@ CODE_SIGN_IDENTITY="${IOS_CODE_SIGN_IDENTITY:-Apple Distribution}"
 PROVISIONING_PROFILE="${IOS_PROVISIONING_PROFILE_SPECIFIER:-Knock Knock App Store Distribution}"
 EXPORT_OPTIONS_PLIST="${IOS_EXPORT_OPTIONS_PLIST:-$IOS_DIR/ExportOptions-TestFlight.plist}"
 
+# Resolve caller-provided paths before changing into apps/ios. This keeps
+# commands such as IOS_EXPORT_OPTIONS_PLIST=apps/ios/ExportOptions-TestFlight-Local.plist
+# relative to the repository root, not relative to the iOS project directory.
+resolve_project_path() {
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    *) printf '%s/%s\n' "$ROOT" "$1" ;;
+  esac
+}
+
+ARCHIVE_PATH="$(resolve_project_path "$ARCHIVE_PATH")"
+EXPORT_PATH="$(resolve_project_path "$EXPORT_PATH")"
+EXPORT_OPTIONS_PLIST="$(resolve_project_path "$EXPORT_OPTIONS_PLIST")"
+
 command -v xcodebuild >/dev/null || { echo "xcodebuild is required" >&2; exit 1; }
 command -v xcodegen >/dev/null || { echo "xcodegen is required (brew install xcodegen)" >&2; exit 1; }
 if [[ -z "$BUILD_NUMBER" ]]; then
