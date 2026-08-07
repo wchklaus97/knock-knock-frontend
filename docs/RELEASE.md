@@ -56,11 +56,11 @@ include **Review decision** and **Not now**.
 
 The release target uses manual Apple Distribution signing, the registered
 `hk.knockknock.app` profile, the HTTPS Worker URL, and the production APNs
-entitlement. The archive script defaults to Build21-style TestFlight export;
+entitlement. The archive script defaults to the TestFlight upload export;
 override the variables for another build:
 
 ```bash
-DEVELOPMENT_TEAM=TXKDW2YS44 IOS_BUILD_NUMBER=22 pnpm release:ios
+DEVELOPMENT_TEAM=TXKDW2YS44 IOS_BUILD_NUMBER=25 pnpm release:ios
 ```
 
 The script generates the Xcode project, archives a generic iOS device, and
@@ -68,6 +68,10 @@ exports/uploads according to `apps/ios/ExportOptions-TestFlight.plist`. To
 export without uploading, set `IOS_EXPORT_OPTIONS_PLIST` to a local export
 plist. The script also accepts `IOS_CODE_SIGN_IDENTITY`,
 `IOS_PROVISIONING_PROFILE_SPECIFIER`, and `IOS_SIGNING_STYLE` overrides.
+When the local Xcode account is not authenticated, use
+`apps/ios/ExportOptions-TestFlight-Local.plist` to export an IPA without an
+upload, then upload it from Transporter or Xcode Organizer after the owner
+completes Apple account authentication.
 
 Before submitting, verify the archive's bundle ID is `hk.knockknock.app`, the
 marketing version is correct, the production APNs entitlement is present, and

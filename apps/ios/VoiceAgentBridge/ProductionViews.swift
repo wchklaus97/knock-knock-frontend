@@ -816,7 +816,9 @@ struct ProductionLoginView: View {
     // Debug builds use the local fixture values for simulator regression;
     // Release/TestFlight builds intentionally resolve this to an empty string.
     @State private var password = DemoConfig.password
-    @State private var isCreatingAccount = false
+    // A Release/TestFlight install has no bundled credentials, so guide a new
+    // user toward account creation first. Debug fixtures keep the sign-in path.
+    @State private var isCreatingAccount = DemoConfig.email.isEmpty
     @State private var showServer = false
 
     var body: some View {

@@ -38,15 +38,16 @@ Knock Knock 已达到“自动化验证通过、Rust Cloudflare Worker 已部署
 ### iOS 与发布
 
 - `pnpm test:ios` 通过：8 个 model tests + 3 个 UI tests，覆盖搜索/过滤、needs_user、destructive 二次确认、pairing code 生成/复制。
-- Build21 archive 已使用官方 Apple Distribution 签名导出；bundle ID 为 `hk.knockknock.app`，`aps-environment=production`，`get-task-allow=false`。
+- Build21/Build25 archive 已使用官方 Apple Distribution 签名导出；Build25 bundle ID 为 `hk.knockknock.app`，`aps-environment=production`，`get-task-allow=false`。
 - Build21 已成功上传 App Store Connect；最后一次可见的网页状态仍需在 Mac 解锁后重新确认是否完成处理。
+- Build25 加入了 Release 首次打开默认“创建账号”的 onboarding，并已生成离线 IPA；上传型 export 因本机 Xcode Apple 凭证无效而未上传，当前仍需用户在 Xcode/Transporter 完成 Apple 认证。
 - 设备级只读检查确认目标为 iPhone 13 Pro，当前安装仍是 `0.1.0 (Build20)`；设备当前需要用户解锁，因此不能由自动化代替登录或输入密码。
 - Release archive script 现在要求显式传入未使用的 `IOS_BUILD_NUMBER`，默认使用 manual Apple Distribution profile，避免重复 build 或再次误用 Automatic signing。
 - Release/TestFlight binary 不包含本地 demo credentials；本地 fixture 只在 Debug/Simulator 路径使用。
 
 ## 尚未完成的硬门槛
 
-1. 在 Mac 解锁后确认 Build21 在 TestFlight 可安装，并在 iPhone 13 Pro 安装/更新。
+1. 在 Mac 解锁后确认 Build25（或已处理的 Build21）在 TestFlight 可安装，并在 iPhone 13 Pro 安装/更新。
 2. 在 App 内选择 **Create an account**，由用户自己设置至少 8 位密码；密码不会交给 Codex。
 3. 在手机上生成 pairing code，并由 canonical Codex host claim。
 4. 用生产 Worker 完成同一 `session_id/chat_id` 的两次：`needs_user → 手机回答 → Agent 恢复`。
@@ -58,7 +59,7 @@ Knock Knock 已达到“自动化验证通过、Rust Cloudflare Worker 已部署
 Mac 解锁后：
 
 ```text
-TestFlight → 更新 Knock Knock 到 Build21
+TestFlight → 更新 Knock Knock 到 Build25（或最新可用 build）
 Knock Knock → Create an account → 自己输入邮箱和新密码 → Create account
 ```
 
