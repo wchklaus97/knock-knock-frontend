@@ -22,7 +22,7 @@ Knock Knock 已达到“自动化验证通过、Rust Cloudflare Worker 已部署
 - 生产 D1 的只读设备元数据检查显示已有 iOS device rows，但当前 push token 长度为空；因此真实 APNs delivery 仍未被宣称完成，必须在新生产账号登录并让手机重新注册 token 后验证。
 - GitHub Actions 已加入：Rust CI、十分钟健康检查/告警 issue、每日 D1 backup workflow。
 - 最新 backend commit 的 Rust CI 已成功；生产健康 workflow 手动运行也成功，并执行了恢复告警分支。
-- GitHub repository variables 已配置；每日备份仍需要人工添加唯一的敏感配置 `CLOUDFLARE_API_TOKEN` Actions secret。
+- GitHub repository variables 已配置；每日备份仍需要人工添加专用、最小权限的 `CLOUDFLARE_API_TOKEN` Actions secret。本机 Wrangler OAuth 登录存在，但不转存个人广权限 OAuth 到 GitHub。
 - APNs readiness 现在会解析并验证 `.p8` 私钥格式，不再只判断 secret 是否非空。
 
 ### Rust 与协议
@@ -40,7 +40,7 @@ Knock Knock 已达到“自动化验证通过、Rust Cloudflare Worker 已部署
 - `pnpm test:ios` 通过：9 个 model tests + 3 个 UI tests，覆盖搜索/过滤、needs_user、destructive 二次确认、pairing code 生成/复制，以及 Release fixture 清理。
 - Build21/Build25 archive 已使用官方 Apple Distribution 签名导出；Build25 bundle ID 为 `hk.knockknock.app`，`aps-environment=production`，`get-task-allow=false`。
 - Build21 已成功上传 App Store Connect；最后一次可见的网页状态仍需在 Mac 解锁后重新确认是否完成处理。
-- Build25 加入了 Release 首次打开默认“创建账号”的 onboarding，并已生成离线 IPA；上传型 export 因本机 Xcode Apple 凭证无效而未上传，当前仍需用户在 Xcode/Transporter 完成 Apple 认证。
+- Build25 加入了 Release 首次打开默认“创建账号”的 onboarding，并已用干净 DerivedData 生成离线 IPA；`strings` fixture 扫描为 clean，最新 IPA SHA-256 为 `e80fb773fadc72a41a7698f609c712f8a65b2ba1a5f4c970543b90d78ade5cae`。上传型 export 因本机 Xcode Apple 凭证无效而未上传，当前仍需用户在 Xcode/Transporter 完成 Apple 认证。
 - 设备级只读检查确认目标为 iPhone 13 Pro，当前安装仍是 `0.1.0 (Build20)`；设备当前需要用户解锁，因此不能由自动化代替登录或输入密码。
 - Release archive script 现在要求显式传入未使用的 `IOS_BUILD_NUMBER`，默认使用 manual Apple Distribution profile，避免重复 build 或再次误用 Automatic signing。
 - 最新干净 Release Build25 IPA 已重新归档并扫描确认不包含本地 demo credentials；本地 fixture 只在 Debug/Simulator 路径使用。
