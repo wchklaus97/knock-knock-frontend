@@ -14,8 +14,8 @@ Knock Knock 已达到“自动化验证通过、Rust Cloudflare Worker 已部署
 
 - Rust Worker 是生产 source of truth；旧 Node API 仅保留为迁移诊断路径。
 - Worker 地址：`https://knock-knock-backend-production.wch-klaus.workers.dev`。
-- 当前部署版本：`2026.08.08-build-22`。
-- `/health` 返回 `ok=true`、`api=rust`、`runtime=cloudflare-worker`；`/metrics` 返回 Rust Worker 指标。
+- 当前部署版本：`2026.08.08-build-23`。
+- `/health` 返回 `ok=true`、`api=rust`、`runtime=cloudflare-worker`、`push_mode=both`、`apns_ready=true`、`apns_production=true`；`/metrics` 返回 Rust Worker 指标。
 - 远程 D1 migration 检查通过：没有待应用 migration。
 - D1 备份已生成到本机受限路径，权限为 `600`，并通过非空及 `CREATE TABLE` 校验：
   `<local-backup-path>/knock-knock-d1-20260808.sql`
