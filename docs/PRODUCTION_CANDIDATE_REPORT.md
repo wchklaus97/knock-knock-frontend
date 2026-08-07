@@ -40,6 +40,7 @@ Knock Knock 已达到“自动化验证通过、Rust Cloudflare Worker 已部署
 - `pnpm test:ios` 通过：8 个 model tests + 3 个 UI tests，覆盖搜索/过滤、needs_user、destructive 二次确认、pairing code 生成/复制。
 - Build21 archive 已使用官方 Apple Distribution 签名导出；bundle ID 为 `hk.knockknock.app`，`aps-environment=production`，`get-task-allow=false`。
 - Build21 已成功上传 App Store Connect；最后一次可见的网页状态仍需在 Mac 解锁后重新确认是否完成处理。
+- 设备级只读检查确认目标为 iPhone 13 Pro，当前安装仍是 `0.1.0 (Build20)`；设备当前需要用户解锁，因此不能由自动化代替登录或输入密码。
 - Release archive script 现在要求显式传入未使用的 `IOS_BUILD_NUMBER`，默认使用 manual Apple Distribution profile，避免重复 build 或再次误用 Automatic signing。
 - Release/TestFlight binary 不包含本地 demo credentials；本地 fixture 只在 Debug/Simulator 路径使用。
 
