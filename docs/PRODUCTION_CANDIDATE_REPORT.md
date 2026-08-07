@@ -21,6 +21,7 @@ Knock Knock 已达到“自动化验证通过、Rust Cloudflare Worker 已部署
   `<local-backup-path>/knock-knock-d1-20260808.sql`
 - 生产 D1 的只读设备元数据检查显示已有 iOS device rows，但当前 push token 长度为空；因此真实 APNs delivery 仍未被宣称完成，必须在新生产账号登录并让手机重新注册 token 后验证。
 - GitHub Actions 已加入：Rust CI、十分钟健康检查/告警 issue、每日 D1 backup workflow。
+- 最新 backend commit 的 Rust CI 已成功；生产健康 workflow 手动运行也成功，并执行了恢复告警分支。
 - GitHub repository variables 已配置；每日备份仍需要人工添加唯一的敏感配置 `CLOUDFLARE_API_TOKEN` Actions secret。
 
 ### Rust 与协议
