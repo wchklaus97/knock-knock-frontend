@@ -13,9 +13,8 @@ Paperclip boundary smoke, TypeScript checks, MCP build, and APNs unit tests are 
 The legacy Node API remains an explicit migration diagnostic, not the product source of
 truth. The RC smoke additionally verifies refresh-token rotation, scoped Agent-key
 rotation, audit history, and Prometheus metrics. Build25 is the current iOS release
-candidate archive; Build21 is the last uploaded build. Until the account-first Build25
-is uploaded and processed, Build20 remains the installed build on the user's iPhone 13
-Pro (iOS 26.6 Beta).
+candidate and has been uploaded; App Store Connect processing is still pending. Build20
+remains the installed build on the user's iPhone 13 Pro (iOS 26.6 Beta).
 
 The physical UI-test runner is signed and installs, but Xcode 26.6 times out before the test
 body while enabling automation mode on this iOS 26.6 Beta device. The app itself remains
@@ -169,10 +168,9 @@ the local Mac/iPhone loop.
   canonical Codex multi-turn, and RC security smokes.
 - [x] Production Worker is deployed at the HTTPS endpoint configured by the iOS Release
   target; health and metrics checks pass.
-- [x] Build21 is archived with official Apple Distribution signing and production APNs
-  entitlement, and uploaded to TestFlight.
-- [ ] Build25 (the account-first release candidate) is uploaded, finishes App Store
-  processing, and is installed on the iPhone 13 Pro.
+- [x] Build25 (the account-first release candidate) is archived with official Apple
+  Distribution signing and production APNs entitlement, and uploaded to App Store Connect.
+- [ ] Build25 finishes App Store processing and is installed on the iPhone 13 Pro.
 - [ ] User creates the production account with a self-chosen password and signs in on the
   phone; no password is stored in the repository or accessible to automation.
 - [ ] The final real-phone two-turn flow is observed after the new production account is

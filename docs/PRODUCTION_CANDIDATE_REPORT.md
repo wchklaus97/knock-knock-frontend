@@ -6,7 +6,7 @@
 
 ## 结论
 
-Knock Knock 已达到“自动化验证通过、Rust Cloudflare Worker 已部署、iOS Build21 已上传”的生产候选阶段。真实 iPhone 13 Pro 的最终闭环仍未宣称完成，因为 Build21 在当前 Mac 锁定时无法重新确认 TestFlight 处理状态，而且生产账号创建、登录、配对和手机上的两轮人工点击尚未完成。
+Knock Knock 已达到“自动化验证通过、Rust Cloudflare Worker 已部署、iOS Build25 已上传”的生产候选阶段。真实 iPhone 13 Pro 的最终闭环仍未宣称完成，因为 Build25 仍在 App Store Connect 处理中，而且生产账号创建、登录、配对和手机上的两轮人工点击尚未完成。
 
 ## 已验证
 
@@ -39,15 +39,15 @@ Knock Knock 已达到“自动化验证通过、Rust Cloudflare Worker 已部署
 
 - `pnpm test:ios` 通过：9 个 model tests + 3 个 UI tests，覆盖搜索/过滤、needs_user、destructive 二次确认、pairing code 生成/复制，以及 Release fixture 清理。
 - Build21/Build25 archive 已使用官方 Apple Distribution 签名导出；Build25 bundle ID 为 `hk.knockknock.app`，`aps-environment=production`，`get-task-allow=false`。
-- Build21 已成功上传 App Store Connect；最后一次可见的网页状态仍需在 Mac 解锁后重新确认是否完成处理。
-- Build25 加入了 Release 首次打开默认“创建账号”的 onboarding，并明确说明 Knock Knock 密码独立于 Apple、TestFlight 和 Codex；已用干净 DerivedData 生成离线 IPA，`strings` fixture 扫描为 clean，最新 IPA SHA-256 为 `7c8fe2d8b73e521d30052ba8426a58de5ffe8b12a090141c62b125205fc9fba1`。上传型 export 因本机 Xcode Apple 凭证无效而未上传，当前仍需用户在 Xcode/Transporter 完成 Apple 认证。
-- 设备级只读检查确认目标为 iPhone 13 Pro，当前安装仍是 `0.1.0 (Build20)`；设备当前需要用户解锁，因此不能由自动化代替登录或输入密码。
+- Build25 已于 2026-08-08 16:21 通过 `xcodebuild -exportArchive` 成功上传 App Store Connect；Apple 已接受上传并显示为 processing，尚未完成 TestFlight 可安装状态确认。
+- Build25 加入了 Release 首次打开默认“创建账号”的 onboarding，并明确说明 Knock Knock 密码独立于 Apple、TestFlight 和 Codex；最新 IPA SHA-256 为 `7c8fe2d8b73e521d30052ba8426a58de5ffe8b12a090141c62b125205fc9fba1`，上传前 `strings` fixture 扫描为 clean。
+- 设备级只读检查确认目标为 iPhone 13 Pro，当前安装仍是 `0.1.0 (Build20)`；最近检查设备已连接且处于解锁状态，但账号密码仍必须由用户自行输入。
 - Release archive script 现在要求显式传入未使用的 `IOS_BUILD_NUMBER`，默认使用 manual Apple Distribution profile，避免重复 build 或再次误用 Automatic signing。
 - 最新干净 Release Build25 IPA 已重新归档并扫描确认不包含本地 demo credentials；本地 fixture 只在 Debug/Simulator 路径使用。
 
 ## 尚未完成的硬门槛
 
-1. 在 Mac 解锁后确认 Build25（或已处理的 Build21）在 TestFlight 可安装，并在 iPhone 13 Pro 安装/更新。
+1. 等待 Build25 完成 App Store Connect processing，确认在 TestFlight 可安装，并在 iPhone 13 Pro 安装/更新。
 2. 在 App 内选择 **Create an account**，由用户自己设置至少 8 位密码；密码不会交给 Codex。
 3. 在手机上生成 pairing code，并由 canonical Codex host claim。
 4. 用生产 Worker 完成同一 `session_id/chat_id` 的两次：`needs_user → 手机回答 → Agent 恢复`。
@@ -56,10 +56,10 @@ Knock Knock 已达到“自动化验证通过、Rust Cloudflare Worker 已部署
 
 ## 用户下一步
 
-Mac 解锁后：
+Build25 在 TestFlight 显示可用后：
 
 ```text
-TestFlight → 更新 Knock Knock 到 Build25（或最新可用 build）
+TestFlight → 更新 Knock Knock 到 Build25
 Knock Knock → Create an account → 自己输入邮箱和新密码 → Create account
 ```
 
