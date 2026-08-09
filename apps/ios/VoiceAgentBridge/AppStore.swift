@@ -53,6 +53,7 @@ final class AppStore: ObservableObject {
     private var eventStreamTask: Task<Void, Never>?
     private var fallbackRefreshTask: Task<Void, Never>?
     private var reconciliationTask: Task<Void, Never>?
+    private var reconciliationGeneration = 0
     private var reconciliationRequested = false
     private var reconciliationIncludeAgents = false
     private var pendingEventCursor: String?
@@ -208,6 +209,7 @@ final class AppStore: ObservableObject {
         apiBase = trimmed
         UserDefaults.standard.set(trimmed, forKey: "vab.apiBase")
         stopEventStream()
+        stopReconciliation()
         resetEventCursor()
         client.baseURL = url
         connectionState = .unknown
@@ -362,8 +364,7 @@ final class AppStore: ObservableObject {
             Task { try? await client.logout(refreshToken: refreshToken) }
         }
         stopEventStream()
-        reconciliationTask?.cancel()
-        reconciliationTask = nil
+        stopReconciliation()
         token = nil
         refreshToken = nil
         client.refreshToken = nil
@@ -441,7 +442,17 @@ final class AppStore: ObservableObject {
 
     private func resetEventCursor() {
         appliedCursor = nil
+        pendingEventCursor = nil
         localStore.saveAppliedCursor(nil)
+    }
+
+    private func stopReconciliation() {
+        reconciliationGeneration += 1
+        reconciliationTask?.cancel()
+        reconciliationTask = nil
+        reconciliationRequested = false
+        reconciliationIncludeAgents = false
+        pendingEventCursor = nil
     }
 
     private func runEventStream(generation: Int) async {
@@ -458,7 +469,7 @@ final class AppStore: ObservableObject {
                     else { return }
                     handleServerSentEvent(event)
                 }
-            } catch {
+        } catch {
                 if Task.isCancelled || eventStreamGeneration != generation { return }
                 if Self.isUnauthorized(error), await renewAccessToken() {
                     retrySeconds = 1
@@ -501,10 +512,14 @@ final class AppStore: ObservableObject {
             pendingEventCursor = eventCursor
         }
         guard reconciliationTask == nil else { return }
+        let generation = reconciliationGeneration
         reconciliationTask = Task { @MainActor [weak self] in
             guard let self else { return }
             defer { self.reconciliationTask = nil }
-            while !Task.isCancelled, self.token != nil {
+            while !Task.isCancelled,
+                  self.token != nil,
+                  self.reconciliationGeneration == generation
+            {
                 self.reconciliationRequested = false
                 let includeAgents = self.reconciliationIncludeAgents
                 self.reconciliationIncludeAgents = false
@@ -512,8 +527,12 @@ final class AppStore: ObservableObject {
                 do {
                     let nextCursor = try await self.reconcile(
                         after: startingCursor,
-                        includeAgents: includeAgents
+                        includeAgents: includeAgents,
+                        generation: generation
                     )
+                    guard self.reconciliationGeneration == generation,
+                          self.token != nil
+                    else { return }
                     if let nextCursor, !nextCursor.isEmpty {
                         self.appliedCursor = nextCursor
                         self.localStore.saveAppliedCursor(nextCursor)
@@ -531,23 +550,40 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func reconcile(after cursor: String?, includeAgents: Bool) async throws -> String? {
+    private func reconcile(
+        after cursor: String?,
+        includeAgents: Bool,
+        generation: Int
+    ) async throws -> String? {
         var nextCursor = cursor
         do {
             while true {
                 let response = try await client.sync(after: nextCursor)
+                guard reconciliationGeneration == generation, token != nil else { return nil }
                 nextCursor = response.cursor
                 if !response.has_more { break }
             }
         } catch APIClientError.badStatus(404, _) {
             // Phase 0/older backends have no durable sync endpoint yet. A
             // complete REST snapshot is still authoritative and safe.
-            try await loadRemoteState(includeAgents: includeAgents)
+            try await loadRemoteState(includeAgents: includeAgents, generation: generation)
+            guard reconciliationGeneration == generation, token != nil else { return nil }
             let receivedCursor = pendingEventCursor
             pendingEventCursor = nil
             return receivedCursor ?? nextCursor
+        } catch let APIClientError.badStatus(code, _) where [400, 409, 410].contains(code) {
+            // A cursor can be malformed, expired, or outside the server's
+            // retention window. Reset it and establish a fresh REST snapshot;
+            // otherwise SSE would reconnect forever with the same bad cursor.
+            appliedCursor = nil
+            localStore.saveAppliedCursor(nil)
+            try await loadRemoteState(includeAgents: includeAgents, generation: generation)
+            guard reconciliationGeneration == generation, token != nil else { return nil }
+            pendingEventCursor = nil
+            return nil
         }
-        try await loadRemoteState(includeAgents: includeAgents)
+        try await loadRemoteState(includeAgents: includeAgents, generation: generation)
+        guard reconciliationGeneration == generation, token != nil else { return nil }
         let receivedCursor = pendingEventCursor
         pendingEventCursor = nil
         return nextCursor ?? receivedCursor
@@ -555,11 +591,18 @@ final class AppStore: ObservableObject {
 
     func refresh(includeAgents: Bool = true) async {
         guard token != nil else { return }
+        if let reconciliationTask {
+            reconciliationRequested = true
+            reconciliationIncludeAgents = reconciliationIncludeAgents || includeAgents
+            await reconciliationTask.value
+            guard token != nil else { return }
+        }
         if isRefreshing {
             reconciliationRequested = true
             reconciliationIncludeAgents = reconciliationIncludeAgents || includeAgents
             return
         }
+        let generation = reconciliationGeneration
         isRefreshing = true
         defer {
             isRefreshing = false
@@ -571,13 +614,13 @@ final class AppStore: ObservableObject {
             }
         }
         do {
-            try await loadRemoteState(includeAgents: includeAgents)
-            await retryPendingOperations()
+            try await loadRemoteState(includeAgents: includeAgents, generation: generation)
+            await retryPendingOperations(generation: generation)
         } catch {
             if Self.isUnauthorized(error), await renewAccessToken() {
                 do {
-                    try await loadRemoteState(includeAgents: includeAgents)
-                    await retryPendingOperations()
+                    try await loadRemoteState(includeAgents: includeAgents, generation: generation)
+                    await retryPendingOperations(generation: generation)
                     return
                 } catch {
                     handleRefreshError(error)
@@ -591,7 +634,7 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func loadRemoteState(includeAgents: Bool) async throws {
+    private func loadRemoteState(includeAgents: Bool, generation: Int? = nil) async throws {
         async let s = client.listSessions()
         async let p = client.listPushes()
         let agentsTask: Task<[Agent], Error>? = includeAgents
@@ -604,6 +647,11 @@ final class AppStore: ObservableObject {
             remoteAgents = try await agentsTask.value
         } else {
             remoteAgents = nil
+        }
+        if let generation,
+           (generation != reconciliationGeneration || token == nil || Task.isCancelled)
+        {
+            return
         }
         self.sessions = remoteSessions.sorted { lhs, rhs in
             if lhs.needsUser != rhs.needsUser { return lhs.needsUser && !rhs.needsUser }
@@ -738,14 +786,20 @@ final class AppStore: ObservableObject {
         errorMessage = nil
         actionInFlight = actionKey
         defer { actionInFlight = nil }
+        let operationID = UUID().uuidString.lowercased()
         do {
-            let res = try await client.reply(sessionId: session.session_id, actionKey: actionKey, utterance: actionKey)
+            let res = try await client.reply(
+                sessionId: session.session_id,
+                actionKey: actionKey,
+                utterance: actionKey,
+                idempotencyKey: operationID
+            )
             await refresh()
             return res
         } catch let error as APIClientError {
             if Self.isRetryableNetwork(error) {
                 enqueue(.init(
-                    id: UUID().uuidString,
+                    id: operationID,
                     kind: .reply,
                     session_id: session.session_id,
                     action_key: actionKey,
@@ -753,7 +807,7 @@ final class AppStore: ObservableObject {
                     confirm: nil,
                     created_at: Date()
                 ))
-        errorMessage = "Offline. Your choice is saved and will retry automatically."
+                errorMessage = "Offline. Your choice is saved and will retry automatically."
             } else {
                 errorMessage = error.localizedDescription
             }
@@ -769,13 +823,19 @@ final class AppStore: ObservableObject {
         errorMessage = nil
         actionInFlight = actionId
         defer { actionInFlight = nil }
+        let operationID = UUID().uuidString.lowercased()
         do {
-            _ = try await client.confirm(sessionId: session.session_id, actionId: actionId, confirm: confirm)
+            _ = try await client.confirm(
+                sessionId: session.session_id,
+                actionId: actionId,
+                confirm: confirm,
+                idempotencyKey: operationID
+            )
             await refresh()
         } catch let error as APIClientError {
             if Self.isRetryableNetwork(error) {
                 enqueue(.init(
-                    id: UUID().uuidString,
+                    id: operationID,
                     kind: .confirm,
                     session_id: session.session_id,
                     action_key: nil,
@@ -797,7 +857,8 @@ final class AppStore: ObservableObject {
             existing.kind == operation.kind &&
                 existing.session_id == operation.session_id &&
                 existing.action_key == operation.action_key &&
-                existing.action_id == operation.action_id
+                existing.action_id == operation.action_id &&
+                existing.confirm == operation.confirm
         }
         if !duplicate {
             pendingOperations.append(operation)
@@ -806,7 +867,7 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func retryPendingOperations() async {
+    private func retryPendingOperations(generation: Int? = nil) async {
         guard !pendingOperations.isEmpty else { return }
         var remaining: [PendingOperation] = []
         var completedAny = false
@@ -818,14 +879,16 @@ final class AppStore: ObservableObject {
                     _ = try await client.reply(
                         sessionId: operation.session_id,
                         actionKey: actionKey,
-                        utterance: actionKey
+                        utterance: actionKey,
+                        idempotencyKey: operation.id
                     )
                 case .confirm:
                     guard let actionId = operation.action_id, let confirm = operation.confirm else { continue }
                     _ = try await client.confirm(
                         sessionId: operation.session_id,
                         actionId: actionId,
-                        confirm: confirm
+                        confirm: confirm,
+                        idempotencyKey: operation.id
                     )
                 }
                 completedAny = true
@@ -839,10 +902,15 @@ final class AppStore: ObservableObject {
                 remaining.append(operation)
             }
         }
+        if let generation,
+           (generation != reconciliationGeneration || token == nil || Task.isCancelled)
+        {
+            return
+        }
         pendingOperations = remaining
         localStore.savePendingOperations(remaining)
         if completedAny {
-            try? await loadRemoteState(includeAgents: false)
+            try? await loadRemoteState(includeAgents: false, generation: generation)
         }
     }
 

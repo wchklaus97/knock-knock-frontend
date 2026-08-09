@@ -41,17 +41,36 @@ final class SQLiteStore {
     ) {
         queue.sync {
             guard database != nil else { return }
-            if let data = UserDefaults.standard.data(forKey: pendingKey),
-               let operations = try? JSONDecoder().decode([PendingOperation].self, from: data),
-               !operations.isEmpty,
-               countLocked(table: "pending_operations") == 0 {
-                savePendingLocked(operations)
+            var pendingReady = true
+            if let data = UserDefaults.standard.data(forKey: pendingKey) {
+                if let legacy = try? JSONDecoder().decode([PendingOperation].self, from: data) {
+                    let existing = pendingOperationsLocked()
+                    var merged = existing
+                    var existingIDs = Set(existing.map(\.id))
+                    for operation in legacy where existingIDs.insert(operation.id).inserted {
+                        merged.append(operation)
+                    }
+                    merged.sort { $0.created_at < $1.created_at }
+                    if merged != existing && !savePendingLocked(merged) {
+                        pendingReady = false
+                    }
+                } else {
+                    pendingReady = false
+                }
             }
-            if let cursor = UserDefaults.standard.string(forKey: cursorKey), !cursor.isEmpty {
-                setMetadataLocked(key: "applied_cursor", value: cursor)
+
+            var cursorReady = true
+            if let cursor = UserDefaults.standard.string(forKey: cursorKey), !cursor.isEmpty,
+               metadataLocked(key: "applied_cursor") == nil {
+                cursorReady = setMetadataLocked(key: "applied_cursor", value: cursor)
             }
-            UserDefaults.standard.removeObject(forKey: pendingKey)
-            UserDefaults.standard.removeObject(forKey: cursorKey)
+
+            if pendingReady {
+                UserDefaults.standard.removeObject(forKey: pendingKey)
+            }
+            if cursorReady {
+                UserDefaults.standard.removeObject(forKey: cursorKey)
+            }
         }
     }
 
@@ -73,12 +92,7 @@ final class SQLiteStore {
     }
 
     func loadPendingOperations() -> [PendingOperation] {
-        queue.sync {
-            guard let rows = blobsLocked(
-                "SELECT payload FROM pending_operations ORDER BY created_at ASC, operation_id ASC"
-            ) else { return [] }
-            return rows.compactMap { try? JSONDecoder().decode(PendingOperation.self, from: $0) }
-        }
+        queue.sync { pendingOperationsLocked() }
     }
 
     func savePendingOperations(_ operations: [PendingOperation]) {
@@ -88,16 +102,20 @@ final class SQLiteStore {
     func cacheSessions(_ sessions: [Session]) {
         queue.sync {
             let now = ISO8601DateFormatter().string(from: Date())
-            _ = executeLocked("BEGIN IMMEDIATE")
-            _ = executeLocked("DELETE FROM cached_sessions")
-            for session in sessions {
-                guard let payload = try? JSONEncoder().encode(session) else { continue }
-                _ = executeLocked(
-                    "INSERT OR REPLACE INTO cached_sessions (session_id, payload, updated_at) VALUES (?, ?, ?)",
-                    bindings: [.text(session.session_id), .blob(payload), .text(now)]
-                )
+            let payloads = sessions.compactMap { session in
+                try? JSONEncoder().encode(session)
             }
-            _ = executeLocked("COMMIT")
+            guard payloads.count == sessions.count else { return }
+            _ = transactionLocked {
+                guard executeLocked("DELETE FROM cached_sessions") else { return false }
+                for (session, payload) in zip(sessions, payloads) {
+                    guard executeLocked(
+                        "INSERT OR REPLACE INTO cached_sessions (session_id, payload, updated_at) VALUES (?, ?, ?)",
+                        bindings: [.text(session.session_id), .blob(payload), .text(now)]
+                    ) else { return false }
+                }
+                return true
+            }
         }
     }
 
@@ -110,16 +128,20 @@ final class SQLiteStore {
 
     func cachePushes(_ pushes: [DevPush]) {
         queue.sync {
-            _ = executeLocked("BEGIN IMMEDIATE")
-            _ = executeLocked("DELETE FROM cached_pushes")
-            for push in pushes {
-                guard let payload = try? JSONEncoder().encode(push) else { continue }
-                _ = executeLocked(
-                    "INSERT OR REPLACE INTO cached_pushes (push_id, payload, created_at) VALUES (?, ?, ?)",
-                    bindings: [.text(push.push_id), .blob(payload), .text(push.created_at)]
-                )
+            let payloads = pushes.compactMap { push in
+                try? JSONEncoder().encode(push)
             }
-            _ = executeLocked("COMMIT")
+            guard payloads.count == pushes.count else { return }
+            _ = transactionLocked {
+                guard executeLocked("DELETE FROM cached_pushes") else { return false }
+                for (push, payload) in zip(pushes, payloads) {
+                    guard executeLocked(
+                        "INSERT OR REPLACE INTO cached_pushes (push_id, payload, created_at) VALUES (?, ?, ?)",
+                        bindings: [.text(push.push_id), .blob(payload), .text(push.created_at)]
+                    ) else { return false }
+                }
+                return true
+            }
         }
     }
 
@@ -132,24 +154,28 @@ final class SQLiteStore {
 
     func cacheHistory(_ entries: [HistoryEntry], for sessionID: String) {
         queue.sync {
-            _ = executeLocked("BEGIN IMMEDIATE")
-            _ = executeLocked(
-                "DELETE FROM cached_history WHERE session_id = ?",
-                bindings: [.text(sessionID)]
-            )
-            for entry in entries {
-                guard let payload = try? JSONEncoder().encode(entry) else { continue }
-                _ = executeLocked(
-                    "INSERT OR REPLACE INTO cached_history (session_id, history_id, payload, created_at) VALUES (?, ?, ?, ?)",
-                    bindings: [
-                        .text(sessionID),
-                        .text(entry.audit_id),
-                        .blob(payload),
-                        .text(entry.created_at),
-                    ]
-                )
+            let payloads = entries.compactMap { entry in
+                try? JSONEncoder().encode(entry)
             }
-            _ = executeLocked("COMMIT")
+            guard payloads.count == entries.count else { return }
+            _ = transactionLocked {
+                guard executeLocked(
+                    "DELETE FROM cached_history WHERE session_id = ?",
+                    bindings: [.text(sessionID)]
+                ) else { return false }
+                for (entry, payload) in zip(entries, payloads) {
+                    guard executeLocked(
+                        "INSERT OR REPLACE INTO cached_history (session_id, history_id, payload, created_at) VALUES (?, ?, ?, ?)",
+                        bindings: [
+                            .text(sessionID),
+                            .text(entry.audit_id),
+                            .blob(payload),
+                            .text(entry.created_at),
+                        ]
+                    ) else { return false }
+                }
+                return true
+            }
         }
     }
 
@@ -164,15 +190,15 @@ final class SQLiteStore {
 
     func clearUserData() {
         queue.sync {
-            _ = executeLocked("BEGIN IMMEDIATE")
-            _ = executeLocked("DELETE FROM cached_sessions")
-            _ = executeLocked("DELETE FROM cached_messages")
-            _ = executeLocked("DELETE FROM cached_retrievals")
-            _ = executeLocked("DELETE FROM cached_history")
-            _ = executeLocked("DELETE FROM cached_pushes")
-            _ = executeLocked("DELETE FROM pending_operations")
-            _ = executeLocked("DELETE FROM metadata WHERE key = 'applied_cursor'")
-            _ = executeLocked("COMMIT")
+            _ = transactionLocked {
+                guard executeLocked("DELETE FROM cached_sessions") else { return false }
+                guard executeLocked("DELETE FROM cached_messages") else { return false }
+                guard executeLocked("DELETE FROM cached_retrievals") else { return false }
+                guard executeLocked("DELETE FROM cached_history") else { return false }
+                guard executeLocked("DELETE FROM cached_pushes") else { return false }
+                guard executeLocked("DELETE FROM pending_operations") else { return false }
+                return executeLocked("DELETE FROM metadata WHERE key = 'applied_cursor'")
+            }
         }
     }
 
@@ -247,22 +273,39 @@ final class SQLiteStore {
         }
     }
 
-    private func savePendingLocked(_ operations: [PendingOperation]) {
-        guard database != nil else { return }
-        _ = executeLocked("BEGIN IMMEDIATE")
-        _ = executeLocked("DELETE FROM pending_operations")
+    private func pendingOperationsLocked() -> [PendingOperation] {
+        guard let rows = blobsLocked(
+            "SELECT payload FROM pending_operations ORDER BY created_at ASC, operation_id ASC"
+        ) else { return [] }
+        return rows.compactMap { try? JSONDecoder().decode(PendingOperation.self, from: $0) }
+    }
+
+    @discardableResult
+    private func savePendingLocked(_ operations: [PendingOperation]) -> Bool {
+        guard database != nil, executeLocked("BEGIN IMMEDIATE") else { return false }
+        guard executeLocked("DELETE FROM pending_operations") else {
+            _ = executeLocked("ROLLBACK")
+            return false
+        }
         for operation in operations {
-            guard let payload = try? JSONEncoder().encode(operation) else { continue }
-            _ = executeLocked(
+            guard let payload = try? JSONEncoder().encode(operation),
+                  executeLocked(
                 "INSERT OR REPLACE INTO pending_operations (operation_id, payload, created_at) VALUES (?, ?, ?)",
                 bindings: [
                     .text(operation.id),
                     .blob(payload),
                     .text(String(operation.created_at.timeIntervalSince1970)),
                 ]
-            )
+            ) else {
+                _ = executeLocked("ROLLBACK")
+                return false
+            }
         }
-        _ = executeLocked("COMMIT")
+        guard executeLocked("COMMIT") else {
+            _ = executeLocked("ROLLBACK")
+            return false
+        }
+        return true
     }
 
     private func executeScriptLocked(_ sql: String) -> Bool {
@@ -273,6 +316,19 @@ final class SQLiteStore {
             sqlite3_free(errorMessage)
         }
         return result == SQLITE_OK
+    }
+
+    private func transactionLocked(_ body: () -> Bool) -> Bool {
+        guard executeLocked("BEGIN IMMEDIATE") else { return false }
+        guard body() else {
+            _ = executeLocked("ROLLBACK")
+            return false
+        }
+        guard executeLocked("COMMIT") else {
+            _ = executeLocked("ROLLBACK")
+            return false
+        }
+        return true
     }
 
     @discardableResult
@@ -344,8 +400,9 @@ final class SQLiteStore {
         return String(cString: value)
     }
 
-    private func setMetadataLocked(key: String, value: String) {
-        _ = executeLocked(
+    @discardableResult
+    private func setMetadataLocked(key: String, value: String) -> Bool {
+        executeLocked(
             "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
             bindings: [.text(key), .text(value)]
         )

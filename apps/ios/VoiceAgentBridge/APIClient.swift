@@ -205,26 +205,46 @@ final class APIClient: @unchecked Sendable {
         }
     }
 
-    func reply(sessionId: String, actionKey: String, utterance: String?) async throws -> PhoneReplyResponse {
+    func reply(
+        sessionId: String,
+        actionKey: String,
+        utterance: String?,
+        idempotencyKey: String? = nil
+    ) async throws -> PhoneReplyResponse {
         struct Body: Encodable {
             let action_key: String
             let utterance: String?
+            let idempotency_key: String?
         }
         return try await post(
             "/v1/phone/sessions/\(sessionId)/reply",
-            body: Body(action_key: actionKey, utterance: utterance),
+            body: Body(
+                action_key: actionKey,
+                utterance: utterance,
+                idempotency_key: idempotencyKey
+            ),
             auth: true
         )
     }
 
-    func confirm(sessionId: String, actionId: String, confirm: Bool) async throws -> PhoneReplyResponse {
+    func confirm(
+        sessionId: String,
+        actionId: String,
+        confirm: Bool,
+        idempotencyKey: String? = nil
+    ) async throws -> PhoneReplyResponse {
         struct Body: Encodable {
             let action_id: String
             let confirm: Bool
+            let idempotency_key: String?
         }
         return try await post(
             "/v1/phone/sessions/\(sessionId)/confirm",
-            body: Body(action_id: actionId, confirm: confirm),
+            body: Body(
+                action_id: actionId,
+                confirm: confirm,
+                idempotency_key: idempotencyKey
+            ),
             auth: true
         )
     }
