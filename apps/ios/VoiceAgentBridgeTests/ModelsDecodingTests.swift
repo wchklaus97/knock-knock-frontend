@@ -216,4 +216,48 @@ final class ModelsDecodingTests: XCTestCase {
         let decoded = try decoder.decode(PendingOperation.self, from: data)
         XCTAssertEqual(decoded, operation)
     }
+
+    func testSQLiteStorePersistsCursorAndPendingQueue() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knock-knock-(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let store = SQLiteStore(databaseURL: url)
+        XCTAssertTrue(store.isAvailable)
+        store.saveAppliedCursor("42")
+        store.savePendingOperations([
+            PendingOperation(
+                id: "op_sqlite",
+                kind: .reply,
+                session_id: "ses_sqlite",
+                action_key: "ack",
+                action_id: nil,
+                confirm: nil,
+                created_at: Date(timeIntervalSince1970: 2_000)
+            )
+        ])
+
+        XCTAssertEqual(store.loadAppliedCursor(), "42")
+        XCTAssertEqual(store.loadPendingOperations().map(\.id), ["op_sqlite"])
+        store.clearUserData()
+        XCTAssertNil(store.loadAppliedCursor())
+        XCTAssertTrue(store.loadPendingOperations().isEmpty)
+    }
+
+    func testAPIErrorDecoderAcceptsCanonicalAndLegacyEnvelopes() throws {
+        let decoder = JSONDecoder()
+        let canonical = try decoder.decode(
+            APIErrorBody.self,
+            from: Data(#"{"error":{"code":"invalid_command","message":"bad args"}}"#.utf8)
+        )
+        XCTAssertEqual(canonical.error, "invalid_command")
+        XCTAssertEqual(canonical.message, "bad args")
+
+        let legacy = try decoder.decode(
+            APIErrorBody.self,
+            from: Data(#"{"error":"legacy_error","message":"old backend"}"#.utf8)
+        )
+        XCTAssertEqual(legacy.error, "legacy_error")
+        XCTAssertEqual(legacy.message, "old backend")
+    }
 }
