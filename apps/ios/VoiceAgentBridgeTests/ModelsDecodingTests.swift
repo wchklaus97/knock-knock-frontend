@@ -260,4 +260,57 @@ final class ModelsDecodingTests: XCTestCase {
         XCTAssertEqual(legacy.error, "legacy_error")
         XCTAssertEqual(legacy.message, "old backend")
     }
+
+    func testHistoryRetrievalAndPushReadModelsDecode() throws {
+        let page = try decoder.decode(
+            MessagePage.self,
+            from: Data(#"{"messages":[{"message_id":"msg_1","session_id":"ses_1","role":"agent","content":"done","metadata":{"source":"worker"},"command_id":null,"sequence":1,"created_at":"2026-08-09T00:00:00Z"}],"next_cursor":"cursor-1","has_more":false}"#.utf8)
+        )
+        let detail = try decoder.decode(
+            SessionDetailResponse.self,
+            from: Data(#"{"session_id":"ses_1","agent_id":"agt_1","skill_id":"research","state":"closed","summary_text":"done","facts":{"answer":"yes"},"retrieval_items":[{"retrieval_id":"ret_1","session_id":"ses_1","message_id":"msg_1","title":"Source","url":"https://example.com","snippet":"snapshot","score":0.9,"content_hash":"sha","created_at":"2026-08-09T00:00:00Z"}],"created_at":"2026-08-09T00:00:00Z","updated_at":"2026-08-09T00:00:00Z"}"#.utf8)
+        )
+        let push = try decoder.decode(
+            DevPush.self,
+            from: Data(#"{"push_id":"push_1","session_id":"ses_1","title":"Done","body":"finished","voice_script":null,"created_at":"2026-08-09T00:00:00Z","read_at":"2026-08-09T00:01:00Z","dismissed_at":null}"#.utf8)
+        )
+
+        XCTAssertEqual(page.messages.first?.content, "done")
+        XCTAssertEqual(detail.retrieval_items.first?.content_hash, "sha")
+        XCTAssertNotNil(push.read_at)
+    }
+
+    func testSQLiteStoreCachesMessagesAndRetrievals() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knock-knock-history-(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let store = SQLiteStore(databaseURL: url)
+        let message = SessionMessage(
+            message_id: "msg_sqlite",
+            session_id: "ses_sqlite",
+            role: "agent",
+            content: "cached",
+            metadata: [:],
+            command_id: nil,
+            sequence: 1,
+            created_at: "2026-08-09T00:00:00Z"
+        )
+        let retrieval = RetrievalItem(
+            retrieval_id: "ret_sqlite",
+            session_id: "ses_sqlite",
+            message_id: message.message_id,
+            title: "Source",
+            url: "https://example.com",
+            snippet: "cached source",
+            score: 0.8,
+            content_hash: "hash",
+            created_at: message.created_at
+        )
+        store.cacheMessages([message], for: message.session_id)
+        store.cacheRetrievals([retrieval], for: retrieval.session_id)
+
+        XCTAssertEqual(store.loadMessages(for: "ses_sqlite").map(\.message_id), ["msg_sqlite"])
+        XCTAssertEqual(store.loadRetrievals(for: "ses_sqlite").map(\.retrieval_id), ["ret_sqlite"])
+    }
 }

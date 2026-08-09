@@ -42,6 +42,8 @@ final class AppStore: ObservableObject {
     @Published private(set) var pairingExpiresAt: String?
     @Published private(set) var isCreatingPairingCode = false
     @Published private(set) var historyBySession: [String: [HistoryEntry]] = [:]
+    @Published private(set) var messagesBySession: [String: [SessionMessage]] = [:]
+    @Published private(set) var retrievalsBySession: [String: [RetrievalItem]] = [:]
     @Published private(set) var pendingOperations: [PendingOperation] = []
     /// A knock can ask the main tab to open one exact agent session.
     @Published var openSessionId: String?
@@ -259,6 +261,7 @@ final class AppStore: ObservableObject {
         if !sessions.contains(where: { $0.session_id == sessionId }) {
             await refresh()
         }
+        await loadSessionDetail(for: sessionId)
         openSessionId = sessionId
     }
 
@@ -285,6 +288,143 @@ final class AppStore: ObservableObject {
             } else if connectionState == .connected {
                 errorMessage = error.localizedDescription
             }
+        }
+    }
+
+    func loadSessionDetail(for sessionId: String) async {
+        do {
+            let detail = try await client.getSessionDetail(sessionId: sessionId)
+            upsertSession(detail.session)
+            retrievalsBySession[sessionId] = detail.retrieval_items
+            localStore.cacheSessions(sessions)
+            localStore.cacheRetrievals(detail.retrieval_items, for: sessionId)
+        } catch {
+            let cached = localStore.loadRetrievals(for: sessionId)
+            if !cached.isEmpty {
+                retrievalsBySession[sessionId] = cached
+            } else if connectionState == .connected {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func loadMessages(for sessionId: String, before cursor: String? = nil) async {
+        do {
+            let page = try await client.listMessages(sessionId: sessionId, before: cursor)
+            let existing = messagesBySession[sessionId] ?? []
+            let merged = mergeMessages(existing, with: page.messages)
+            messagesBySession[sessionId] = merged
+            localStore.cacheMessages(page.messages, for: sessionId)
+        } catch {
+            let cached = localStore.loadMessages(for: sessionId)
+            if !cached.isEmpty {
+                messagesBySession[sessionId] = cached
+            } else if connectionState == .connected {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    func markPushRead(_ push: DevPush) async {
+        do {
+            let updated = try await client.markPushRead(pushId: push.push_id)
+            pushes = pushes.map { $0.push_id == updated.push_id ? updated : $0 }
+            localStore.cachePushes(pushes)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func markAllPushesRead() async {
+        do {
+            _ = try await client.markAllPushesRead()
+            await refresh(includeAgents: false)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func renameSession(_ session: Session, title: String?) async {
+        do {
+            let detail = try await client.updateSession(
+                sessionId: session.session_id,
+                title: title,
+                archived: nil
+            )
+            upsertSession(detail.session)
+            retrievalsBySession[session.session_id] = detail.retrieval_items
+            localStore.cacheSessions(sessions)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func archiveSession(_ session: Session, archived: Bool = true) async {
+        do {
+            let detail = try await client.updateSession(
+                sessionId: session.session_id,
+                title: nil,
+                archived: archived
+            )
+            upsertSession(detail.session)
+            localStore.cacheSessions(sessions)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func deleteSession(_ session: Session) async {
+        do {
+            _ = try await client.deleteSession(sessionId: session.session_id)
+            sessions.removeAll { $0.session_id == session.session_id }
+            historyBySession[session.session_id] = nil
+            messagesBySession[session.session_id] = nil
+            retrievalsBySession[session.session_id] = nil
+            localStore.removeSession(session.session_id)
+            if openSessionId == session.session_id { openSessionId = nil }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func searchHistory(_ query: String) async -> SearchResponse? {
+        do {
+            return try await client.search(query: query)
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    func exportSession(_ sessionId: String) async -> SessionExportResponse? {
+        do {
+            return try await client.exportSession(sessionId: sessionId)
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    private func upsertSession(_ session: Session) {
+        sessions.removeAll { $0.session_id == session.session_id }
+        sessions.append(session)
+        sessions.sort { lhs, rhs in
+            if lhs.needsUser != rhs.needsUser { return lhs.needsUser && !rhs.needsUser }
+            return lhs.updated_at > rhs.updated_at
+        }
+    }
+
+    private func mergeMessages(
+        _ existing: [SessionMessage],
+        with incoming: [SessionMessage]
+    ) -> [SessionMessage] {
+        var byID = Dictionary(uniqueKeysWithValues: existing.map { ($0.message_id, $0) })
+        for message in incoming {
+            byID[message.message_id] = message
+        }
+        return byID.values.sorted {
+            if $0.created_at != $1.created_at { return $0.created_at < $1.created_at }
+            return $0.message_id < $1.message_id
         }
     }
 
@@ -380,6 +520,8 @@ final class AppStore: ObservableObject {
         pairingExpiresAt = nil
         openSessionId = nil
         historyBySession = [:]
+        messagesBySession = [:]
+        retrievalsBySession = [:]
         pendingOperations = []
         localStore.clearUserData()
         pendingSessionToOpen = nil
@@ -653,7 +795,15 @@ final class AppStore: ObservableObject {
         {
             return
         }
-        self.sessions = remoteSessions.sorted { lhs, rhs in
+        let details = Dictionary(uniqueKeysWithValues: sessions.map { ($0.session_id, $0) })
+        let mergedSessions = remoteSessions.map { summary -> Session in
+            var merged = summary
+            if let detail = details[summary.session_id] {
+                merged.mergeDetail(from: detail)
+            }
+            return merged
+        }
+        self.sessions = mergedSessions.sorted { lhs, rhs in
             if lhs.needsUser != rhs.needsUser { return lhs.needsUser && !rhs.needsUser }
             return lhs.updated_at > rhs.updated_at
         }
@@ -669,7 +819,7 @@ final class AppStore: ObservableObject {
             lastSpoken = newest.voice_script ?? newest.body
         }
         pushes = newPushes
-        localStore.cacheSessions(remoteSessions)
+        localStore.cacheSessions(mergedSessions)
         localStore.cachePushes(newPushes)
         lastRefreshAt = Date()
         connectionState = .connected

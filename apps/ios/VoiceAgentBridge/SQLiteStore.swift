@@ -188,6 +188,81 @@ final class SQLiteStore {
         }
     }
 
+    func cacheMessages(_ messages: [SessionMessage], for sessionID: String) {
+        queue.sync {
+            let payloads = messages.compactMap { message in
+                try? JSONEncoder().encode(message)
+            }
+            guard payloads.count == messages.count else { return }
+            _ = transactionLocked {
+                for (message, payload) in zip(messages, payloads) {
+                    guard executeLocked(
+                        "INSERT OR REPLACE INTO cached_messages (message_id, session_id, payload, created_at) VALUES (?, ?, ?, ?)",
+                        bindings: [
+                            .text(message.message_id),
+                            .text(sessionID),
+                            .blob(payload),
+                            .text(message.created_at),
+                        ]
+                    ) else { return false }
+                }
+                return true
+            }
+        }
+    }
+
+    func loadMessages(for sessionID: String) -> [SessionMessage] {
+        queue.sync {
+            blobsLocked(
+                "SELECT payload FROM cached_messages WHERE session_id = ? ORDER BY created_at ASC, message_id ASC",
+                strings: [sessionID]
+            )?.compactMap { try? JSONDecoder().decode(SessionMessage.self, from: $0) } ?? []
+        }
+    }
+
+    func cacheRetrievals(_ items: [RetrievalItem], for sessionID: String) {
+        queue.sync {
+            let payloads = items.compactMap { item in
+                try? JSONEncoder().encode(item)
+            }
+            guard payloads.count == items.count else { return }
+            _ = transactionLocked {
+                for (item, payload) in zip(items, payloads) {
+                    guard executeLocked(
+                        "INSERT OR REPLACE INTO cached_retrievals (retrieval_id, session_id, payload, created_at) VALUES (?, ?, ?, ?)",
+                        bindings: [
+                            .text(item.retrieval_id),
+                            .text(sessionID),
+                            .blob(payload),
+                            .text(item.created_at),
+                        ]
+                    ) else { return false }
+                }
+                return true
+            }
+        }
+    }
+
+    func loadRetrievals(for sessionID: String) -> [RetrievalItem] {
+        queue.sync {
+            blobsLocked(
+                "SELECT payload FROM cached_retrievals WHERE session_id = ? ORDER BY created_at DESC, retrieval_id ASC",
+                strings: [sessionID]
+            )?.compactMap { try? JSONDecoder().decode(RetrievalItem.self, from: $0) } ?? []
+        }
+    }
+
+    func removeSession(_ sessionID: String) {
+        queue.sync {
+            _ = transactionLocked {
+                guard executeLocked("DELETE FROM cached_sessions WHERE session_id = ?", bindings: [.text(sessionID)]) else { return false }
+                guard executeLocked("DELETE FROM cached_messages WHERE session_id = ?", bindings: [.text(sessionID)]) else { return false }
+                guard executeLocked("DELETE FROM cached_retrievals WHERE session_id = ?", bindings: [.text(sessionID)]) else { return false }
+                return executeLocked("DELETE FROM cached_history WHERE session_id = ?", bindings: [.text(sessionID)])
+            }
+        }
+    }
+
     func clearUserData() {
         queue.sync {
             _ = transactionLocked {

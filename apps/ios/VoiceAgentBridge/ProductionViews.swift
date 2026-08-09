@@ -1828,6 +1828,8 @@ struct ProductionDecisionDetailView: View {
 
     private var session: Session? { store.sessions.first { $0.session_id == sessionId } }
     private var history: [HistoryEntry] { store.historyBySession[sessionId] ?? [] }
+    private var messages: [SessionMessage] { store.messagesBySession[sessionId] ?? [] }
+    private var retrievals: [RetrievalItem] { store.retrievalsBySession[sessionId] ?? [] }
 
     var body: some View {
         ZStack {
@@ -1915,6 +1917,12 @@ struct ProductionDecisionDetailView: View {
                         if !history.isEmpty {
                             ProductionHistoryTimeline(entries: history)
                         }
+                        if !messages.isEmpty {
+                            ProductionMessageTimeline(messages: messages)
+                        }
+                        if !retrievals.isEmpty {
+                            ProductionRetrievalSources(items: retrievals)
+                        }
                         if session.needsUser {
                             ProductionActionCard(session: session, pendingAction: $pendingActionId, showConfirm: $showConfirm)
                         } else {
@@ -1969,7 +1977,9 @@ struct ProductionDecisionDetailView: View {
         .navigationTitle("Decision")
         .navigationBarTitleDisplayMode(.inline)
         .task(id: sessionId) {
+            await store.loadSessionDetail(for: sessionId)
             await store.loadHistory(for: sessionId)
+            await store.loadMessages(for: sessionId)
         }
         .confirmationDialog("Confirm destructive action?", isPresented: $showConfirm, titleVisibility: .visible) {
             Button("Confirm and continue", role: .destructive) {
@@ -2023,6 +2033,63 @@ struct ProductionHistoryTimeline: View {
                             }
                         }
                         Spacer()
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+struct ProductionMessageTimeline: View {
+    let messages: [SessionMessage]
+
+    var body: some View {
+        KnockCard {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Conversation", systemImage: "bubble.left.and.bubble.right")
+                    .font(.headline)
+                ForEach(messages) { message in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(message.role.capitalized)
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(KnockDesign.lavender)
+                        Text(message.content)
+                            .font(.subheadline)
+                            .foregroundStyle(KnockDesign.ink)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+struct ProductionRetrievalSources: View {
+    let items: [RetrievalItem]
+
+    var body: some View {
+        KnockCard {
+            VStack(alignment: .leading, spacing: 9) {
+                Label("Sources", systemImage: "link")
+                    .font(.headline)
+                ForEach(items) { item in
+                    if let url = URL(string: item.url) {
+                        Link(destination: url) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.title)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(KnockDesign.ink)
+                                if let snippet = item.snippet, !snippet.isEmpty {
+                                    Text(snippet)
+                                        .font(.caption)
+                                        .foregroundStyle(KnockDesign.muted)
+                                        .lineLimit(2)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
                 }
             }
@@ -2450,6 +2517,14 @@ struct ProductionPushInboxView: View {
                                         Text(push.created_at).font(.caption2).foregroundStyle(KnockDesign.muted)
                                     }
                                     Spacer()
+                                    if push.read_at == nil {
+                                        Button("Read") {
+                                            Task { await store.markPushRead(push) }
+                                        }
+                                        .font(.caption.weight(.semibold))
+                                        .buttonStyle(.borderedProminent)
+                                        .tint(KnockDesign.coral)
+                                    }
                                 }
                             }
                         }
@@ -2473,6 +2548,12 @@ struct ProductionPushInboxView: View {
                     }
                     .accessibilityLabel("Open navigation")
                     .accessibilityIdentifier("drawer.open")
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Read all") {
+                        Task { await store.markAllPushesRead() }
+                    }
+                    .font(.caption.weight(.semibold))
                 }
             }
             .refreshable { await store.refresh() }
