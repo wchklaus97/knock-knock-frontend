@@ -2,6 +2,13 @@
 
 Aligned with MVP API (`apps/api`) and OpenAPI.
 
+## Canonical backend architecture references
+
+The backend contract is the sole protocol source of truth. This iOS status document is a pointer only and must not copy the full architectural decisions; use the backend references below for canonical updates.
+
+- [Backend architecture decisions](https://github.com/wchklaus97/knock-knock-backend/blob/main/docs/ARCHITECTURE_DECISIONS.md) — canonical architecture decisions (cross-repo placeholder).
+- [Backend implementation roadmap](https://github.com/wchklaus97/knock-knock-backend/blob/main/docs/IMPLEMENTATION_ROADMAP.md) — canonical implementation sequencing (cross-repo placeholder).
+
 ## ProgressStatus — `update_progress` only / 仅进度
 
 | Value | EN | 中文 |
