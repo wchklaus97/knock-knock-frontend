@@ -1,103 +1,114 @@
 import Foundation
 
-/// The only JSON shape allowed to cross from a local language-model adapter into
-/// application code. Keeping this boundary small prevents model output from being
-/// treated as an executable command until it has passed deterministic validation.
+/// The only shape allowed to cross from a local intent model into the app and
+/// backend. It intentionally matches the canonical backend CommandEnvelope v1
+/// contract; local models never receive an API client or an executable action.
 struct CommandEnvelope: Codable, Equatable {
     static let supportedVersion = 1
     static let maximumEncodedSize = 64 * 1024
 
-    let version: Int
-    let id: UUID
-    let issuedAt: Date
-    let command: Command
-
-    struct Command: Codable, Equatable {
-        let name: String
-        let arguments: [String: JSONValue]
-
-        private enum CodingKeys: String, CodingKey, CaseIterable {
-            case name
-            case arguments
-        }
-
-        init(name: String, arguments: [String: JSONValue]) throws {
-            self.name = name
-            self.arguments = arguments
-            try validate()
-        }
-
-        init(from decoder: Decoder) throws {
-            try StrictDecoding.rejectUnknownKeys(in: decoder, allowed: CodingKeys.allCases.map(\.rawValue))
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            name = try container.decode(String.self, forKey: .name)
-            arguments = try container.decode([String: JSONValue].self, forKey: .arguments)
-            try validate()
-        }
-
-        func encode(to encoder: Encoder) throws {
-            var container = encoder.container(keyedBy: CodingKeys.self)
-            try container.encode(name, forKey: .name)
-            try container.encode(arguments, forKey: .arguments)
-        }
-
-        private func validate() throws {
-            guard name.range(of: #"^[a-z][a-z0-9_.-]{0,63}$"#, options: .regularExpression) != nil else {
-                throw CommandEnvelopeError.invalidCommandName
-            }
-            guard arguments.count <= 32 else {
-                throw CommandEnvelopeError.argumentsTooLarge
-            }
-            for (key, value) in arguments {
-                guard key.range(of: #"^[A-Za-z][A-Za-z0-9_]{0,63}$"#, options: .regularExpression) != nil else {
-                    throw CommandEnvelopeError.invalidArgumentName
-                }
-                try value.validate(depth: 0)
-            }
-        }
+    enum RiskLevel: String, Codable {
+        case low
+        case medium
+        case high
+        case destructive
     }
+
+    let schemaVersion: Int
+    let commandID: String
+    let intent: String
+    let args: [String: JSONValue]
+    let riskLevel: RiskLevel
+    let needsConfirmation: Bool
+    let idempotencyKey: String
+    let confidence: Double
+    let locale: String
+    let timezone: String
+    let deviceID: String?
+    let sessionID: String?
+    let modelVersion: String?
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
-        case version
-        case id
-        case issuedAt = "issued_at"
-        case command
+        case schemaVersion = "schema_version"
+        case commandID = "command_id"
+        case intent
+        case args
+        case riskLevel = "risk_level"
+        case needsConfirmation = "needs_confirmation"
+        case idempotencyKey = "idempotency_key"
+        case confidence
+        case locale
+        case timezone
+        case deviceID = "device_id"
+        case sessionID = "session_id"
+        case modelVersion = "model_version"
     }
 
-    init(version: Int = supportedVersion, id: UUID, issuedAt: Date, command: Command) throws {
-        self.version = version
-        self.id = id
-        self.issuedAt = issuedAt
-        self.command = command
+    init(
+        schemaVersion: Int = supportedVersion,
+        commandID: String,
+        intent: String,
+        args: [String: JSONValue],
+        riskLevel: RiskLevel,
+        needsConfirmation: Bool,
+        idempotencyKey: String,
+        confidence: Double,
+        locale: String,
+        timezone: String,
+        deviceID: String? = nil,
+        sessionID: String? = nil,
+        modelVersion: String? = nil
+    ) throws {
+        self.schemaVersion = schemaVersion
+        self.commandID = commandID
+        self.intent = intent
+        self.args = args
+        self.riskLevel = riskLevel
+        self.needsConfirmation = needsConfirmation
+        self.idempotencyKey = idempotencyKey
+        self.confidence = confidence
+        self.locale = locale
+        self.timezone = timezone
+        self.deviceID = deviceID
+        self.sessionID = sessionID
+        self.modelVersion = modelVersion
         try validate()
     }
 
     init(from decoder: Decoder) throws {
         try StrictDecoding.rejectUnknownKeys(in: decoder, allowed: CodingKeys.allCases.map(\.rawValue))
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        version = try container.decode(Int.self, forKey: .version)
-
-        let idValue = try container.decode(String.self, forKey: .id)
-        guard let parsedID = UUID(uuidString: idValue) else {
-            throw CommandEnvelopeError.invalidIdentifier
-        }
-        id = parsedID
-
-        let issuedAtValue = try container.decode(String.self, forKey: .issuedAt)
-        guard let parsedDate = Self.parseISO8601(issuedAtValue) else {
-            throw CommandEnvelopeError.invalidIssuedAt
-        }
-        issuedAt = parsedDate
-        command = try container.decode(Command.self, forKey: .command)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        commandID = try container.decode(String.self, forKey: .commandID)
+        intent = try container.decode(String.self, forKey: .intent)
+        args = try container.decode([String: JSONValue].self, forKey: .args)
+        riskLevel = try container.decode(RiskLevel.self, forKey: .riskLevel)
+        needsConfirmation = try container.decode(Bool.self, forKey: .needsConfirmation)
+        idempotencyKey = try container.decode(String.self, forKey: .idempotencyKey)
+        confidence = try container.decode(Double.self, forKey: .confidence)
+        locale = try container.decode(String.self, forKey: .locale)
+        timezone = try container.decode(String.self, forKey: .timezone)
+        deviceID = try container.decodeIfPresent(String.self, forKey: .deviceID)
+        sessionID = try container.decodeIfPresent(String.self, forKey: .sessionID)
+        modelVersion = try container.decodeIfPresent(String.self, forKey: .modelVersion)
         try validate()
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(version, forKey: .version)
-        try container.encode(id.uuidString.lowercased(), forKey: .id)
-        try container.encode(Self.formatISO8601(issuedAt), forKey: .issuedAt)
-        try container.encode(command, forKey: .command)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(commandID, forKey: .commandID)
+        try container.encode(intent, forKey: .intent)
+        try container.encode(args, forKey: .args)
+        try container.encode(riskLevel, forKey: .riskLevel)
+        try container.encode(needsConfirmation, forKey: .needsConfirmation)
+        try container.encode(idempotencyKey, forKey: .idempotencyKey)
+        try container.encode(confidence, forKey: .confidence)
+        try container.encode(locale, forKey: .locale)
+        try container.encode(timezone, forKey: .timezone)
+        try container.encodeIfPresent(deviceID, forKey: .deviceID)
+        try container.encodeIfPresent(sessionID, forKey: .sessionID)
+        try container.encodeIfPresent(modelVersion, forKey: .modelVersion)
     }
 
     static func decodeStrict(from data: Data) throws -> CommandEnvelope {
@@ -108,37 +119,58 @@ struct CommandEnvelope: Codable, Equatable {
     }
 
     private func validate() throws {
-        guard version == Self.supportedVersion else {
+        guard schemaVersion == Self.supportedVersion else {
             throw CommandEnvelopeError.unsupportedVersion
         }
-    }
-
-    private static func parseISO8601(_ value: String) -> Date? {
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: value) {
-            return date
+        guard !commandID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              commandID.utf8.count <= 128,
+              commandID.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]*$"#, options: .regularExpression) != nil
+        else {
+            throw CommandEnvelopeError.invalidCommandID
         }
-        let standard = ISO8601DateFormatter()
-        standard.formatOptions = [.withInternetDateTime]
-        return standard.date(from: value)
-    }
-
-    private static func formatISO8601(_ value: Date) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.string(from: value)
+        guard !intent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              intent.utf8.count <= 128,
+              intent.range(of: #"^[a-z][a-z0-9_.-]*$"#, options: .regularExpression) != nil
+        else {
+            throw CommandEnvelopeError.invalidIntent
+        }
+        guard args.count <= 64 else { throw CommandEnvelopeError.argumentsTooLarge }
+        for (key, value) in args {
+            guard key.utf8.count <= 64,
+                  key.range(of: #"^[A-Za-z][A-Za-z0-9_]*$"#, options: .regularExpression) != nil
+            else { throw CommandEnvelopeError.invalidArgumentName }
+            try value.validate(depth: 0)
+        }
+        guard !idempotencyKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              idempotencyKey.utf8.count <= 200
+        else { throw CommandEnvelopeError.invalidIdempotencyKey }
+        guard confidence.isFinite, (0...1).contains(confidence) else {
+            throw CommandEnvelopeError.invalidConfidence
+        }
+        guard !locale.isEmpty, locale.utf8.count <= 32 else {
+            throw CommandEnvelopeError.invalidLocale
+        }
+        guard !timezone.isEmpty, timezone.utf8.count <= 64 else {
+            throw CommandEnvelopeError.invalidTimezone
+        }
+        for optional in [deviceID, sessionID, modelVersion].compactMap({ $0 }) {
+            guard optional.utf8.count <= 128 else { throw CommandEnvelopeError.optionalFieldTooLong }
+        }
     }
 }
 
 enum CommandEnvelopeError: Error, Equatable {
     case encodedSizeOutOfRange
     case unsupportedVersion
-    case invalidIdentifier
-    case invalidIssuedAt
-    case invalidCommandName
+    case invalidCommandID
+    case invalidIntent
     case invalidArgumentName
     case argumentsTooLarge
+    case invalidIdempotencyKey
+    case invalidConfidence
+    case invalidLocale
+    case invalidTimezone
+    case optionalFieldTooLong
     case valueTooDeep
     case valueTooLarge
     case nonFiniteNumber
@@ -146,9 +178,7 @@ enum CommandEnvelopeError: Error, Equatable {
 
 private extension JSONValue {
     func validate(depth: Int) throws {
-        guard depth <= 8 else {
-            throw CommandEnvelopeError.valueTooDeep
-        }
+        guard depth <= 8 else { throw CommandEnvelopeError.valueTooDeep }
         switch self {
         case .null, .bool:
             return
