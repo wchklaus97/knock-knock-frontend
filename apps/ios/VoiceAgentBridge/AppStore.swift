@@ -458,7 +458,7 @@ final class AppStore: ObservableObject {
             let auth = try await client.login(email: email, password: password)
             try await finishAuthentication(auth)
         } catch let loginError as APIClientError {
-            if case .badStatus(401, _) = loginError {
+            if case .badStatus(401, _, _) = loginError {
                 errorMessage = "邮箱或密码不正确；如果你还没有账户，请切换到创建账户。"
             } else {
                 errorMessage = loginError.localizedDescription
@@ -478,7 +478,7 @@ final class AppStore: ObservableObject {
             let auth = try await client.register(email: email, password: password)
             try await finishAuthentication(auth)
         } catch let registerError as APIClientError {
-            if case .badStatus(409, _) = registerError {
+            if case .badStatus(409, _, _) = registerError {
                 errorMessage = "这个邮箱已经注册，请切换到登录。"
             } else {
                 errorMessage = registerError.localizedDescription
@@ -617,6 +617,15 @@ final class AppStore: ObservableObject {
                     retrySeconds = 1
                     continue
                 }
+                if case let APIClientError.badStatus(_, _, metadata) = error,
+                   let retryAfter = metadata.retryAfter,
+                   retryAfter > 0
+                {
+                    retrySeconds = min(UInt64(retryAfter), 30)
+                    if let requestID = metadata.requestID {
+                        print("[sse] retryable request=\(requestID) retry_after=\(retryAfter)")
+                    }
+                }
                 connectionState = .unavailable
                 startFallbackRefresh()
                 print("[sse] \(error.localizedDescription)")
@@ -703,14 +712,21 @@ final class AppStore: ObservableObject {
                 let response = try await client.sync(after: nextCursor)
                 guard reconciliationGeneration == generation, token != nil else { return nil }
                 for change in response.changes where change.deleted_at != nil {
-                    if change.entity_type == "session" {
+                    switch change.entity_type {
+                    case "session":
                         removeLocalSession(change.entity_id)
+                    case "message":
+                        removeLocalMessage(change.entity_id, sessionID: change.session_id)
+                    case "retrieval":
+                        removeLocalRetrieval(change.entity_id, sessionID: change.session_id)
+                    default:
+                        break
                     }
                 }
                 nextCursor = response.cursor
                 if !response.has_more { break }
             }
-        } catch APIClientError.badStatus(404, _) {
+        } catch APIClientError.badStatus(404, _, _) {
             // Phase 0/older backends have no durable sync endpoint yet. A
             // complete REST snapshot is still authoritative and safe.
             try await loadRemoteState(includeAgents: includeAgents, generation: generation)
@@ -718,7 +734,7 @@ final class AppStore: ObservableObject {
             let receivedCursor = pendingEventCursor
             pendingEventCursor = nil
             return receivedCursor ?? nextCursor
-        } catch let APIClientError.badStatus(code, _) where [400, 409, 410].contains(code) {
+        } catch let APIClientError.badStatus(code, _, _) where [400, 409, 410].contains(code) {
             // A cursor can be malformed, expired, or outside the server's
             // retention window. Reset it and establish a fresh REST snapshot;
             // otherwise SSE would reconnect forever with the same bad cursor.
@@ -840,6 +856,28 @@ final class AppStore: ObservableObject {
         if openSessionId == sessionID { openSessionId = nil }
     }
 
+    private func removeLocalMessage(_ messageID: String, sessionID: String?) {
+        if let sessionID {
+            messagesBySession[sessionID]?.removeAll { $0.message_id == messageID }
+        } else {
+            for sessionID in messagesBySession.keys {
+                messagesBySession[sessionID]?.removeAll { $0.message_id == messageID }
+            }
+        }
+        localStore.removeMessage(messageID)
+    }
+
+    private func removeLocalRetrieval(_ retrievalID: String, sessionID: String?) {
+        if let sessionID {
+            retrievalsBySession[sessionID]?.removeAll { $0.retrieval_id == retrievalID }
+        } else {
+            for sessionID in retrievalsBySession.keys {
+                retrievalsBySession[sessionID]?.removeAll { $0.retrieval_id == retrievalID }
+            }
+        }
+        localStore.removeRetrieval(retrievalID)
+    }
+
     private func handleRefreshError(_ error: Error) {
         let isCancellation = (error as? APIClientError).map { Self.isCancellation($0) } ?? false
         if Task.isCancelled || isCancellation { return }
@@ -864,7 +902,7 @@ final class AppStore: ObservableObject {
     }
 
     private static func isUnauthorized(_ error: Error) -> Bool {
-        if case APIClientError.badStatus(401, _) = error { return true }
+        if case APIClientError.badStatus(401, _, _) = error { return true }
         return false
     }
 
@@ -1057,13 +1095,18 @@ final class AppStore: ObservableObject {
                 }
                 completedAny = true
             } catch let error as APIClientError {
-                if Self.isRetryableNetwork(error) || Self.isUnauthorized(error) {
-                    remaining.append(operation)
-                } else if case APIClientError.badStatus(let code, _) = error, !(404...410).contains(code) {
+                if Self.shouldRetryPendingOperation(error) {
+                    if case let .badStatus(_, _, metadata) = error,
+                       let requestID = metadata.requestID
+                    {
+                        print("[pending] retryable request=\(requestID) retry_after=\(metadata.retryAfter ?? 0)")
+                    }
                     remaining.append(operation)
                 }
             } catch {
-                remaining.append(operation)
+                // Decoding, validation, conflict, and expiry failures are
+                // permanent for this pending operation. Keeping them queued
+                // would retry invalid user input forever.
             }
         }
         if let generation,
@@ -1078,10 +1121,17 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private static func isRetryableNetwork(_ error: APIClientError) -> Bool {
+    nonisolated private static func isRetryableNetwork(_ error: APIClientError) -> Bool {
         if case .network = error { return true }
-        if case let .badStatus(code, _) = error { return code == 429 || code >= 500 }
+        if case let .badStatus(code, _, metadata) = error {
+            return metadata.retryable || code == 408 || code == 425 || code == 429 || code >= 500
+        }
         return false
+    }
+
+    nonisolated static func shouldRetryPendingOperation(_ error: Error) -> Bool {
+        guard let error = error as? APIClientError else { return false }
+        return isRetryableNetwork(error)
     }
 
 }

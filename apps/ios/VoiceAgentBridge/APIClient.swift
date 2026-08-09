@@ -1,7 +1,13 @@
 import Foundation
 
+struct APIErrorMetadata: Equatable, Sendable {
+    let retryable: Bool
+    let retryAfter: Int?
+    let requestID: String?
+}
+
 enum APIClientError: LocalizedError {
-    case badStatus(Int, String)
+    case badStatus(Int, String, APIErrorMetadata)
     case decoding
     case noToken
     case invalidBaseURL
@@ -9,7 +15,11 @@ enum APIClientError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case let .badStatus(code, message): return "HTTP \(code): \(message)"
+        case let .badStatus(code, message, metadata):
+            if let requestID = metadata.requestID, !requestID.isEmpty {
+                return "HTTP \(code): \(message) (request \(requestID))"
+            }
+            return "HTTP \(code): \(message)"
         case .decoding: return "The server returned an invalid response."
         case .noToken: return "Not signed in"
         case .invalidBaseURL: return "Enter a valid server URL (use HTTPS for production)."
@@ -254,7 +264,15 @@ final class APIClient: @unchecked Sendable {
             throw APIClientError.network("The event stream response was not HTTP.")
         }
         guard (200 ..< 300).contains(http.statusCode) else {
-            throw APIClientError.badStatus(http.statusCode, "Event stream request failed")
+            throw APIClientError.badStatus(
+                http.statusCode,
+                "Event stream request failed",
+                APIErrorMetadata(
+                    retryable: http.statusCode == 408 || http.statusCode == 425 || http.statusCode == 429 || http.statusCode >= 500,
+                    retryAfter: Int(http.value(forHTTPHeaderField: "Retry-After") ?? ""),
+                    requestID: http.value(forHTTPHeaderField: "X-Request-ID")
+                )
+            )
         }
         return bytes
     }
@@ -310,6 +328,44 @@ final class APIClient: @unchecked Sendable {
                 confirm: confirm,
                 idempotency_key: idempotencyKey
             ),
+            auth: true
+        )
+    }
+
+    /// Submit a locally validated CommandEnvelope. The backend remains the
+    /// authority: this method only transports the draft and returns its
+    /// persisted lifecycle state.
+    func createCommand(_ envelope: CommandEnvelope) async throws -> CommandResponse {
+        try await post("/v1/phone/commands", body: envelope, auth: true)
+    }
+
+    func getCommand(commandID: String) async throws -> CommandResponse {
+        try await get("/v1/phone/commands/\(commandID)")
+    }
+
+    func confirmCommand(commandID: String, confirmationToken: String) async throws -> CommandResponse {
+        struct Body: Encodable {
+            let confirmation_token: String
+        }
+        return try await post(
+            "/v1/phone/commands/\(commandID)/confirm",
+            body: Body(confirmation_token: confirmationToken),
+            auth: true
+        )
+    }
+
+    func cancelCommand(commandID: String) async throws -> CommandResponse {
+        try await post(
+            "/v1/phone/commands/\(commandID)/cancel",
+            body: EmptyBody(),
+            auth: true
+        )
+    }
+
+    func undoCommand(commandID: String) async throws -> CommandResponse {
+        try await post(
+            "/v1/phone/commands/\(commandID)/undo",
+            body: EmptyBody(),
             auth: true
         )
     }
@@ -388,7 +444,13 @@ final class APIClient: @unchecked Sendable {
             let fallback = String(data: data, encoding: .utf8) ?? "Request failed"
             let message = (try? JSONDecoder().decode(APIErrorBody.self, from: data))?.message
                 ?? fallback
-            throw APIClientError.badStatus(code, message)
+            let decoded = try? JSONDecoder().decode(APIErrorBody.self, from: data)
+            let metadata = APIErrorMetadata(
+                retryable: decoded?.retryable ?? (code == 408 || code == 425 || code == 429 || code >= 500),
+                retryAfter: decoded?.retry_after ?? Int(http.value(forHTTPHeaderField: "Retry-After") ?? ""),
+                requestID: decoded?.request_id ?? http.value(forHTTPHeaderField: "X-Request-ID")
+            )
+            throw APIClientError.badStatus(code, message, metadata)
         }
         if T.self == EmptyJSON.self {
             return EmptyJSON() as! T

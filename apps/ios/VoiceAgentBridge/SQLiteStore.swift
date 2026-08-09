@@ -96,7 +96,7 @@ final class SQLiteStore {
     }
 
     func savePendingOperations(_ operations: [PendingOperation]) {
-        queue.sync { savePendingLocked(operations) }
+        _ = queue.sync { savePendingLocked(operations) }
     }
 
     func cacheSessions(_ sessions: [Session]) {
@@ -249,6 +249,24 @@ final class SQLiteStore {
                 "SELECT payload FROM cached_retrievals WHERE session_id = ? ORDER BY created_at DESC, retrieval_id ASC",
                 strings: [sessionID]
             )?.compactMap { try? JSONDecoder().decode(RetrievalItem.self, from: $0) } ?? []
+        }
+    }
+
+    func removeMessage(_ messageID: String) {
+        queue.sync {
+            _ = executeLocked(
+                "DELETE FROM cached_messages WHERE message_id = ?",
+                bindings: [.text(messageID)]
+            )
+        }
+    }
+
+    func removeRetrieval(_ retrievalID: String) {
+        queue.sync {
+            _ = executeLocked(
+                "DELETE FROM cached_retrievals WHERE retrieval_id = ?",
+                bindings: [.text(retrievalID)]
+            )
         }
     }
 
