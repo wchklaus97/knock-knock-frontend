@@ -365,6 +365,7 @@ final class APIClient: @unchecked Sendable {
     private func applyAuth(_ req: inout URLRequest) throws {
         guard let token else { throw APIClientError.noToken }
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue(Self.stableDeviceID, forHTTPHeaderField: "X-Device-ID")
     }
 
     private func send<T: Decodable>(_ req: URLRequest) async throws -> T {

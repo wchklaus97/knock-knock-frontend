@@ -248,10 +248,13 @@ final class ModelsDecodingTests: XCTestCase {
         let decoder = JSONDecoder()
         let canonical = try decoder.decode(
             APIErrorBody.self,
-            from: Data(#"{"error":{"code":"invalid_command","message":"bad args"}}"#.utf8)
+            from: Data(#"{"error":{"code":"invalid_command","message":"bad args","retryable":true,"request_id":"req_1","retry_after":60}}"#.utf8)
         )
         XCTAssertEqual(canonical.error, "invalid_command")
         XCTAssertEqual(canonical.message, "bad args")
+        XCTAssertEqual(canonical.retryable, true)
+        XCTAssertEqual(canonical.request_id, "req_1")
+        XCTAssertEqual(canonical.retry_after, 60)
 
         let legacy = try decoder.decode(
             APIErrorBody.self,
@@ -259,6 +262,7 @@ final class ModelsDecodingTests: XCTestCase {
         )
         XCTAssertEqual(legacy.error, "legacy_error")
         XCTAssertEqual(legacy.message, "old backend")
+        XCTAssertNil(legacy.retryable)
     }
 
     func testHistoryRetrievalAndPushReadModelsDecode() throws {
@@ -276,6 +280,11 @@ final class ModelsDecodingTests: XCTestCase {
         )
 
         XCTAssertEqual(page.messages.first?.content, "done")
+        let legacyPage = try decoder.decode(
+            MessagePage.self,
+            from: Data(#"{"items":[{"message_id":"msg_legacy","session_id":"ses_1","role":"agent","content":"old","metadata":{},"command_id":null,"sequence":1,"created_at":"2026-08-09T00:00:00Z"}],"next_cursor":null}"#.utf8)
+        )
+        XCTAssertEqual(legacyPage.messages.first?.message_id, "msg_legacy")
         XCTAssertEqual(detail.retrieval_items.first?.content_hash, "sha")
         XCTAssertNotNil(push.read_at)
     }
