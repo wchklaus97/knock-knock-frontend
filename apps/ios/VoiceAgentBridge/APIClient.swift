@@ -19,6 +19,7 @@ enum APIClientError: LocalizedError {
 }
 
 struct EmptyJSON: Decodable {}
+struct EmptyBody: Encodable {}
 
 final class APIClient: @unchecked Sendable {
     /// The endpoint is user- or bundle-configured. There is no fixed physical
@@ -153,9 +154,73 @@ final class APIClient: @unchecked Sendable {
         return res.entries
     }
 
+    func getSessionDetail(sessionId: String) async throws -> SessionDetailResponse {
+        try await get("/v1/phone/sessions/\(sessionId)")
+    }
+
+    func listMessages(
+        sessionId: String,
+        before: String? = nil,
+        limit: Int = 50
+    ) async throws -> MessagePage {
+        var query = [URLQueryItem(name: "limit", value: String(min(max(limit, 1), 100)))]
+        if let before, !before.isEmpty {
+            query.append(URLQueryItem(name: "before", value: before))
+        }
+        return try await get("/v1/phone/sessions/\(sessionId)/messages", query: query)
+    }
+
+    func search(query: String, limit: Int = 50) async throws -> SearchResponse {
+        let items = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "limit", value: String(min(max(limit, 1), 50))),
+        ]
+        return try await get("/v1/phone/search", query: items)
+    }
+
+    func updateSession(
+        sessionId: String,
+        title: String?,
+        archived: Bool?
+    ) async throws -> SessionDetailResponse {
+        struct Body: Encodable {
+            let title: String?
+            let archived: Bool?
+        }
+        return try await patch(
+            "/v1/phone/sessions/\(sessionId)",
+            body: Body(title: title, archived: archived),
+            auth: true
+        )
+    }
+
+    func deleteSession(sessionId: String) async throws -> DeletedSessionResponse {
+        try await delete("/v1/phone/sessions/\(sessionId)")
+    }
+
+    func exportSession(sessionId: String) async throws -> SessionExportResponse {
+        try await get("/v1/phone/sessions/\(sessionId)/export")
+    }
+
     func listPushes() async throws -> [DevPush] {
         let res: DevPushesResponse = try await get("/v1/dev/pushes")
         return res.pushes
+    }
+
+    func markPushRead(pushId: String) async throws -> DevPush {
+        try await post(
+            "/v1/phone/pushes/\(pushId)/read",
+            body: EmptyBody(),
+            auth: true
+        )
+    }
+
+    func markAllPushesRead() async throws -> PushReadAllResponse {
+        try await post(
+            "/v1/phone/pushes/read-all",
+            body: EmptyBody(),
+            auth: true
+        )
     }
 
     /// Opens the foreground-only server-sent event stream. The stream carries
@@ -278,6 +343,22 @@ final class APIClient: @unchecked Sendable {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONEncoder().encode(body)
         if auth { try applyAuth(&req) }
+        return try await send(req)
+    }
+
+    private func patch<T: Decodable, B: Encodable>(_ path: String, body: B, auth: Bool) async throws -> T {
+        var req = URLRequest(url: try makeURL(path))
+        req.httpMethod = "PATCH"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(body)
+        if auth { try applyAuth(&req) }
+        return try await send(req)
+    }
+
+    private func delete<T: Decodable>(_ path: String) async throws -> T {
+        var req = URLRequest(url: try makeURL(path))
+        req.httpMethod = "DELETE"
+        try applyAuth(&req)
         return try await send(req)
     }
 

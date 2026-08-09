@@ -106,14 +106,19 @@ struct Session: Codable, Identifiable, Hashable {
     let chat_id: String?
     let title: String?
     let summary_text: String?
-    let voice_script: String?
+    var voice_script: String?
     let available_actions: [String]?
-    let facts: [String: JSONValue]
+    var facts: [String: JSONValue]
     let expires_at: String
     let created_at: String
     let updated_at: String
 
     var needsUser: Bool { state == "needs_user" || state == "awaiting_confirm" }
+
+    mutating func mergeDetail(from detail: Session) {
+        if facts.isEmpty { facts = detail.facts }
+        if (voice_script ?? "").isEmpty { voice_script = detail.voice_script }
+    }
 
     enum CodingKeys: String, CodingKey {
         case session_id, agent_id, skill_id, state
@@ -287,6 +292,8 @@ struct DevPush: Codable, Identifiable {
     let body: String
     let voice_script: String?
     let created_at: String
+    let read_at: String?
+    let dismissed_at: String?
 }
 
 struct DevPushesResponse: Decodable {
@@ -315,6 +322,80 @@ struct HistoryEntry: Codable, Identifiable, Hashable {
 
 struct HistoryResponse: Decodable {
     let entries: [HistoryEntry]
+}
+
+struct SessionMessage: Codable, Identifiable, Hashable {
+    let message_id: String
+    let session_id: String
+    let role: String
+    let content: String
+    let metadata: [String: JSONValue]
+    let command_id: String?
+    let sequence: Int
+    let created_at: String
+
+    var id: String { message_id }
+}
+
+struct MessagePage: Decodable {
+    let messages: [SessionMessage]
+    let next_cursor: String?
+    let has_more: Bool
+}
+
+struct RetrievalItem: Codable, Identifiable, Hashable {
+    let retrieval_id: String
+    let session_id: String
+    let message_id: String?
+    let title: String
+    let url: String
+    let snippet: String?
+    let score: Double?
+    let content_hash: String
+    let created_at: String
+
+    var id: String { retrieval_id }
+}
+
+struct SessionDetailResponse: Decodable {
+    let session: Session
+    let retrieval_items: [RetrievalItem]
+
+    init(from decoder: Decoder) throws {
+        session = try Session(from: decoder)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        retrieval_items = try container.decodeIfPresent([RetrievalItem].self, forKey: .retrieval_items) ?? []
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case retrieval_items
+    }
+}
+
+struct SearchResponse: Decodable {
+    let query: String
+    let sessions: [Session]
+    let messages: [SessionMessage]
+    let retrieval_items: [RetrievalItem]
+}
+
+struct PushReadAllResponse: Decodable {
+    let updated: Int
+    let read_at: String
+}
+
+struct DeletedSessionResponse: Decodable {
+    let ok: Bool
+    let session_id: String
+    let deleted_at: String
+}
+
+struct SessionExportResponse: Decodable {
+    let schema_version: Int
+    let exported_at: String
+    let session: Session
+    let messages: [SessionMessage]
+    let retrieval_items: [RetrievalItem]
 }
 
 struct PhoneChange: Decodable {
