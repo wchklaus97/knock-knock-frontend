@@ -216,4 +216,146 @@ final class ModelsDecodingTests: XCTestCase {
         let decoded = try decoder.decode(PendingOperation.self, from: data)
         XCTAssertEqual(decoded, operation)
     }
+
+    func testSQLiteStorePersistsCursorAndPendingQueue() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knock-knock-(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let store = SQLiteStore(databaseURL: url)
+        XCTAssertTrue(store.isAvailable)
+        store.saveAppliedCursor("42")
+        store.savePendingOperations([
+            PendingOperation(
+                id: "op_sqlite",
+                kind: .reply,
+                session_id: "ses_sqlite",
+                action_key: "ack",
+                action_id: nil,
+                confirm: nil,
+                created_at: Date(timeIntervalSince1970: 2_000)
+            )
+        ])
+
+        XCTAssertEqual(store.loadAppliedCursor(), "42")
+        XCTAssertEqual(store.loadPendingOperations().map(\.id), ["op_sqlite"])
+        store.clearUserData()
+        XCTAssertNil(store.loadAppliedCursor())
+        XCTAssertTrue(store.loadPendingOperations().isEmpty)
+    }
+
+    func testAPIErrorDecoderAcceptsCanonicalAndLegacyEnvelopes() throws {
+        let decoder = JSONDecoder()
+        let canonical = try decoder.decode(
+            APIErrorBody.self,
+            from: Data(#"{"error":{"code":"invalid_command","message":"bad args","retryable":true,"request_id":"req_1","retry_after":60}}"#.utf8)
+        )
+        XCTAssertEqual(canonical.error, "invalid_command")
+        XCTAssertEqual(canonical.message, "bad args")
+        XCTAssertEqual(canonical.retryable, true)
+        XCTAssertEqual(canonical.request_id, "req_1")
+        XCTAssertEqual(canonical.retry_after, 60)
+
+        let legacy = try decoder.decode(
+            APIErrorBody.self,
+            from: Data(#"{"error":"legacy_error","message":"old backend"}"#.utf8)
+        )
+        XCTAssertEqual(legacy.error, "legacy_error")
+        XCTAssertEqual(legacy.message, "old backend")
+        XCTAssertNil(legacy.retryable)
+
+        let failure = APIClientError.badStatus(
+            429,
+            "Too many requests",
+            APIErrorMetadata(retryable: true, retryAfter: 17, requestID: "req_2")
+        )
+        if case let .badStatus(code, _, metadata) = failure {
+            XCTAssertEqual(code, 429)
+            XCTAssertTrue(metadata.retryable)
+            XCTAssertEqual(metadata.retryAfter, 17)
+            XCTAssertEqual(metadata.requestID, "req_2")
+        } else {
+            XCTFail("Expected structured status error")
+        }
+        XCTAssertFalse(
+            AppStore.shouldRetryPendingOperation(
+                APIClientError.badStatus(
+                    422,
+                    "Invalid command",
+                    APIErrorMetadata(retryable: false, retryAfter: nil, requestID: nil)
+                )
+            )
+        )
+        XCTAssertTrue(
+            AppStore.shouldRetryPendingOperation(
+                APIClientError.badStatus(
+                    429,
+                    "Too many requests",
+                    APIErrorMetadata(retryable: true, retryAfter: 2, requestID: nil)
+                )
+            )
+        )
+    }
+
+    func testHistoryRetrievalAndPushReadModelsDecode() throws {
+        let page = try decoder.decode(
+            MessagePage.self,
+            from: Data(#"{"messages":[{"message_id":"msg_1","session_id":"ses_1","role":"agent","content":"done","metadata":{"source":"worker"},"command_id":null,"sequence":1,"created_at":"2026-08-09T00:00:00Z"}],"next_cursor":"cursor-1","has_more":false}"#.utf8)
+        )
+        let detail = try decoder.decode(
+            SessionDetailResponse.self,
+            from: Data(#"{"session_id":"ses_1","agent_id":"agt_1","skill_id":"research","state":"closed","summary_text":"done","facts":{"answer":"yes"},"retrieval_items":[{"retrieval_id":"ret_1","session_id":"ses_1","message_id":"msg_1","title":"Source","url":"https://example.com","snippet":"snapshot","score":0.9,"content_hash":"sha","created_at":"2026-08-09T00:00:00Z"}],"created_at":"2026-08-09T00:00:00Z","updated_at":"2026-08-09T00:00:00Z"}"#.utf8)
+        )
+        let push = try decoder.decode(
+            DevPush.self,
+            from: Data(#"{"push_id":"push_1","session_id":"ses_1","title":"Done","body":"finished","voice_script":null,"created_at":"2026-08-09T00:00:00Z","read_at":"2026-08-09T00:01:00Z","dismissed_at":null}"#.utf8)
+        )
+
+        XCTAssertEqual(page.messages.first?.content, "done")
+        let legacyPage = try decoder.decode(
+            MessagePage.self,
+            from: Data(#"{"items":[{"message_id":"msg_legacy","session_id":"ses_1","role":"agent","content":"old","metadata":{},"command_id":null,"sequence":1,"created_at":"2026-08-09T00:00:00Z"}],"next_cursor":null}"#.utf8)
+        )
+        XCTAssertEqual(legacyPage.messages.first?.message_id, "msg_legacy")
+        XCTAssertEqual(detail.retrieval_items.first?.content_hash, "sha")
+        XCTAssertNotNil(push.read_at)
+    }
+
+    func testSQLiteStoreCachesMessagesAndRetrievals() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knock-knock-history-(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let store = SQLiteStore(databaseURL: url)
+        let message = SessionMessage(
+            message_id: "msg_sqlite",
+            session_id: "ses_sqlite",
+            role: "agent",
+            content: "cached",
+            metadata: [:],
+            command_id: nil,
+            sequence: 1,
+            created_at: "2026-08-09T00:00:00Z"
+        )
+        let retrieval = RetrievalItem(
+            retrieval_id: "ret_sqlite",
+            session_id: "ses_sqlite",
+            message_id: message.message_id,
+            title: "Source",
+            url: "https://example.com",
+            snippet: "cached source",
+            score: 0.8,
+            content_hash: "hash",
+            created_at: message.created_at
+        )
+        store.cacheMessages([message], for: message.session_id)
+        store.cacheRetrievals([retrieval], for: retrieval.session_id)
+
+        XCTAssertEqual(store.loadMessages(for: "ses_sqlite").map(\.message_id), ["msg_sqlite"])
+        XCTAssertEqual(store.loadRetrievals(for: "ses_sqlite").map(\.retrieval_id), ["ret_sqlite"])
+        store.removeMessage(message.message_id)
+        store.removeRetrieval(retrieval.retrieval_id)
+        XCTAssertTrue(store.loadMessages(for: "ses_sqlite").isEmpty)
+        XCTAssertTrue(store.loadRetrievals(for: "ses_sqlite").isEmpty)
+    }
 }

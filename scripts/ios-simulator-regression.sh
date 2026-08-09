@@ -36,6 +36,7 @@ cd "$ROOT/apps/ios"
 xcodegen generate
 
 echo "== iOS Simulator regression =="
+export GIT_LFS_SKIP_SMUDGE="${GIT_LFS_SKIP_SMUDGE:-1}"
 xcodebuild \
   -project VoiceAgentBridge.xcodeproj \
   -scheme VoiceAgentBridge \

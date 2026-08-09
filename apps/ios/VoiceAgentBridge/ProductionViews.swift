@@ -419,6 +419,75 @@ struct DashboardStatsStrip: View {
     }
 }
 
+struct LocalVoiceCommandCard: View {
+    @ObservedObject var controller: LocalVoiceCommandController
+
+    var body: some View {
+        KnockCard(padding: 14) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Image(systemName: controller.state.isListening ? "waveform" : "mic.fill")
+                        .foregroundStyle(KnockDesign.coral)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("On-device voice")
+                            .font(.subheadline.weight(.bold))
+                        Text(stateDescription)
+                            .font(.caption)
+                            .foregroundStyle(KnockDesign.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                }
+
+                Text(controller.transcript.isEmpty ? "Hold the button and speak a command." : controller.transcript)
+                    .font(.caption)
+                    .foregroundStyle(controller.transcript.isEmpty ? KnockDesign.muted : KnockDesign.ink)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack {
+                    Image(systemName: controller.state.isListening ? "mic.circle.fill" : "mic.circle")
+                    Text(controller.state.isListening ? "Release to submit" : "Hold to talk")
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(controller.state.isListening ? KnockDesign.lavender : KnockDesign.coral)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .onLongPressGesture(minimumDuration: 0, maximumDistance: 44, pressing: { pressing in
+                    if pressing {
+                        controller.start()
+                    } else {
+                        controller.stop()
+                    }
+                }, perform: {})
+                .accessibilityLabel("Push to talk")
+                .accessibilityHint("Hold to speak a command. Release to submit it for backend validation.")
+            }
+        }
+    }
+
+    private var stateDescription: String {
+        switch controller.state {
+        case .idle: return "Gemma intent parsing is ready."
+        case .requestingPermissions: return "Waiting for microphone permission…"
+        case .listening: return "Listening with voice activity detection…"
+        case .processing: return "Understanding locally, then validating with the backend…"
+        case .clarificationRequired: return "I need a clearer date, person, amount, or intent."
+        case let .submitted(commandID): return "Submitted \(commandID)."
+        case let .failed(message): return message
+        }
+    }
+}
+
+private extension LocalVoiceCommandController.State {
+    var isListening: Bool {
+        if case .listening = self { return true }
+        return false
+    }
+}
+
 struct DashboardHero: View {
     let waitingCount: Int
     let activeCount: Int
@@ -1441,6 +1510,9 @@ struct ProductionInboxView: View {
                                 activeCount: agentSessions.filter(\.isActive).count,
                                 totalCount: agentSessions.count
                             )
+                            if let voiceController = store.voiceController {
+                                LocalVoiceCommandCard(controller: voiceController)
+                            }
                         } else {
                             SessionDirectoryHeader(
                                 count: visibleSessions.count,
@@ -1828,6 +1900,8 @@ struct ProductionDecisionDetailView: View {
 
     private var session: Session? { store.sessions.first { $0.session_id == sessionId } }
     private var history: [HistoryEntry] { store.historyBySession[sessionId] ?? [] }
+    private var messages: [SessionMessage] { store.messagesBySession[sessionId] ?? [] }
+    private var retrievals: [RetrievalItem] { store.retrievalsBySession[sessionId] ?? [] }
 
     var body: some View {
         ZStack {
@@ -1915,6 +1989,12 @@ struct ProductionDecisionDetailView: View {
                         if !history.isEmpty {
                             ProductionHistoryTimeline(entries: history)
                         }
+                        if !messages.isEmpty {
+                            ProductionMessageTimeline(messages: messages)
+                        }
+                        if !retrievals.isEmpty {
+                            ProductionRetrievalSources(items: retrievals)
+                        }
                         if session.needsUser {
                             ProductionActionCard(session: session, pendingAction: $pendingActionId, showConfirm: $showConfirm)
                         } else {
@@ -1969,7 +2049,9 @@ struct ProductionDecisionDetailView: View {
         .navigationTitle("Decision")
         .navigationBarTitleDisplayMode(.inline)
         .task(id: sessionId) {
+            await store.loadSessionDetail(for: sessionId)
             await store.loadHistory(for: sessionId)
+            await store.loadMessages(for: sessionId)
         }
         .confirmationDialog("Confirm destructive action?", isPresented: $showConfirm, titleVisibility: .visible) {
             Button("Confirm and continue", role: .destructive) {
@@ -2023,6 +2105,63 @@ struct ProductionHistoryTimeline: View {
                             }
                         }
                         Spacer()
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+struct ProductionMessageTimeline: View {
+    let messages: [SessionMessage]
+
+    var body: some View {
+        KnockCard {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Conversation", systemImage: "bubble.left.and.bubble.right")
+                    .font(.headline)
+                ForEach(messages) { message in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(message.role.capitalized)
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(KnockDesign.lavender)
+                        Text(message.content)
+                            .font(.subheadline)
+                            .foregroundStyle(KnockDesign.ink)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+struct ProductionRetrievalSources: View {
+    let items: [RetrievalItem]
+
+    var body: some View {
+        KnockCard {
+            VStack(alignment: .leading, spacing: 9) {
+                Label("Sources", systemImage: "link")
+                    .font(.headline)
+                ForEach(items) { item in
+                    if let url = URL(string: item.url) {
+                        Link(destination: url) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.title)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(KnockDesign.ink)
+                                if let snippet = item.snippet, !snippet.isEmpty {
+                                    Text(snippet)
+                                        .font(.caption)
+                                        .foregroundStyle(KnockDesign.muted)
+                                        .lineLimit(2)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
                 }
             }
@@ -2351,6 +2490,41 @@ struct ProductionSettingsView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
 
+                        KnockCard(padding: 16) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "waveform.and.mic")
+                                        .foregroundStyle(KnockDesign.lavender)
+                                    Text("On-device voice")
+                                        .font(.headline.weight(.bold))
+                                }
+                                Text("Download the signed Gemma command model once. Push-to-talk then keeps audio local and sends only a validated CommandEnvelope.")
+                                    .font(.subheadline)
+                                    .foregroundStyle(KnockDesign.muted)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Text(store.voiceModelStatus)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(store.voiceController == nil ? KnockDesign.muted : KnockDesign.mint)
+                                Button {
+                                    Task { await store.prepareLocalVoiceModel() }
+                                } label: {
+                                    HStack {
+                                        if store.voiceModelStatus.hasPrefix("Preparing") { ProgressView() }
+                                        Text(store.voiceController == nil ? "Prepare voice model" : "Refresh voice model")
+                                        Spacer()
+                                        Image(systemName: "arrow.down.circle")
+                                    }
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .padding(13)
+                                    .background(KnockDesign.lavender)
+                                    .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                                }
+                                .disabled(store.voiceModelStatus.hasPrefix("Preparing"))
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+
                         DisclosureGroup("Advanced diagnostics", isExpanded: $showAdvanced) {
                             VStack(alignment: .leading, spacing: 9) {
                                 DetailLine(label: "API", value: store.apiBase)
@@ -2450,6 +2624,14 @@ struct ProductionPushInboxView: View {
                                         Text(push.created_at).font(.caption2).foregroundStyle(KnockDesign.muted)
                                     }
                                     Spacer()
+                                    if push.read_at == nil {
+                                        Button("Read") {
+                                            Task { await store.markPushRead(push) }
+                                        }
+                                        .font(.caption.weight(.semibold))
+                                        .buttonStyle(.borderedProminent)
+                                        .tint(KnockDesign.coral)
+                                    }
                                 }
                             }
                         }
@@ -2473,6 +2655,12 @@ struct ProductionPushInboxView: View {
                     }
                     .accessibilityLabel("Open navigation")
                     .accessibilityIdentifier("drawer.open")
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Read all") {
+                        Task { await store.markAllPushesRead() }
+                    }
+                    .font(.caption.weight(.semibold))
                 }
             }
             .refreshable { await store.refresh() }

@@ -7,7 +7,7 @@ struct AuthResponse: Decodable {
     let expires_in: Int?
 }
 
-struct Agent: Decodable, Identifiable, Hashable {
+struct Agent: Codable, Identifiable, Hashable {
     let agent_id: String
     let user_id: String
     let label: String
@@ -27,14 +27,17 @@ struct AgentsResponse: Decodable {
 /// Other features can reuse the generic transport with their own Decodable
 /// payload type later.
 struct SessionInvalidation: Decodable {
+    let id: String?
+    let type: String?
     let session_id: String?
+    let version: Int?
     let updated_at: String?
     let reason: String?
 }
 
 /// The bridge deliberately keeps facts unopinionated: agent skills can add
 /// strings, numbers, flags, or nested values without requiring an iOS release.
-enum JSONValue: Decodable, Hashable {
+enum JSONValue: Codable, Hashable {
     case string(String)
     case number(Double)
     case bool(Bool)
@@ -64,6 +67,18 @@ enum JSONValue: Decodable, Hashable {
         }
     }
 
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case let .string(value): try container.encode(value)
+        case let .number(value): try container.encode(value)
+        case let .bool(value): try container.encode(value)
+        case let .object(value): try container.encode(value)
+        case let .array(value): try container.encode(value)
+        case .null: try container.encodeNil()
+        }
+    }
+
     var displayValue: String {
         switch self {
         case let .string(value): return value
@@ -82,7 +97,7 @@ struct PairingCodeResponse: Decodable {
     let expires_at: String
 }
 
-struct Session: Decodable, Identifiable, Hashable {
+struct Session: Codable, Identifiable, Hashable {
     var id: String { session_id }
     let session_id: String
     let agent_id: String
@@ -94,20 +109,28 @@ struct Session: Decodable, Identifiable, Hashable {
     let chat_id: String?
     let title: String?
     let summary_text: String?
-    let voice_script: String?
+    var voice_script: String?
     let available_actions: [String]?
-    let facts: [String: JSONValue]
+    var facts: [String: JSONValue]
     let expires_at: String
     let created_at: String
     let updated_at: String
+    let archived_at: String?
+    let deleted_at: String?
+    let retention_expires_at: String?
 
     var needsUser: Bool { state == "needs_user" || state == "awaiting_confirm" }
+
+    mutating func mergeDetail(from detail: Session) {
+        if facts.isEmpty { facts = detail.facts }
+        if (voice_script ?? "").isEmpty { voice_script = detail.voice_script }
+    }
 
     enum CodingKeys: String, CodingKey {
         case session_id, agent_id, skill_id, state
         case progress_status, progress_message, progress_percent, chat_id, title
         case summary_text, voice_script, available_actions, facts
-        case expires_at, created_at, updated_at
+        case expires_at, created_at, updated_at, archived_at, deleted_at, retention_expires_at
     }
 
     init(from decoder: Decoder) throws {
@@ -128,6 +151,9 @@ struct Session: Decodable, Identifiable, Hashable {
         expires_at = try c.decodeIfPresent(String.self, forKey: .expires_at) ?? ""
         created_at = try c.decodeIfPresent(String.self, forKey: .created_at) ?? ""
         updated_at = try c.decodeIfPresent(String.self, forKey: .updated_at) ?? ""
+        archived_at = try c.decodeIfPresent(String.self, forKey: .archived_at)
+        deleted_at = try c.decodeIfPresent(String.self, forKey: .deleted_at)
+        retention_expires_at = try c.decodeIfPresent(String.self, forKey: .retention_expires_at)
     }
 }
 
@@ -267,7 +293,7 @@ struct SessionsResponse: Decodable {
     let sessions: [Session]
 }
 
-struct DevPush: Decodable, Identifiable {
+struct DevPush: Codable, Identifiable {
     var id: String { push_id }
     let push_id: String
     let session_id: String
@@ -275,13 +301,15 @@ struct DevPush: Decodable, Identifiable {
     let body: String
     let voice_script: String?
     let created_at: String
+    let read_at: String?
+    let dismissed_at: String?
 }
 
 struct DevPushesResponse: Decodable {
     let pushes: [DevPush]
 }
 
-struct HistoryEntry: Decodable, Identifiable, Hashable {
+struct HistoryEntry: Codable, Identifiable, Hashable {
     let audit_id: String
     let action: String
     let session_id: String?
@@ -305,6 +333,109 @@ struct HistoryResponse: Decodable {
     let entries: [HistoryEntry]
 }
 
+struct SessionMessage: Codable, Identifiable, Hashable {
+    let message_id: String
+    let session_id: String
+    let role: String
+    let content: String
+    let metadata: [String: JSONValue]
+    let command_id: String?
+    let sequence: Int
+    let created_at: String
+
+    var id: String { message_id }
+}
+
+struct MessagePage: Decodable {
+    let messages: [SessionMessage]
+    let next_cursor: String?
+    let has_more: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case messages, items, next_cursor, has_more
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        messages = try container.decodeIfPresent([SessionMessage].self, forKey: .messages)
+            ?? container.decodeIfPresent([SessionMessage].self, forKey: .items)
+            ?? []
+        next_cursor = try container.decodeIfPresent(String.self, forKey: .next_cursor)
+        has_more = try container.decodeIfPresent(Bool.self, forKey: .has_more) ?? false
+    }
+}
+
+struct RetrievalItem: Codable, Identifiable, Hashable {
+    let retrieval_id: String
+    let session_id: String
+    let message_id: String?
+    let title: String
+    let url: String
+    let snippet: String?
+    let score: Double?
+    let content_hash: String
+    let created_at: String
+
+    var id: String { retrieval_id }
+}
+
+struct SessionDetailResponse: Decodable {
+    let session: Session
+    let retrieval_items: [RetrievalItem]
+
+    init(from decoder: Decoder) throws {
+        session = try Session(from: decoder)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        retrieval_items = try container.decodeIfPresent([RetrievalItem].self, forKey: .retrieval_items) ?? []
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case retrieval_items
+    }
+}
+
+struct SearchResponse: Decodable {
+    let query: String
+    let sessions: [Session]
+    let messages: [SessionMessage]
+    let retrieval_items: [RetrievalItem]
+}
+
+struct PushReadAllResponse: Decodable {
+    let updated: Int
+    let read_at: String
+}
+
+struct DeletedSessionResponse: Decodable {
+    let ok: Bool
+    let session_id: String
+    let deleted_at: String
+}
+
+struct SessionExportResponse: Decodable {
+    let schema_version: Int
+    let exported_at: String
+    let session: Session
+    let messages: [SessionMessage]
+    let retrieval_items: [RetrievalItem]
+    let truncated: Bool?
+}
+
+struct PhoneChange: Decodable {
+    let cursor: String
+    let entity_type: String
+    let entity_id: String
+    let session_id: String?
+    let version: Int
+    let deleted_at: String?
+}
+
+struct SyncResponse: Decodable {
+    let cursor: String
+    let changes: [PhoneChange]
+    let has_more: Bool
+}
+
 struct PendingOperation: Codable, Identifiable, Hashable {
     enum Kind: String, Codable {
         case reply
@@ -324,6 +455,32 @@ struct PhoneReplyResponse: Decodable {
     let session: Session
     let action: PendingAction
     let needs_confirm: Bool?
+}
+
+struct CommandResponse: Decodable, Equatable {
+    let command_id: String
+    let state: String
+    let command: CommandEnvelope?
+    let confirmation_token: String?
+    let result: JSONValue?
+    let error: CommandResponseError?
+    let undo_command_id: String?
+    let version: Int?
+    let created_at: String?
+    let updated_at: String?
+}
+
+struct CommandResponseError: Decodable, Equatable {
+    let code: String
+    let message: String
+    let retryable: Bool
+}
+
+struct ModelArtifactDescriptorResponse: Decodable, Equatable {
+    let model_id: String
+    let manifest: ModelManifest
+    let download_url: String
+    let expires_at: String?
 }
 
 struct PendingAction: Decodable {
@@ -356,4 +513,44 @@ struct PendingAction: Decodable {
 struct APIErrorBody: Decodable {
     let error: String?
     let message: String?
+    let retryable: Bool?
+    let request_id: String?
+    let retry_after: Int?
+
+    private struct Envelope: Decodable {
+        let code: String?
+        let message: String?
+        let retryable: Bool?
+        let request_id: String?
+        let retry_after: Int?
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case error, message
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        var decodedMessage = try container.decodeIfPresent(String.self, forKey: .message)
+        if let legacy = try? container.decode(String.self, forKey: .error) {
+            error = legacy
+            retryable = nil
+            request_id = nil
+            retry_after = nil
+        } else if let envelope = try? container.decode(Envelope.self, forKey: .error) {
+            error = envelope.code
+            if decodedMessage == nil {
+                decodedMessage = envelope.message
+            }
+            retryable = envelope.retryable
+            request_id = envelope.request_id
+            retry_after = envelope.retry_after
+        } else {
+            error = nil
+            retryable = nil
+            request_id = nil
+            retry_after = nil
+        }
+        message = decodedMessage
+    }
 }

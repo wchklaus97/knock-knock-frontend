@@ -1,7 +1,13 @@
 import Foundation
 
+struct APIErrorMetadata: Equatable, Sendable {
+    let retryable: Bool
+    let retryAfter: Int?
+    let requestID: String?
+}
+
 enum APIClientError: LocalizedError {
-    case badStatus(Int, String)
+    case badStatus(Int, String, APIErrorMetadata)
     case decoding
     case noToken
     case invalidBaseURL
@@ -9,7 +15,11 @@ enum APIClientError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case let .badStatus(code, message): return "HTTP \(code): \(message)"
+        case let .badStatus(code, message, metadata):
+            if let requestID = metadata.requestID, !requestID.isEmpty {
+                return "HTTP \(code): \(message) (request \(requestID))"
+            }
+            return "HTTP \(code): \(message)"
         case .decoding: return "The server returned an invalid response."
         case .noToken: return "Not signed in"
         case .invalidBaseURL: return "Enter a valid server URL (use HTTPS for production)."
@@ -19,6 +29,7 @@ enum APIClientError: LocalizedError {
 }
 
 struct EmptyJSON: Decodable {}
+struct EmptyBody: Encodable {}
 
 final class APIClient: @unchecked Sendable {
     /// The endpoint is user- or bundle-configured. There is no fixed physical
@@ -90,6 +101,8 @@ final class APIClient: @unchecked Sendable {
             let platform: String
             let push_token: String
             let locale: String
+            let timezone: String
+            let device_id: String
         }
         #if targetEnvironment(simulator)
         let platform = "ios_simulator"
@@ -103,15 +116,40 @@ final class APIClient: @unchecked Sendable {
             body: DeviceBody(
                 platform: platform,
                 push_token: token,
-                locale: "zh-Hans"
+                locale: Locale.current.identifier.replacingOccurrences(of: "_", with: "-"),
+                timezone: TimeZone.current.identifier,
+                device_id: Self.stableDeviceID
             ),
             auth: true
         )
     }
 
+    private static var stableDeviceID: String {
+        let key = "vab.deviceID"
+        if let existing = UserDefaults.standard.string(forKey: key), !existing.isEmpty {
+            return existing
+        }
+        let generated = "ios-\(UUID().uuidString.lowercased())"
+        UserDefaults.standard.set(generated, forKey: key)
+        return generated
+    }
+
     func listSessions() async throws -> [Session] {
         let res: SessionsResponse = try await get("/v1/phone/sessions")
         return res.sessions
+    }
+
+    /// Fetch durable phone changes after an applied cursor. The endpoint is
+    /// optional during the compatibility window; AppStore falls back to the
+    /// existing REST snapshot when an older backend returns 404.
+    func sync(after cursor: String?, limit: Int = 50) async throws -> SyncResponse {
+        var query: [URLQueryItem] = [
+            URLQueryItem(name: "limit", value: String(min(max(limit, 1), 50)))
+        ]
+        if let cursor, !cursor.isEmpty {
+            query.append(URLQueryItem(name: "after", value: cursor))
+        }
+        return try await get("/v1/phone/sync", query: query)
     }
 
     func listAgents() async throws -> [Agent] {
@@ -126,9 +164,73 @@ final class APIClient: @unchecked Sendable {
         return res.entries
     }
 
+    func getSessionDetail(sessionId: String) async throws -> SessionDetailResponse {
+        try await get("/v1/phone/sessions/\(sessionId)")
+    }
+
+    func listMessages(
+        sessionId: String,
+        before: String? = nil,
+        limit: Int = 50
+    ) async throws -> MessagePage {
+        var query = [URLQueryItem(name: "limit", value: String(min(max(limit, 1), 100)))]
+        if let before, !before.isEmpty {
+            query.append(URLQueryItem(name: "before", value: before))
+        }
+        return try await get("/v1/phone/sessions/\(sessionId)/messages", query: query)
+    }
+
+    func search(query: String, limit: Int = 50) async throws -> SearchResponse {
+        let items = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "limit", value: String(min(max(limit, 1), 50))),
+        ]
+        return try await get("/v1/phone/search", query: items)
+    }
+
+    func updateSession(
+        sessionId: String,
+        title: String?,
+        archived: Bool?
+    ) async throws -> SessionDetailResponse {
+        struct Body: Encodable {
+            let title: String?
+            let archived: Bool?
+        }
+        return try await patch(
+            "/v1/phone/sessions/\(sessionId)",
+            body: Body(title: title, archived: archived),
+            auth: true
+        )
+    }
+
+    func deleteSession(sessionId: String) async throws -> DeletedSessionResponse {
+        try await delete("/v1/phone/sessions/\(sessionId)")
+    }
+
+    func exportSession(sessionId: String) async throws -> SessionExportResponse {
+        try await get("/v1/phone/sessions/\(sessionId)/export")
+    }
+
     func listPushes() async throws -> [DevPush] {
         let res: DevPushesResponse = try await get("/v1/dev/pushes")
         return res.pushes
+    }
+
+    func markPushRead(pushId: String) async throws -> DevPush {
+        try await post(
+            "/v1/phone/pushes/\(pushId)/read",
+            body: EmptyBody(),
+            auth: true
+        )
+    }
+
+    func markAllPushesRead() async throws -> PushReadAllResponse {
+        try await post(
+            "/v1/phone/pushes/read-all",
+            body: EmptyBody(),
+            auth: true
+        )
     }
 
     /// Opens the foreground-only server-sent event stream. The stream carries
@@ -162,7 +264,15 @@ final class APIClient: @unchecked Sendable {
             throw APIClientError.network("The event stream response was not HTTP.")
         }
         guard (200 ..< 300).contains(http.statusCode) else {
-            throw APIClientError.badStatus(http.statusCode, "Event stream request failed")
+            throw APIClientError.badStatus(
+                http.statusCode,
+                "Event stream request failed",
+                APIErrorMetadata(
+                    retryable: http.statusCode == 408 || http.statusCode == 425 || http.statusCode == 429 || http.statusCode >= 500,
+                    retryAfter: Int(http.value(forHTTPHeaderField: "Retry-After") ?? ""),
+                    requestID: http.value(forHTTPHeaderField: "X-Request-ID")
+                )
+            )
         }
         return bytes
     }
@@ -178,28 +288,90 @@ final class APIClient: @unchecked Sendable {
         }
     }
 
-    func reply(sessionId: String, actionKey: String, utterance: String?) async throws -> PhoneReplyResponse {
+    func reply(
+        sessionId: String,
+        actionKey: String,
+        utterance: String?,
+        idempotencyKey: String? = nil
+    ) async throws -> PhoneReplyResponse {
         struct Body: Encodable {
             let action_key: String
             let utterance: String?
+            let idempotency_key: String?
         }
         return try await post(
             "/v1/phone/sessions/\(sessionId)/reply",
-            body: Body(action_key: actionKey, utterance: utterance),
+            body: Body(
+                action_key: actionKey,
+                utterance: utterance,
+                idempotency_key: idempotencyKey
+            ),
             auth: true
         )
     }
 
-    func confirm(sessionId: String, actionId: String, confirm: Bool) async throws -> PhoneReplyResponse {
+    func confirm(
+        sessionId: String,
+        actionId: String,
+        confirm: Bool,
+        idempotencyKey: String? = nil
+    ) async throws -> PhoneReplyResponse {
         struct Body: Encodable {
             let action_id: String
             let confirm: Bool
+            let idempotency_key: String?
         }
         return try await post(
             "/v1/phone/sessions/\(sessionId)/confirm",
-            body: Body(action_id: actionId, confirm: confirm),
+            body: Body(
+                action_id: actionId,
+                confirm: confirm,
+                idempotency_key: idempotencyKey
+            ),
             auth: true
         )
+    }
+
+    /// Submit a locally validated CommandEnvelope. The backend remains the
+    /// authority: this method only transports the draft and returns its
+    /// persisted lifecycle state.
+    func createCommand(_ envelope: CommandEnvelope) async throws -> CommandResponse {
+        try await post("/v1/phone/commands", body: envelope, auth: true)
+    }
+
+    func getCommand(commandID: String) async throws -> CommandResponse {
+        try await get("/v1/phone/commands/\(commandID)")
+    }
+
+    func confirmCommand(commandID: String, confirmationToken: String) async throws -> CommandResponse {
+        struct Body: Encodable {
+            let confirmation_token: String
+        }
+        return try await post(
+            "/v1/phone/commands/\(commandID)/confirm",
+            body: Body(confirmation_token: confirmationToken),
+            auth: true
+        )
+    }
+
+    func cancelCommand(commandID: String) async throws -> CommandResponse {
+        try await post(
+            "/v1/phone/commands/\(commandID)/cancel",
+            body: EmptyBody(),
+            auth: true
+        )
+    }
+
+    func undoCommand(commandID: String) async throws -> CommandResponse {
+        try await post(
+            "/v1/phone/commands/\(commandID)/undo",
+            body: EmptyBody(),
+            auth: true
+        )
+    }
+
+    func getModelArtifactDescriptor(modelID: String) async throws -> ModelArtifactDescriptorResponse {
+        try await get("/v1/phone/models/\(modelID)")
     }
 
     private func makeURL(_ path: String, query: [URLQueryItem] = []) throws -> URL {
@@ -218,8 +390,8 @@ final class APIClient: @unchecked Sendable {
         return result
     }
 
-    private func get<T: Decodable>(_ path: String) async throws -> T {
-        var req = URLRequest(url: try makeURL(path))
+    private func get<T: Decodable>(_ path: String, query: [URLQueryItem] = []) async throws -> T {
+        var req = URLRequest(url: try makeURL(path, query: query))
         req.httpMethod = "GET"
         try applyAuth(&req)
         return try await send(req)
@@ -234,9 +406,26 @@ final class APIClient: @unchecked Sendable {
         return try await send(req)
     }
 
+    private func patch<T: Decodable, B: Encodable>(_ path: String, body: B, auth: Bool) async throws -> T {
+        var req = URLRequest(url: try makeURL(path))
+        req.httpMethod = "PATCH"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(body)
+        if auth { try applyAuth(&req) }
+        return try await send(req)
+    }
+
+    private func delete<T: Decodable>(_ path: String) async throws -> T {
+        var req = URLRequest(url: try makeURL(path))
+        req.httpMethod = "DELETE"
+        try applyAuth(&req)
+        return try await send(req)
+    }
+
     private func applyAuth(_ req: inout URLRequest) throws {
         guard let token else { throw APIClientError.noToken }
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue(Self.stableDeviceID, forHTTPHeaderField: "X-Device-ID")
     }
 
     private func send<T: Decodable>(_ req: URLRequest) async throws -> T {
@@ -259,7 +448,13 @@ final class APIClient: @unchecked Sendable {
             let fallback = String(data: data, encoding: .utf8) ?? "Request failed"
             let message = (try? JSONDecoder().decode(APIErrorBody.self, from: data))?.message
                 ?? fallback
-            throw APIClientError.badStatus(code, message)
+            let decoded = try? JSONDecoder().decode(APIErrorBody.self, from: data)
+            let metadata = APIErrorMetadata(
+                retryable: decoded?.retryable ?? (code == 408 || code == 425 || code == 429 || code >= 500),
+                retryAfter: decoded?.retry_after ?? Int(http.value(forHTTPHeaderField: "Retry-After") ?? ""),
+                requestID: decoded?.request_id ?? http.value(forHTTPHeaderField: "X-Request-ID")
+            )
+            throw APIClientError.badStatus(code, message, metadata)
         }
         if T.self == EmptyJSON.self {
             return EmptyJSON() as! T
