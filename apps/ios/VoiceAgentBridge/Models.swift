@@ -22,6 +22,16 @@ struct AgentsResponse: Decodable {
     let agents: [Agent]
 }
 
+/// The default realtime payload is intentionally small. It invalidates the
+/// local snapshot; AppStore performs the authoritative REST reconciliation.
+/// Other features can reuse the generic transport with their own Decodable
+/// payload type later.
+struct SessionInvalidation: Decodable {
+    let session_id: String?
+    let updated_at: String?
+    let reason: String?
+}
+
 /// The bridge deliberately keeps facts unopinionated: agent skills can add
 /// strings, numbers, flags, or nested values without requiring an iOS release.
 enum JSONValue: Decodable, Hashable {

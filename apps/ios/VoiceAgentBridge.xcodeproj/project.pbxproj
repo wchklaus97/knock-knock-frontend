@@ -55,7 +55,7 @@
 		A870B09F37E0388AC4950D5C /* VoiceAgentBridge.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = VoiceAgentBridge.entitlements; sourceTree = "<group>"; };
 		C4A3102CC0FD64B33E8C6512 /* NotificationDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationDiagnostics.swift; sourceTree = "<group>"; };
 		D3B75AF8190D9C92C0C3CD6F /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
-		FB51484FA608CC2A692E7A0B /* VoiceAgentBridge.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = VoiceAgentBridge.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FB51484FA608CC2A692E7A0B /* VoiceAgentBridge.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VoiceAgentBridge.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -185,10 +185,6 @@
 						ProvisioningStyle = Automatic;
 						TestTargetID = 95B2F73CA8EAD5AB4E6FF270;
 					};
-					95B2F73CA8EAD5AB4E6FF270 = {
-						DevelopmentTeam = TXKDW2YS44;
-						ProvisioningStyle = Automatic;
-					};
 					C1014640451ADE67F8E70780 = {
 						DevelopmentTeam = TXKDW2YS44;
 						ProvisioningStyle = Automatic;
@@ -288,6 +284,7 @@
 					"@loader_path/Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = hk.knockknock.app.uitests;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_TARGET_NAME = VoiceAgentBridge;
@@ -306,6 +303,7 @@
 					"@loader_path/Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = hk.knockknock.app.tests;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/VoiceAgentBridge.app/VoiceAgentBridge";
@@ -386,16 +384,18 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = VoiceAgentBridge/VoiceAgentBridge.entitlements;
-				CODE_SIGN_IDENTITY = "Apple Distribution";
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = TXKDW2YS44;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = VoiceAgentBridge/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = hk.knockknock.app;
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = iphoneos;
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				TARGETED_DEVICE_FAMILY = 1;
@@ -414,6 +414,7 @@
 					"@loader_path/Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = hk.knockknock.app.uitests;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_TARGET_NAME = VoiceAgentBridge;
@@ -494,6 +495,7 @@
 					"@loader_path/Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = hk.knockknock.app.tests;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/VoiceAgentBridge.app/VoiceAgentBridge";
@@ -510,6 +512,7 @@
 				DEVELOPMENT_TEAM = TXKDW2YS44;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = VoiceAgentBridge/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

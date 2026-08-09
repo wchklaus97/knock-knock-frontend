@@ -131,6 +131,53 @@ final class APIClient: @unchecked Sendable {
         return res.pushes
     }
 
+    /// Opens the foreground-only server-sent event stream. The stream carries
+    /// small invalidation signals; AppStore then reconciles through REST so a
+    /// reconnect cannot leave the inbox partially updated.
+    func openEventStream(since: String?) async throws -> URLSession.AsyncBytes {
+        var query: [URLQueryItem] = []
+        if let since, !since.isEmpty {
+            query.append(URLQueryItem(name: "since", value: since))
+        }
+        var request = URLRequest(url: try makeURL("/v1/phone/events", query: query))
+        request.httpMethod = "GET"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = 45
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        if let since, !since.isEmpty {
+            request.setValue(since, forHTTPHeaderField: "Last-Event-ID")
+        }
+        try applyAuth(&request)
+
+        let bytes: URLSession.AsyncBytes
+        let response: URLResponse
+        do {
+            (bytes, response) = try await URLSession.shared.bytes(for: request)
+        } catch let error as URLError {
+            throw APIClientError.network(error.localizedDescription)
+        } catch {
+            throw APIClientError.network(error.localizedDescription)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw APIClientError.network("The event stream response was not HTTP.")
+        }
+        guard (200 ..< 300).contains(http.statusCode) else {
+            throw APIClientError.badStatus(http.statusCode, "Event stream request failed")
+        }
+        return bytes
+    }
+
+    /// Default Knock Knock realtime transport. The transport itself is
+    /// generic so another feature can provide a different Decodable payload.
+    func makeSessionEventTransport() -> ServerSentEventsTransport<SessionInvalidation> {
+        ServerSentEventsTransport { [weak self] since in
+            guard let self else {
+                throw APIClientError.network("The API client is unavailable.")
+            }
+            return try await self.openEventStream(since: since)
+        }
+    }
+
     func reply(sessionId: String, actionKey: String, utterance: String?) async throws -> PhoneReplyResponse {
         struct Body: Encodable {
             let action_key: String
@@ -155,12 +202,20 @@ final class APIClient: @unchecked Sendable {
         )
     }
 
-    private func makeURL(_ path: String) throws -> URL {
+    private func makeURL(_ path: String, query: [URLQueryItem] = []) throws -> URL {
         guard let baseURL,
               let url = URL(string: path, relativeTo: baseURL)?.absoluteURL else {
             throw APIClientError.invalidBaseURL
         }
-        return url
+        guard !query.isEmpty else { return url }
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw APIClientError.invalidBaseURL
+        }
+        components.queryItems = query
+        guard let result = components.url else {
+            throw APIClientError.invalidBaseURL
+        }
+        return result
     }
 
     private func get<T: Decodable>(_ path: String) async throws -> T {
@@ -214,5 +269,122 @@ final class APIClient: @unchecked Sendable {
         } catch {
             throw APIClientError.decoding
         }
+    }
+}
+
+struct RealtimeEvent<Payload: Decodable> {
+    let id: String?
+    let name: String
+    let payload: Payload
+}
+
+/// Generic SSE transport used by the app's default realtime implementation.
+/// It owns framing, JSON decoding, cancellation, and stream termination; the
+/// caller only handles typed events.
+final class ServerSentEventsTransport<Payload: Decodable>: @unchecked Sendable {
+    typealias StreamOpener = @Sendable (String?) async throws -> URLSession.AsyncBytes
+
+    private let open: StreamOpener
+
+    init(open: @escaping StreamOpener) {
+        self.open = open
+    }
+
+    func stream(since: String?) async throws -> AsyncThrowingStream<RealtimeEvent<Payload>, Error> {
+        let bytes = try await open(since)
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                var parser = ServerSentEventParser()
+                let decoder = JSONDecoder()
+                do {
+                    for try await line in bytes.lines {
+                        if Task.isCancelled {
+                            continuation.finish()
+                            return
+                        }
+                        if let raw = parser.consume(line) {
+                            guard let data = raw.data.data(using: .utf8),
+                                  let payload = try? decoder.decode(Payload.self, from: data)
+                            else {
+                                continuation.finish(throwing: APIClientError.decoding)
+                                return
+                            }
+                            continuation.yield(
+                                RealtimeEvent(id: raw.id, name: raw.name, payload: payload)
+                            )
+                        }
+                    }
+                    if let raw = parser.finish(),
+                       let data = raw.data.data(using: .utf8),
+                       let payload = try? decoder.decode(Payload.self, from: data) {
+                        continuation.yield(
+                            RealtimeEvent(id: raw.id, name: raw.name, payload: payload)
+                        )
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { @Sendable _ in
+                task.cancel()
+            }
+        }
+    }
+}
+
+private struct RawServerSentEvent {
+    let id: String?
+    let name: String
+    let data: String
+}
+
+private struct ServerSentEventParser {
+    private var id: String?
+    private var name = "message"
+    private var dataLines: [String] = []
+
+    mutating func consume(_ rawLine: String) -> RawServerSentEvent? {
+        let line = rawLine.hasSuffix("\r") ? String(rawLine.dropLast()) : rawLine
+        if line.isEmpty {
+            return finish()
+        }
+        guard !line.hasPrefix(":") else { return nil }
+
+        let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        let field = String(parts[0])
+        var value = parts.count > 1 ? String(parts[1]) : ""
+        if value.first == " " {
+            value.removeFirst()
+        }
+        switch field {
+        case "id": id = value
+        case "event": name = value.isEmpty ? "message" : value
+        case "data": dataLines.append(value)
+        default: break
+        }
+        return nil
+    }
+
+    mutating func finish() -> RawServerSentEvent? {
+        guard !dataLines.isEmpty else {
+            reset()
+            return nil
+        }
+        let event = RawServerSentEvent(
+            id: id,
+            name: name,
+            data: dataLines.joined(separator: "\n")
+        )
+        reset()
+        return event
+    }
+
+    private mutating func reset() {
+        id = nil
+        name = "message"
+        dataLines = []
     }
 }
