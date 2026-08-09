@@ -14,6 +14,13 @@ Copy this entire file into a long-running Codex task. Work **only** in this repo
 
 **Not the goal:** general Siri assistant, chat replacement, or unrelated product features.
 
+## Canonical backend architecture references
+
+The backend contract is the sole protocol source of truth. This iOS handoff is a pointer only and must not copy the full architectural decisions; update the backend references first when the contract or architecture changes.
+
+- [Backend architecture decisions](https://github.com/wchklaus97/knock-knock-backend/blob/main/docs/ARCHITECTURE_DECISIONS.md) — canonical architecture decisions (cross-repo placeholder).
+- [Backend implementation roadmap](https://github.com/wchklaus97/knock-knock-backend/blob/main/docs/IMPLEMENTATION_ROADMAP.md) — canonical implementation sequencing (cross-repo placeholder).
+
 **Locked MVP loop:**
 
 ```text
