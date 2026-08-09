@@ -24,6 +24,8 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>KNOCK_API_BASE_URL</key>
 	<string>$(KNOCK_API_BASE_URL)</string>
+	<key>KNOCK_MODEL_PUBLIC_KEY_BASE64</key>
+	<string>$(KNOCK_MODEL_PUBLIC_KEY_BASE64)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>

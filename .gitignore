@@ -11,8 +11,11 @@ DerivedData
 *.xcuserstate
 apps/ios/*.xcodeproj/xcuserdata
 apps/ios/*.xcworkspace/xcuserdata
+apps/ios/.spm-cache/
+apps/ios/.spm-cache-*/
+apps/ios/.derivedData-*/
+apps/ios/.derivedData
 coverage
 *.log
 secrets/
 *.p8
-

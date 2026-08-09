@@ -45,6 +45,8 @@ final class AppStore: ObservableObject {
     @Published private(set) var messagesBySession: [String: [SessionMessage]] = [:]
     @Published private(set) var retrievalsBySession: [String: [RetrievalItem]] = [:]
     @Published private(set) var pendingOperations: [PendingOperation] = []
+    @Published private(set) var voiceModelStatus = "Not prepared"
+    @Published private(set) var voiceController: LocalVoiceCommandController?
     /// A knock can ask the main tab to open one exact agent session.
     @Published var openSessionId: String?
 
@@ -65,6 +67,7 @@ final class AppStore: ObservableObject {
     private var hasSeededPushIds = false
     private weak var appDelegate: AppDelegate?
     private var pendingSessionToOpen: String?
+    private var voiceModelManager: LocalVoiceModelManager?
 
     struct KnockAlert: Identifiable, Equatable {
         let id: String
@@ -498,6 +501,47 @@ final class AppStore: ObservableObject {
         UserDefaults.standard.set(email, forKey: "vab.email")
     }
 
+    /// Downloads and verifies the configured Gemma artifact on demand. The
+    /// model is never activated until the app's pinned public key verifies its
+    /// manifest and bytes; if the release has not configured a model, the UI
+    /// reports that explicitly and the voice button remains unavailable.
+    func prepareLocalVoiceModel() async {
+        guard token != nil else {
+            voiceModelStatus = "Sign in before preparing voice"
+            return
+        }
+        voiceModelStatus = "Preparing on-device voice model…"
+        do {
+            let manager: LocalVoiceModelManager
+            if let existing = voiceModelManager {
+                manager = existing
+            } else {
+                manager = try LocalVoiceModelManager()
+            }
+            voiceModelManager = manager
+            if manager.activeModel == nil {
+                let descriptor = try await client.getModelArtifactDescriptor(
+                    modelID: LocalVoiceModelManager.defaultModelID
+                )
+                _ = try await manager.install(descriptor)
+            }
+            let generator = try manager.makeCommandGenerator()
+            let client = self.client
+            voiceController = LocalVoiceCommandController(generator: generator) { envelope in
+                try await client.createCommand(envelope)
+            }
+            if let model = manager.activeModel {
+                voiceModelStatus = "Ready · Gemma \(model.manifest.modelVersion)"
+            } else {
+                voiceModelStatus = "Model not installed"
+            }
+        } catch {
+            voiceController = nil
+            voiceModelStatus = "Unavailable · \(error.localizedDescription)"
+            errorMessage = "On-device voice is not ready: \(error.localizedDescription)"
+        }
+    }
+
     func logout() {
         if let refreshToken {
             let client = self.client
@@ -523,6 +567,8 @@ final class AppStore: ObservableObject {
         messagesBySession = [:]
         retrievalsBySession = [:]
         pendingOperations = []
+        voiceController = nil
+        voiceModelStatus = "Not prepared"
         localStore.clearUserData()
         pendingSessionToOpen = nil
         knownPushIds = []

@@ -476,6 +476,13 @@ struct CommandResponseError: Decodable, Equatable {
     let retryable: Bool
 }
 
+struct ModelArtifactDescriptorResponse: Decodable, Equatable {
+    let model_id: String
+    let manifest: ModelManifest
+    let download_url: String
+    let expires_at: String?
+}
+
 struct PendingAction: Decodable {
     let action_id: String
     let session_id: String

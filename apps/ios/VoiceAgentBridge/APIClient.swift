@@ -370,6 +370,10 @@ final class APIClient: @unchecked Sendable {
         )
     }
 
+    func getModelArtifactDescriptor(modelID: String) async throws -> ModelArtifactDescriptorResponse {
+        try await get("/v1/phone/models/\(modelID)")
+    }
+
     private func makeURL(_ path: String, query: [URLQueryItem] = []) throws -> URL {
         guard let baseURL,
               let url = URL(string: path, relativeTo: baseURL)?.absoluteURL else {

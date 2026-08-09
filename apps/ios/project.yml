@@ -5,6 +5,9 @@ options:
     iOS: "15.0"
   xcodeVersion: "16.0"
   createIntermediateGroups: true
+packages:
+  LiteRTLM:
+    path: ThirdParty/LiteRTLM
 settings:
   base:
     SWIFT_VERSION: "5.0"
@@ -13,6 +16,7 @@ settings:
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "25"
     KNOCK_API_BASE_URL: ""
+    KNOCK_MODEL_PUBLIC_KEY_BASE64: ""
     APS_ENVIRONMENT: development
   configs:
     Release:
@@ -25,6 +29,8 @@ targets:
     platform: iOS
     sources:
       - path: VoiceAgentBridge
+    dependencies:
+      - package: LiteRTLM
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: hk.knockknock.app
