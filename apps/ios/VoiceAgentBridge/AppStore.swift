@@ -1095,19 +1095,18 @@ final class AppStore: ObservableObject {
                 }
                 completedAny = true
             } catch let error as APIClientError {
-                if Self.isRetryableNetwork(error) || Self.isUnauthorized(error) {
+                if Self.shouldRetryPendingOperation(error) {
                     if case let .badStatus(_, _, metadata) = error,
                        let requestID = metadata.requestID
                     {
                         print("[pending] retryable request=\(requestID) retry_after=\(metadata.retryAfter ?? 0)")
                     }
                     remaining.append(operation)
-                } else if case APIClientError.badStatus(let code, _, let metadata) = error,
-                          metadata.retryable || !(404...410).contains(code) {
-                    remaining.append(operation)
                 }
             } catch {
-                remaining.append(operation)
+                // Decoding, validation, conflict, and expiry failures are
+                // permanent for this pending operation. Keeping them queued
+                // would retry invalid user input forever.
             }
         }
         if let generation,
@@ -1122,12 +1121,17 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private static func isRetryableNetwork(_ error: APIClientError) -> Bool {
+    nonisolated private static func isRetryableNetwork(_ error: APIClientError) -> Bool {
         if case .network = error { return true }
         if case let .badStatus(code, _, metadata) = error {
             return metadata.retryable || code == 408 || code == 425 || code == 429 || code >= 500
         }
         return false
+    }
+
+    nonisolated static func shouldRetryPendingOperation(_ error: Error) -> Bool {
+        guard let error = error as? APIClientError else { return false }
+        return isRetryableNetwork(error)
     }
 
 }

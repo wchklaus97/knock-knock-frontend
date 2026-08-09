@@ -277,6 +277,24 @@ final class ModelsDecodingTests: XCTestCase {
         } else {
             XCTFail("Expected structured status error")
         }
+        XCTAssertFalse(
+            AppStore.shouldRetryPendingOperation(
+                APIClientError.badStatus(
+                    422,
+                    "Invalid command",
+                    APIErrorMetadata(retryable: false, retryAfter: nil, requestID: nil)
+                )
+            )
+        )
+        XCTAssertTrue(
+            AppStore.shouldRetryPendingOperation(
+                APIClientError.badStatus(
+                    429,
+                    "Too many requests",
+                    APIErrorMetadata(retryable: true, retryAfter: 2, requestID: nil)
+                )
+            )
+        )
     }
 
     func testHistoryRetrievalAndPushReadModelsDecode() throws {
