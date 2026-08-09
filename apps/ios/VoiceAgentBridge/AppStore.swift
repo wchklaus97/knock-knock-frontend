@@ -702,6 +702,11 @@ final class AppStore: ObservableObject {
             while true {
                 let response = try await client.sync(after: nextCursor)
                 guard reconciliationGeneration == generation, token != nil else { return nil }
+                for change in response.changes where change.deleted_at != nil {
+                    if change.entity_type == "session" {
+                        removeLocalSession(change.entity_id)
+                    }
+                }
                 nextCursor = response.cursor
                 if !response.has_more { break }
             }
@@ -824,6 +829,15 @@ final class AppStore: ObservableObject {
         lastRefreshAt = Date()
         connectionState = .connected
         errorMessage = nil
+    }
+
+    private func removeLocalSession(_ sessionID: String) {
+        sessions.removeAll { $0.session_id == sessionID }
+        historyBySession[sessionID] = nil
+        messagesBySession[sessionID] = nil
+        retrievalsBySession[sessionID] = nil
+        localStore.removeSession(sessionID)
+        if openSessionId == sessionID { openSessionId = nil }
     }
 
     private func handleRefreshError(_ error: Error) {
@@ -1066,6 +1080,7 @@ final class AppStore: ObservableObject {
 
     private static func isRetryableNetwork(_ error: APIClientError) -> Bool {
         if case .network = error { return true }
+        if case let .badStatus(code, _) = error { return code == 429 || code >= 500 }
         return false
     }
 
