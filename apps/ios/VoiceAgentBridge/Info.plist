@@ -28,6 +28,10 @@
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Knock Knock needs local network access to reach the API running on your Mac (for example http://192.168.x.x:8787).</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Knock Knock uses the microphone only while you hold push-to-talk. Audio is processed in memory and is not saved or uploaded.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Knock Knock uses on-device speech recognition to turn push-to-talk audio into text.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>
