@@ -314,6 +314,44 @@ final class APIClient: @unchecked Sendable {
         )
     }
 
+    /// Submit a locally validated CommandEnvelope. The backend remains the
+    /// authority: this method only transports the draft and returns its
+    /// persisted lifecycle state.
+    func createCommand(_ envelope: CommandEnvelope) async throws -> CommandResponse {
+        try await post("/v1/phone/commands", body: envelope, auth: true)
+    }
+
+    func getCommand(commandID: String) async throws -> CommandResponse {
+        try await get("/v1/phone/commands/\(commandID)")
+    }
+
+    func confirmCommand(commandID: String, confirmationToken: String) async throws -> CommandResponse {
+        struct Body: Encodable {
+            let confirmation_token: String
+        }
+        return try await post(
+            "/v1/phone/commands/\(commandID)/confirm",
+            body: Body(confirmation_token: confirmationToken),
+            auth: true
+        )
+    }
+
+    func cancelCommand(commandID: String) async throws -> CommandResponse {
+        try await post(
+            "/v1/phone/commands/\(commandID)/cancel",
+            body: EmptyBody(),
+            auth: true
+        )
+    }
+
+    func undoCommand(commandID: String) async throws -> CommandResponse {
+        try await post(
+            "/v1/phone/commands/\(commandID)/undo",
+            body: EmptyBody(),
+            auth: true
+        )
+    }
+
     private func makeURL(_ path: String, query: [URLQueryItem] = []) throws -> URL {
         guard let baseURL,
               let url = URL(string: path, relativeTo: baseURL)?.absoluteURL else {

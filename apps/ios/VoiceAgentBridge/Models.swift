@@ -27,7 +27,10 @@ struct AgentsResponse: Decodable {
 /// Other features can reuse the generic transport with their own Decodable
 /// payload type later.
 struct SessionInvalidation: Decodable {
+    let id: String?
+    let type: String?
     let session_id: String?
+    let version: Int?
     let updated_at: String?
     let reason: String?
 }
@@ -452,6 +455,25 @@ struct PhoneReplyResponse: Decodable {
     let session: Session
     let action: PendingAction
     let needs_confirm: Bool?
+}
+
+struct CommandResponse: Decodable, Equatable {
+    let command_id: String
+    let state: String
+    let command: CommandEnvelope?
+    let confirmation_token: String?
+    let result: JSONValue?
+    let error: CommandResponseError?
+    let undo_command_id: String?
+    let version: Int?
+    let created_at: String?
+    let updated_at: String?
+}
+
+struct CommandResponseError: Decodable, Equatable {
+    let code: String
+    let message: String
+    let retryable: Bool
 }
 
 struct PendingAction: Decodable {
