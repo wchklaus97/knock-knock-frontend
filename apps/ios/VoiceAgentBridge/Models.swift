@@ -7,7 +7,7 @@ struct AuthResponse: Decodable {
     let expires_in: Int?
 }
 
-struct Agent: Decodable, Identifiable, Hashable {
+struct Agent: Codable, Identifiable, Hashable {
     let agent_id: String
     let user_id: String
     let label: String
@@ -34,7 +34,7 @@ struct SessionInvalidation: Decodable {
 
 /// The bridge deliberately keeps facts unopinionated: agent skills can add
 /// strings, numbers, flags, or nested values without requiring an iOS release.
-enum JSONValue: Decodable, Hashable {
+enum JSONValue: Codable, Hashable {
     case string(String)
     case number(Double)
     case bool(Bool)
@@ -64,6 +64,18 @@ enum JSONValue: Decodable, Hashable {
         }
     }
 
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case let .string(value): try container.encode(value)
+        case let .number(value): try container.encode(value)
+        case let .bool(value): try container.encode(value)
+        case let .object(value): try container.encode(value)
+        case let .array(value): try container.encode(value)
+        case .null: try container.encodeNil()
+        }
+    }
+
     var displayValue: String {
         switch self {
         case let .string(value): return value
@@ -82,7 +94,7 @@ struct PairingCodeResponse: Decodable {
     let expires_at: String
 }
 
-struct Session: Decodable, Identifiable, Hashable {
+struct Session: Codable, Identifiable, Hashable {
     var id: String { session_id }
     let session_id: String
     let agent_id: String
@@ -267,7 +279,7 @@ struct SessionsResponse: Decodable {
     let sessions: [Session]
 }
 
-struct DevPush: Decodable, Identifiable {
+struct DevPush: Codable, Identifiable {
     var id: String { push_id }
     let push_id: String
     let session_id: String
@@ -281,7 +293,7 @@ struct DevPushesResponse: Decodable {
     let pushes: [DevPush]
 }
 
-struct HistoryEntry: Decodable, Identifiable, Hashable {
+struct HistoryEntry: Codable, Identifiable, Hashable {
     let audit_id: String
     let action: String
     let session_id: String?
@@ -303,6 +315,20 @@ struct HistoryEntry: Decodable, Identifiable, Hashable {
 
 struct HistoryResponse: Decodable {
     let entries: [HistoryEntry]
+}
+
+struct PhoneChange: Decodable {
+    let cursor: String
+    let entity_type: String
+    let entity_id: String
+    let session_id: String?
+    let version: Int
+}
+
+struct SyncResponse: Decodable {
+    let cursor: String
+    let changes: [PhoneChange]
+    let has_more: Bool
 }
 
 struct PendingOperation: Codable, Identifiable, Hashable {
@@ -356,4 +382,29 @@ struct PendingAction: Decodable {
 struct APIErrorBody: Decodable {
     let error: String?
     let message: String?
+
+    private struct Envelope: Decodable {
+        let code: String?
+        let message: String?
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case error, message
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        var decodedMessage = try container.decodeIfPresent(String.self, forKey: .message)
+        if let legacy = try? container.decode(String.self, forKey: .error) {
+            error = legacy
+        } else if let envelope = try? container.decode(Envelope.self, forKey: .error) {
+            error = envelope.code
+            if decodedMessage == nil {
+                decodedMessage = envelope.message
+            }
+        } else {
+            error = nil
+        }
+        message = decodedMessage
+    }
 }

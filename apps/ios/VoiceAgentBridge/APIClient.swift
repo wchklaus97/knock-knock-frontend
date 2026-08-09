@@ -90,6 +90,8 @@ final class APIClient: @unchecked Sendable {
             let platform: String
             let push_token: String
             let locale: String
+            let timezone: String
+            let device_id: String
         }
         #if targetEnvironment(simulator)
         let platform = "ios_simulator"
@@ -103,15 +105,40 @@ final class APIClient: @unchecked Sendable {
             body: DeviceBody(
                 platform: platform,
                 push_token: token,
-                locale: "zh-Hans"
+                locale: Locale.current.identifier.replacingOccurrences(of: "_", with: "-"),
+                timezone: TimeZone.current.identifier,
+                device_id: Self.stableDeviceID
             ),
             auth: true
         )
     }
 
+    private static var stableDeviceID: String {
+        let key = "vab.deviceID"
+        if let existing = UserDefaults.standard.string(forKey: key), !existing.isEmpty {
+            return existing
+        }
+        let generated = "ios-\(UUID().uuidString.lowercased())"
+        UserDefaults.standard.set(generated, forKey: key)
+        return generated
+    }
+
     func listSessions() async throws -> [Session] {
         let res: SessionsResponse = try await get("/v1/phone/sessions")
         return res.sessions
+    }
+
+    /// Fetch durable phone changes after an applied cursor. The endpoint is
+    /// optional during the compatibility window; AppStore falls back to the
+    /// existing REST snapshot when an older backend returns 404.
+    func sync(after cursor: String?, limit: Int = 50) async throws -> SyncResponse {
+        var query: [URLQueryItem] = [
+            URLQueryItem(name: "limit", value: String(min(max(limit, 1), 50)))
+        ]
+        if let cursor, !cursor.isEmpty {
+            query.append(URLQueryItem(name: "after", value: cursor))
+        }
+        return try await get("/v1/phone/sync", query: query)
     }
 
     func listAgents() async throws -> [Agent] {
@@ -218,8 +245,8 @@ final class APIClient: @unchecked Sendable {
         return result
     }
 
-    private func get<T: Decodable>(_ path: String) async throws -> T {
-        var req = URLRequest(url: try makeURL(path))
+    private func get<T: Decodable>(_ path: String, query: [URLQueryItem] = []) async throws -> T {
+        var req = URLRequest(url: try makeURL(path, query: query))
         req.httpMethod = "GET"
         try applyAuth(&req)
         return try await send(req)

@@ -19,6 +19,8 @@
 		A4F7B8446C4AAAC4DE5C5037 /* NotificationDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A3102CC0FD64B33E8C6512 /* NotificationDiagnostics.swift */; };
 		B049614B0D5B76A5CAEFD5FC /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3B75AF8190D9C92C0C3CD6F /* RootView.swift */; };
 		C0C08D2DE6E9A140CC5C3D0D /* VoiceAgentBridgeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19C24F29A3BD81FEBD216B85 /* VoiceAgentBridgeApp.swift */; };
+		A5F6F5AA71D24A3D9C14E2D1 /* SQLiteStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1A0B6D2036C4A3B8B2D9C11 /* SQLiteStore.swift */; };
+		C4A7D8E9123F4B5C6D7E8F90 /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = F5E7B2C19A5D4E6F8C1A3B20 /* libsqlite3.tbd */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -55,6 +57,8 @@
 		A870B09F37E0388AC4950D5C /* VoiceAgentBridge.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = VoiceAgentBridge.entitlements; sourceTree = "<group>"; };
 		C4A3102CC0FD64B33E8C6512 /* NotificationDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationDiagnostics.swift; sourceTree = "<group>"; };
 		D3B75AF8190D9C92C0C3CD6F /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		E1A0B6D2036C4A3B8B2D9C11 /* SQLiteStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SQLiteStore.swift; sourceTree = "<group>"; };
+		F5E7B2C19A5D4E6F8C1A3B20 /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.text-based-dylib; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };
 		FB51484FA608CC2A692E7A0B /* VoiceAgentBridge.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VoiceAgentBridge.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -88,6 +92,7 @@
 				7D49A56708A5256649EFEAEF /* Info.plist */,
 				8BEAF2F2CA23A5162A99B79E /* Models.swift */,
 				C4A3102CC0FD64B33E8C6512 /* NotificationDiagnostics.swift */,
+				E1A0B6D2036C4A3B8B2D9C11 /* SQLiteStore.swift */,
 				5A8C292E2E86149C5183D6F7 /* ProductionViews.swift */,
 				D3B75AF8190D9C92C0C3CD6F /* RootView.swift */,
 				A870B09F37E0388AC4950D5C /* VoiceAgentBridge.entitlements */,
@@ -139,6 +144,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = A557707B699BFE740750E368 /* Build configuration list for PBXNativeTarget "VoiceAgentBridge" */;
 			buildPhases = (
+				B5C6D7E8F90123456789ABCD /* Frameworks */,
 				CDC1A2F54D008E423C8D5E36 /* Sources */,
 				698D81D2DA8EBF5746CEECF5 /* Resources */,
 			);
@@ -223,6 +229,17 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXFrameworksBuildPhase section */
+		B5C6D7E8F90123456789ABCD /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C4A7D8E9123F4B5C6D7E8F90 /* libsqlite3.tbd in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		2E8812C7188D9D138DD60CF3 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -242,6 +259,7 @@
 				2114B9779C001BA980B4E436 /* DemoConfig.swift in Sources */,
 				8AE8C32B44D75BEB55918927 /* Models.swift in Sources */,
 				A4F7B8446C4AAAC4DE5C5037 /* NotificationDiagnostics.swift in Sources */,
+				A5F6F5AA71D24A3D9C14E2D1 /* SQLiteStore.swift in Sources */,
 				137762B8BE34597AEC835FE1 /* ProductionViews.swift in Sources */,
 				B049614B0D5B76A5CAEFD5FC /* RootView.swift in Sources */,
 				C0C08D2DE6E9A140CC5C3D0D /* VoiceAgentBridgeApp.swift in Sources */,
@@ -284,7 +302,7 @@
 					"@loader_path/Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = hk.knockknock.app.uitests;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_TARGET_NAME = VoiceAgentBridge;
@@ -303,7 +321,7 @@
 					"@loader_path/Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = hk.knockknock.app.tests;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/VoiceAgentBridge.app/VoiceAgentBridge";
@@ -389,7 +407,7 @@
 				DEVELOPMENT_TEAM = TXKDW2YS44;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = VoiceAgentBridge/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -414,7 +432,7 @@
 					"@loader_path/Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = hk.knockknock.app.uitests;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_TARGET_NAME = VoiceAgentBridge;
@@ -495,7 +513,7 @@
 					"@loader_path/Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = hk.knockknock.app.tests;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/VoiceAgentBridge.app/VoiceAgentBridge";
@@ -512,7 +530,7 @@
 				DEVELOPMENT_TEAM = TXKDW2YS44;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = VoiceAgentBridge/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
