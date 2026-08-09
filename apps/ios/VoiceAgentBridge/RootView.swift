@@ -34,9 +34,16 @@ struct RootView: View {
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.knockAlert?.id)
         .onChange(of: scenePhase) { phase in
-            guard phase == .active, store.token != nil else { return }
-            store.startPolling()
-            Task { await store.refresh() }
+            switch phase {
+            case .active:
+                guard store.token != nil else { return }
+                store.startEventStream()
+                Task { await store.refresh() }
+            case .background:
+                store.stopEventStream()
+            default:
+                break
+            }
         }
     }
 }

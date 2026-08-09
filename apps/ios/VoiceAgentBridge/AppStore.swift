@@ -47,9 +47,12 @@ final class AppStore: ObservableObject {
     @Published var openSessionId: String?
 
     let client = APIClient()
+    private lazy var eventTransport = client.makeSessionEventTransport()
     private var refreshToken: String?
-    private var pollTask: Task<Void, Never>?
-    private var pollingGeneration = 0
+    private var eventStreamTask: Task<Void, Never>?
+    private var fallbackRefreshTask: Task<Void, Never>?
+    private var eventStreamGeneration = 0
+    private var lastEventID: String? = UserDefaults.standard.string(forKey: "vab.lastEventID")
     private var knownPushIds = Set<String>()
     private var hasSeededPushIds = false
     private weak var appDelegate: AppDelegate?
@@ -195,6 +198,8 @@ final class AppStore: ObservableObject {
         }
         apiBase = trimmed
         UserDefaults.standard.set(trimmed, forKey: "vab.apiBase")
+        stopEventStream()
+        resetEventCursor()
         client.baseURL = url
         connectionState = .unknown
         errorMessage = nil
@@ -219,10 +224,10 @@ final class AppStore: ObservableObject {
         }
     }
 
-    /// Resume polling after cold start when a JWT is already saved.
+    /// Resume the foreground event stream after cold start when a JWT is already saved.
     func bootstrapIfLoggedIn() {
         guard token != nil else { return }
-        startPolling()
+        startEventStream()
         Task { await refresh() }
     }
 
@@ -278,7 +283,8 @@ final class AppStore: ObservableObject {
         } catch {
             print("[push] device registration deferred: \(error.localizedDescription)")
         }
-        startPolling()
+        resetEventCursor()
+        startEventStream()
         await refresh()
         if let pendingSessionToOpen {
             self.pendingSessionToOpen = nil
@@ -341,9 +347,7 @@ final class AppStore: ObservableObject {
             let client = self.client
             Task { try? await client.logout(refreshToken: refreshToken) }
         }
-        pollingGeneration += 1
-        pollTask?.cancel()
-        pollTask = nil
+        stopEventStream()
         token = nil
         refreshToken = nil
         client.refreshToken = nil
@@ -365,27 +369,115 @@ final class AppStore: ObservableObject {
         knownPushIds = []
         hasSeededPushIds = false
         knockAlert = nil
+        resetEventCursor()
     }
 
-    func startPolling() {
-        guard token != nil, pollTask == nil else { return }
-        pollingGeneration += 1
-        let generation = pollingGeneration
-        pollTask = Task { [weak self] in
+    /// Starts the foreground-only realtime transport. Kept under a separate
+    /// name so callers cannot accidentally reintroduce fixed-interval polling.
+    func startEventStream() {
+        guard token != nil, eventStreamTask == nil else { return }
+        stopFallbackRefresh()
+        eventStreamGeneration += 1
+        let generation = eventStreamGeneration
+        eventStreamTask = Task { [weak self] in
             defer {
-                if let self, self.pollingGeneration == generation {
-                    self.pollTask = nil
+                if let self, self.eventStreamGeneration == generation {
+                    self.eventStreamTask = nil
                 }
             }
+            await self?.runEventStream(generation: generation)
+        }
+    }
+
+    /// Compatibility wrapper for older views/tests. The app no longer polls
+    /// every two seconds; this now starts SSE instead.
+    func startPolling() {
+        startEventStream()
+    }
+
+    /// Stop the foreground stream when iOS moves the app into the background.
+    /// APNs remains responsible for waking the user while the app is suspended.
+    func stopEventStream() {
+        eventStreamGeneration += 1
+        eventStreamTask?.cancel()
+        eventStreamTask = nil
+        stopFallbackRefresh()
+    }
+
+    /// A temporary, low-frequency safety net for an unavailable SSE service.
+    /// It is only active while the app is foregrounded and never replaces the
+    /// normal event-driven path.
+    private func startFallbackRefresh() {
+        guard token != nil, fallbackRefreshTask == nil else { return }
+        fallbackRefreshTask = Task { [weak self] in
             while !Task.isCancelled {
-                guard let self, self.token != nil else { break }
-                await self.refresh()
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                await self?.refresh()
             }
         }
     }
 
-    func refresh() async {
+    private func stopFallbackRefresh() {
+        fallbackRefreshTask?.cancel()
+        fallbackRefreshTask = nil
+    }
+
+    private func resetEventCursor() {
+        lastEventID = nil
+        UserDefaults.standard.removeObject(forKey: "vab.lastEventID")
+    }
+
+    private func runEventStream(generation: Int) async {
+        var retrySeconds: UInt64 = 1
+        while !Task.isCancelled {
+            guard token != nil, eventStreamGeneration == generation else { return }
+            do {
+                let events = try await eventTransport.stream(since: lastEventID)
+                stopFallbackRefresh()
+                retrySeconds = 1
+                for try await event in events {
+                    guard !Task.isCancelled,
+                          eventStreamGeneration == generation
+                    else { return }
+                    handleServerSentEvent(event)
+                }
+            } catch {
+                if Task.isCancelled || eventStreamGeneration != generation { return }
+                if Self.isUnauthorized(error), await renewAccessToken() {
+                    retrySeconds = 1
+                    continue
+                }
+                connectionState = .unavailable
+                startFallbackRefresh()
+                print("[sse] \(error.localizedDescription)")
+            }
+
+            let delay = min(retrySeconds, 30)
+            retrySeconds = min(retrySeconds * 2, 30)
+            try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
+        }
+    }
+
+    private func handleServerSentEvent(_ event: RealtimeEvent<SessionInvalidation>) {
+        if let id = event.id, !id.isEmpty {
+            lastEventID = id
+            UserDefaults.standard.set(id, forKey: "vab.lastEventID")
+        }
+        switch event.name {
+        case "sync.required":
+            Task { await refresh(includeAgents: true) }
+        case "session.updated":
+            // A session update cannot change the agent list. Keep the push
+            // inbox reconciliation, but avoid fetching /v1/agents for every
+            // progress event.
+            Task { await refresh(includeAgents: false) }
+        default:
+            return
+        }
+    }
+
+    func refresh(includeAgents: Bool = true) async {
         guard token != nil else { return }
         guard !isRefreshing else { return }
         isRefreshing = true
@@ -394,12 +486,12 @@ final class AppStore: ObservableObject {
             hasLoadedData = true
         }
         do {
-            try await loadRemoteState()
+            try await loadRemoteState(includeAgents: includeAgents)
             await retryPendingOperations()
         } catch {
             if Self.isUnauthorized(error), await renewAccessToken() {
                 do {
-                    try await loadRemoteState()
+                    try await loadRemoteState(includeAgents: includeAgents)
                     await retryPendingOperations()
                     return
                 } catch {
@@ -414,21 +506,30 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func loadRemoteState() async throws {
+    private func loadRemoteState(includeAgents: Bool) async throws {
         async let s = client.listSessions()
         async let p = client.listPushes()
-        async let a = client.listAgents()
+        let agentsTask: Task<[Agent], Error>? = includeAgents
+            ? Task { try await client.listAgents() }
+            : nil
         let remoteSessions = try await s
         let newPushes = try await p
-        let remoteAgents = try await a
+        let remoteAgents: [Agent]?
+        if let agentsTask {
+            remoteAgents = try await agentsTask.value
+        } else {
+            remoteAgents = nil
+        }
         self.sessions = remoteSessions.sorted { lhs, rhs in
             if lhs.needsUser != rhs.needsUser { return lhs.needsUser && !rhs.needsUser }
             return lhs.updated_at > rhs.updated_at
         }
-        self.agents = remoteAgents.sorted { $0.displayLabel.localizedCaseInsensitiveCompare($1.displayLabel) == .orderedAscending }
-        if let selectedAgentId, !self.agents.contains(where: { $0.agent_id == selectedAgentId }) {
-            self.selectedAgentId = nil
-            UserDefaults.standard.removeObject(forKey: "vab.selectedAgentId")
+        if let remoteAgents {
+            self.agents = remoteAgents.sorted { $0.displayLabel.localizedCaseInsensitiveCompare($1.displayLabel) == .orderedAscending }
+            if let selectedAgentId, !self.agents.contains(where: { $0.agent_id == selectedAgentId }) {
+                self.selectedAgentId = nil
+                UserDefaults.standard.removeObject(forKey: "vab.selectedAgentId")
+            }
         }
         noteNewKnocks(newPushes)
         if headphonesSimulated, let newest = newPushes.first, newest.push_id != pushes.first?.push_id {
@@ -654,7 +755,7 @@ final class AppStore: ObservableObject {
         pendingOperations = remaining
         Self.writePendingOperations(remaining)
         if completedAny {
-            try? await loadRemoteState()
+            try? await loadRemoteState(includeAgents: false)
         }
     }
 
