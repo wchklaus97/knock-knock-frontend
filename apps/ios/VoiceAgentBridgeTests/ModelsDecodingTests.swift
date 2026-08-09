@@ -263,6 +263,20 @@ final class ModelsDecodingTests: XCTestCase {
         XCTAssertEqual(legacy.error, "legacy_error")
         XCTAssertEqual(legacy.message, "old backend")
         XCTAssertNil(legacy.retryable)
+
+        let failure = APIClientError.badStatus(
+            429,
+            "Too many requests",
+            APIErrorMetadata(retryable: true, retryAfter: 17, requestID: "req_2")
+        )
+        if case let .badStatus(code, _, metadata) = failure {
+            XCTAssertEqual(code, 429)
+            XCTAssertTrue(metadata.retryable)
+            XCTAssertEqual(metadata.retryAfter, 17)
+            XCTAssertEqual(metadata.requestID, "req_2")
+        } else {
+            XCTFail("Expected structured status error")
+        }
     }
 
     func testHistoryRetrievalAndPushReadModelsDecode() throws {
@@ -321,5 +335,9 @@ final class ModelsDecodingTests: XCTestCase {
 
         XCTAssertEqual(store.loadMessages(for: "ses_sqlite").map(\.message_id), ["msg_sqlite"])
         XCTAssertEqual(store.loadRetrievals(for: "ses_sqlite").map(\.retrieval_id), ["ret_sqlite"])
+        store.removeMessage(message.message_id)
+        store.removeRetrieval(retrieval.retrieval_id)
+        XCTAssertTrue(store.loadMessages(for: "ses_sqlite").isEmpty)
+        XCTAssertTrue(store.loadRetrievals(for: "ses_sqlite").isEmpty)
     }
 }
