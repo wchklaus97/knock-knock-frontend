@@ -153,7 +153,7 @@ pnpm demo:phone
 pnpm signoff:phone
 pnpm signoff:phone:watch
 pnpm test:e2e
-pnpm test:ios              # seeds a live decision and runs 36 unit + 3 UI tests
+pnpm test:ios              # checks the Rust Worker and runs 36 unit + 3 per-test UI fixtures
 
 cd apps/ios && xcodegen generate
 xcodebuild -scheme VoiceAgentBridge -destination 'generic/platform=iOS' build

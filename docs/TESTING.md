@@ -124,9 +124,10 @@ cd apps/ios && xcodebuild test \
   -scheme VoiceAgentBridge \
   -destination 'platform=iOS Simulator,name=iPhone SE (3rd generation),OS=17.5'
 
-# Full iOS Simulator regression: create a fresh Rust-backed fixture, generate
-# the project, then run 36 unit tests + 3 UI tests. Override IOS_TEST_DESTINATION
-# when a different simulator is required.
+# Full iOS Simulator regression: verify the Rust Worker, generate the project,
+# then run 36 unit tests + 3 UI tests. Each UI test creates its own account,
+# agent, session, and `needs_user` fixture, so no MCP agent key is required.
+# Override `BRIDGE_API_URL` and `IOS_TEST_DESTINATION` when needed.
 pnpm test:ios
 
 # Terminal C — iOS Simulator UI
