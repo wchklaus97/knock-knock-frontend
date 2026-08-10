@@ -41,4 +41,6 @@ xcodebuild \
   -project VoiceAgentBridge.xcodeproj \
   -scheme VoiceAgentBridge \
   -destination "$DESTINATION" \
+  KNOCK_API_BASE_URL="$BRIDGE_API_URL" \
+  KNOCK_UI_TEST_API_BASE_URL="$BRIDGE_API_URL" \
   test

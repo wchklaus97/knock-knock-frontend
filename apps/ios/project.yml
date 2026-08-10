@@ -53,6 +53,8 @@ targets:
       testTargets:
         - VoiceAgentBridgeTests
         - VoiceAgentBridgeUITests
+      environmentVariables:
+        KNOCK_UI_TEST_API_BASE_URL: "$(KNOCK_API_BASE_URL)"
 
   VoiceAgentBridgeTests:
     type: bundle.unit-test

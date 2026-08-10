@@ -202,10 +202,16 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         }
     }
 
+    private func launchForIsolatedFixture() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchEnvironment["KNOCK_UI_TEST_RESET_AUTH"] = "1"
+        app.launch()
+        return app
+    }
+
     func testDecisionSurfaceCompletesDestructiveConfirmationFlow() async throws {
         _ = try await UITestFixtureClient().prepareNeedsUserFixture()
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchForIsolatedFixture()
 
         // Keep the test repeatable on a clean simulator. The app ships with
         // the local demo account prefilled, so a fresh install only needs the
@@ -238,8 +244,7 @@ final class VoiceAgentBridgeUITests: XCTestCase {
 
     func testSettingsGeneratesAndCopiesPairingCode() async throws {
         _ = try await UITestFixtureClient().prepareNeedsUserFixture()
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchForIsolatedFixture()
         signInIfNeeded(app)
         dismissKnockIfPresent(app)
 
@@ -265,8 +270,7 @@ final class VoiceAgentBridgeUITests: XCTestCase {
 
     func testDashboardSearchAndFiltersStayUsable() async throws {
         _ = try await UITestFixtureClient().prepareNeedsUserFixture()
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchForIsolatedFixture()
         signInIfNeeded(app)
         dismissKnockIfPresent(app)
 
