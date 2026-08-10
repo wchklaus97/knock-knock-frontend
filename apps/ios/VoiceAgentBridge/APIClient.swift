@@ -290,19 +290,7 @@ final class APIClient: @unchecked Sendable {
     /// small invalidation signals; AppStore then reconciles through REST so a
     /// reconnect cannot leave the inbox partially updated.
     func openEventStream(since: String?) async throws -> URLSession.AsyncBytes {
-        var query: [URLQueryItem] = []
-        if let since, !since.isEmpty {
-            query.append(URLQueryItem(name: "since", value: since))
-        }
-        var request = URLRequest(url: try makeURL("/v1/phone/events", query: query))
-        request.httpMethod = "GET"
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.timeoutInterval = 45
-        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        if let since, !since.isEmpty {
-            request.setValue(since, forHTTPHeaderField: "Last-Event-ID")
-        }
-        try applyAuth(&request)
+        let request = try makeEventStreamRequest(since: since)
 
         let bytes: URLSession.AsyncBytes
         let response: URLResponse
@@ -328,6 +316,32 @@ final class APIClient: @unchecked Sendable {
             )
         }
         return bytes
+    }
+
+    /// Builds the resumable SSE request separately from the network call so
+    /// the cursor/header contract can be covered without opening a socket.
+    func makeEventStreamRequest(since: String?) throws -> URLRequest {
+        var query: [URLQueryItem] = []
+        if let since, !since.isEmpty {
+            query.append(URLQueryItem(name: "since", value: since))
+        }
+        var request = URLRequest(url: try makeURL("/v1/phone/events", query: query))
+        request.httpMethod = "GET"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = 45
+        for (field, value) in Self.eventStreamResumeHeaders(since: since) {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
+        try applyAuth(&request)
+        return request
+    }
+
+    static func eventStreamResumeHeaders(since: String?) -> [String: String] {
+        var headers = ["Accept": "text/event-stream"]
+        if let since, !since.isEmpty {
+            headers["Last-Event-ID"] = since
+        }
+        return headers
     }
 
     /// Default Knock Knock realtime transport. The transport itself is
@@ -583,13 +597,13 @@ final class ServerSentEventsTransport<Payload: Decodable>: @unchecked Sendable {
     }
 }
 
-private struct RawServerSentEvent {
+struct RawServerSentEvent {
     let id: String?
     let name: String
     let data: String
 }
 
-private struct ServerSentEventParser {
+struct ServerSentEventParser {
     private var id: String?
     private var name = "message"
     private var dataLines: [String] = []
