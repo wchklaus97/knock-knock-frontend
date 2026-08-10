@@ -249,7 +249,10 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         rollback.tap()
 
         let confirm = app.buttons["Confirm and continue"]
-        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        // iPhone 17 presents the confirmation dialog after the navigation
+        // transition has settled. Wait for the actual action instead of
+        // treating the animation duration as a fixed five-second contract.
+        XCTAssertTrue(confirm.waitForExistence(timeout: 15))
         attachScreenshot(app, named: "command-confirmation")
         confirm.tap()
 
@@ -308,10 +311,12 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         attachScreenshot(app, named: "home-this-week")
 
         let menu = app.buttons["drawer.open"]
-        XCTAssertTrue(menu.exists)
+        XCTAssertTrue(menu.waitForExistence(timeout: 15))
         menu.tap()
-        XCTAssertTrue(app.buttons["drawer.home"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["PINNED"].exists)
+        // The drawer uses a full-height transition on larger devices. Wait
+        // for its anchored footer and section label after the transition.
+        XCTAssertTrue(app.buttons["drawer.home"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["PINNED"].waitForExistence(timeout: 15))
         attachScreenshot(app, named: "drawer")
     }
 }
