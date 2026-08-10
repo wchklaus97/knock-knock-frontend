@@ -84,6 +84,22 @@ final class AppStore: ObservableObject {
     }
 
     init() {
+        #if DEBUG
+        // UI tests run repeatedly against isolated local Workers. Keychain
+        // entries survive app reinstall, so an old access/refresh token can
+        // silently authenticate the test app against a different database.
+        // Reset only when the UI test explicitly opts in; normal debug and
+        // release launches keep their existing session and local cache.
+        if ProcessInfo.processInfo.environment["KNOCK_UI_TEST_RESET_AUTH"] == "1" {
+            KeychainStore.delete()
+            KeychainStore.delete(account: "refresh-token")
+            UserDefaults.standard.removeObject(forKey: "vab.token")
+            UserDefaults.standard.removeObject(forKey: "vab.email")
+            UserDefaults.standard.removeObject(forKey: "vab.apiBase")
+            UserDefaults.standard.removeObject(forKey: "vab.selectedAgentId")
+            localStore.clearUserData()
+        }
+        #endif
         let storedToken = KeychainStore.read() ?? UserDefaults.standard.string(forKey: "vab.token")
         let storedRefreshToken = KeychainStore.read(account: "refresh-token")
         token = storedToken
