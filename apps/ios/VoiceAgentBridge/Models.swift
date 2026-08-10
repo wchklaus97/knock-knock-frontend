@@ -172,9 +172,10 @@ struct Session: Codable, Identifiable, Hashable {
 
     var needsUser: Bool { state == "needs_user" || state == "awaiting_confirm" }
 
-    /// The registry descriptor is authoritative. The fallback keeps older
-    /// Workers usable while defaulting unknown actions to a non-destructive,
-    /// confirmation-safe presentation.
+    /// The registry descriptor is authoritative. Older Workers may only return
+    /// action names; those names are intentionally not interpreted locally.
+    /// Unknown policy is presented as unknown and requires an explicit server
+    /// decision rather than being guessed from the action name.
     var actionDescriptors: [ActionDescriptor] {
         if let descriptors = available_action_descriptors, !descriptors.isEmpty {
             return descriptors
@@ -183,8 +184,8 @@ struct Session: Codable, Identifiable, Hashable {
             ActionDescriptor(
                 action_key: key,
                 title: nil,
-                risk: key == "rollback" ? "destructive" : "low",
-                confirm_required: key == "rollback",
+                risk: "unknown",
+                confirm_required: true,
                 payload: nil
             )
         }
@@ -542,6 +543,11 @@ struct PendingOperation: Codable, Identifiable, Hashable {
         case confirm
     }
 
+    enum Status: String, Codable {
+        case pending
+        case failed
+    }
+
     let id: String
     let kind: Kind
     let session_id: String
@@ -549,6 +555,63 @@ struct PendingOperation: Codable, Identifiable, Hashable {
     let action_id: String?
     let confirm: Bool?
     let created_at: Date
+    var status: Status
+    var lastError: String?
+    var failureCode: String?
+
+    init(
+        id: String,
+        kind: Kind,
+        session_id: String,
+        action_key: String?,
+        action_id: String?,
+        confirm: Bool?,
+        created_at: Date,
+        status: Status = .pending,
+        lastError: String? = nil,
+        failureCode: String? = nil
+    ) {
+        self.id = id
+        self.kind = kind
+        self.session_id = session_id
+        self.action_key = action_key
+        self.action_id = action_id
+        self.confirm = confirm
+        self.created_at = created_at
+        self.status = status
+        self.lastError = lastError
+        self.failureCode = failureCode
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, kind, session_id, action_key, action_id, confirm, created_at
+        case status, lastError, failureCode
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        kind = try container.decode(Kind.self, forKey: .kind)
+        session_id = try container.decode(String.self, forKey: .session_id)
+        action_key = try container.decodeIfPresent(String.self, forKey: .action_key)
+        action_id = try container.decodeIfPresent(String.self, forKey: .action_id)
+        confirm = try container.decodeIfPresent(Bool.self, forKey: .confirm)
+        created_at = try container.decode(Date.self, forKey: .created_at)
+        status = try container.decodeIfPresent(Status.self, forKey: .status) ?? .pending
+        lastError = try container.decodeIfPresent(String.self, forKey: .lastError)
+        failureCode = try container.decodeIfPresent(String.self, forKey: .failureCode)
+    }
+}
+
+struct PendingCommandConfirmation: Codable, Equatable, Identifiable {
+    let command_id: String
+    let confirmation_token: String
+    let title: String
+    let risk: String
+    let confirm_required: Bool
+    let reversible: Bool
+
+    var id: String { command_id }
 }
 
 struct PhoneReplyResponse: Decodable {
@@ -561,6 +624,7 @@ struct CommandResponse: Decodable, Equatable {
     let command_id: String
     let state: String
     let command: CommandEnvelope?
+    let action: CommandActionMetadata?
     let confirmation_token: String?
     let result: JSONValue?
     let error: CommandResponseError?
@@ -568,6 +632,13 @@ struct CommandResponse: Decodable, Equatable {
     let version: Int?
     let created_at: String?
     let updated_at: String?
+}
+
+struct CommandActionMetadata: Decodable, Equatable {
+    let title: String
+    let risk: String
+    let confirm_required: Bool
+    let reversible: Bool
 }
 
 struct CommandResponseError: Decodable, Equatable {
@@ -603,7 +674,7 @@ struct PendingAction: Decodable {
         session_id = try c.decode(String.self, forKey: .session_id)
         action_key = try c.decode(String.self, forKey: .action_key)
         title = try c.decodeIfPresent(String.self, forKey: .title)
-        risk = try c.decodeIfPresent(String.self, forKey: .risk) ?? "low"
+        risk = try c.decodeIfPresent(String.self, forKey: .risk) ?? "unknown"
         confirm_required = try c.decodeIfPresent(Bool.self, forKey: .confirm_required)
         status = try c.decode(String.self, forKey: .status)
         expires_at = try c.decodeIfPresent(String.self, forKey: .expires_at) ?? ""

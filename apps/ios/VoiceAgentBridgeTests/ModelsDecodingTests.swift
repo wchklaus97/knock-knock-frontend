@@ -193,7 +193,7 @@ final class ModelsDecodingTests: XCTestCase {
         XCTAssertFalse(SessionSearchMatcher(query: "paperclip").matches(session, agent: agent))
     }
 
-    func testDecisionRiskUsesAvailableDestructiveAction() throws {
+    func testDecisionRiskDoesNotInferRiskFromLegacyActionNames() throws {
         let data = Data(
             """
             {
@@ -209,7 +209,7 @@ final class ModelsDecodingTests: XCTestCase {
 
         let session = try decoder.decode(Session.self, from: data)
 
-        XCTAssertEqual(DecisionRisk(session: session).title, "Destructive risk")
+        XCTAssertEqual(DecisionRisk(session: session).title, "Unknown risk")
         XCTAssertEqual(session.facts["attempt"]?.displayValue, "2")
         XCTAssertEqual(session.facts["production"]?.displayValue, "Yes")
     }
@@ -283,6 +283,27 @@ final class ModelsDecodingTests: XCTestCase {
         store.clearUserData()
         XCTAssertNil(store.loadAppliedCursor())
         XCTAssertTrue(store.loadPendingOperations().isEmpty)
+    }
+
+    func testSQLiteStorePersistsCommandConfirmationAndClearsItWithUserData() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knock-knock-confirmation-(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let store = SQLiteStore(databaseURL: url)
+        let confirmation = PendingCommandConfirmation(
+            command_id: "cmd_confirm",
+            confirmation_token: "ctok_once",
+            title: "Send message",
+            risk: "high",
+            confirm_required: true,
+            reversible: false
+        )
+        store.savePendingCommandConfirmation(confirmation)
+
+        XCTAssertEqual(store.loadPendingCommandConfirmation(), confirmation)
+        store.clearUserData()
+        XCTAssertNil(store.loadPendingCommandConfirmation())
     }
 
     func testAPIErrorDecoderAcceptsCanonicalAndLegacyEnvelopes() throws {
