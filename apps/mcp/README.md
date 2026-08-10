@@ -1,6 +1,6 @@
 # `@vab/mcp`
 
-MCP server + `vab` CLI for [Voice Agent Bridge](../../contracts/openapi.yaml).
+MCP server + `vab` CLI for [Voice Agent Bridge](https://github.com/wchklaus97/knock-knock-backend/blob/main/contracts/openapi.yaml).
 
 Tools call the Rust Worker at `KNOCK_KNOCK_API_URL` (preferred) or the
 compatibility alias `BRIDGE_API_URL`, defaulting to `http://127.0.0.1:8787`,

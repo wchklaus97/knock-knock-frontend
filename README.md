@@ -87,7 +87,7 @@ Store archive flow are documented in [docs/RELEASE.md](docs/RELEASE.md).
 
 | Path | Role |
 |------|------|
-| `contracts/` | OpenAPI + status cheat sheet |
+| `contracts/` | Canonical backend contract pointer + status cheat sheet |
 | `apps/api` | Legacy Node control plane kept for migration diagnostics |
 | `apps/mcp` | MCP server + CLI (when ready) |
 | `apps/ios` | SwiftUI Simulator client |
