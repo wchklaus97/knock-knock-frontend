@@ -33,6 +33,10 @@ struct RootView: View {
             }
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.knockAlert?.id)
+        .sheet(item: $store.pendingCommandConfirmation) { confirmation in
+            ProductionCommandConfirmationSheet(confirmation: confirmation)
+                .environmentObject(store)
+        }
         .onChange(of: scenePhase) { phase in
             switch phase {
             case .active:

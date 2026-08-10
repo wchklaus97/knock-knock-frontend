@@ -121,13 +121,15 @@ enum DecisionRisk: String {
     case medium
     case high
     case destructive
+    case unknown
 
     init(actionRisk raw: String) {
         switch raw.lowercased() {
         case "destructive": self = .destructive
         case "high": self = .high
         case "medium": self = .medium
-        default: self = .low
+        case "low": self = .low
+        default: self = .unknown
         }
     }
 
@@ -137,8 +139,10 @@ enum DecisionRisk: String {
             self = .destructive
         } else if descriptorRisks.contains(.high) {
             self = .high
-        } else if descriptorRisks.contains(.medium) || session.needsUser {
+        } else if descriptorRisks.contains(.medium) {
             self = .medium
+        } else if descriptorRisks.contains(.unknown) || descriptorRisks.isEmpty {
+            self = .unknown
         } else {
             self = .low
         }
@@ -151,6 +155,7 @@ enum DecisionRisk: String {
         case .low: return KnockDesign.mint
         case .medium: return Color.orange
         case .high, .destructive: return KnockDesign.coral
+        case .unknown: return KnockDesign.muted
         }
     }
 
@@ -159,6 +164,7 @@ enum DecisionRisk: String {
         case .low: return KnockDesign.mintSoft
         case .medium: return Color.orange.opacity(0.13)
         case .high, .destructive: return KnockDesign.coralSoft
+        case .unknown: return KnockDesign.card
         }
     }
 }
@@ -822,14 +828,6 @@ private func parsedDate(_ value: String) -> Date? {
     return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
 }
 
-private func actionTitle(_ key: String) -> String {
-    switch key {
-    case "rollback": return "Rollback"
-    case "ack": return "Acknowledge"
-    default: return key.replacingOccurrences(of: "_", with: " ").capitalized
-    }
-}
-
 private func actionSymbol(_ key: String) -> String {
     switch key {
     case "rollback": return "arrow.uturn.backward.circle.fill"
@@ -1109,20 +1107,11 @@ struct ProductionHomeView: View {
                         }
 
                         if !store.pendingOperations.isEmpty {
-                            KnockCard(padding: 13) {
-                                HStack(spacing: 10) {
-                                    Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
-                                        .foregroundStyle(KnockDesign.lavender)
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text("Pending sync")
-                                            .font(.subheadline.weight(.bold))
-                                        Text("\(store.pendingOperations.count) saved decision(s) will retry when connected.")
-                                            .font(.caption)
-                                            .foregroundStyle(KnockDesign.muted)
-                                    }
-                                    Spacer()
-                                }
-                            }
+                            PendingOperationsCard()
+                        }
+
+                        if let commandID = store.undoableCommandID {
+                            CommandUndoCard(commandID: commandID)
                         }
 
                         if summaries.isEmpty {
@@ -1187,6 +1176,20 @@ struct ProductionHomeView: View {
                 }
             }
             .navigationViewStyle(.stack)
+            .sheet(
+                item: Binding<Session?>(
+                    get: {
+                        guard let requestedID = store.openSessionId else { return nil }
+                        return store.sessions.first { $0.session_id == requestedID }
+                    },
+                    set: { value in
+                        if value == nil { store.openSessionId = nil }
+                    }
+                )
+            ) { session in
+                ProductionDecisionDetailView(sessionId: session.session_id)
+                    .environmentObject(store)
+            }
         }
     }
 
@@ -1202,6 +1205,187 @@ struct ProductionHomeView: View {
             }
             return date >= start
         }
+    }
+}
+
+struct PendingOperationsCard: View {
+    @EnvironmentObject private var store: AppStore
+
+    var body: some View {
+        KnockCard(padding: 13) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+                        .foregroundStyle(KnockDesign.lavender)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Saved decisions")
+                            .font(.subheadline.weight(.bold))
+                        Text("Offline choices stay here until they succeed or you discard them.")
+                            .font(.caption)
+                            .foregroundStyle(KnockDesign.muted)
+                    }
+                    Spacer()
+                }
+
+                ForEach(store.pendingOperations) { operation in
+                    VStack(alignment: .leading, spacing: 7) {
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(operation.status == .failed ? KnockDesign.coral : KnockDesign.lavender)
+                                .frame(width: 7, height: 7)
+                            Text(operation.kind == .reply ? "Agent decision" : "Confirmation")
+                                .font(.caption.weight(.bold))
+                            Spacer()
+                            Text(operation.status == .failed ? "Needs attention" : "Waiting to retry")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(operation.status == .failed ? KnockDesign.coral : KnockDesign.muted)
+                        }
+                        if let lastError = operation.lastError {
+                            Text(lastError)
+                                .font(.caption2)
+                                .foregroundStyle(KnockDesign.coral)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        HStack(spacing: 8) {
+                            Button("Retry") {
+                                Task { await store.retryPendingOperation(operation) }
+                            }
+                            .font(.caption.weight(.bold))
+                            .buttonStyle(.borderedProminent)
+                            .tint(KnockDesign.lavender)
+                            .accessibilityIdentifier("pending.retry.\(operation.id)")
+
+                            Button("Discard", role: .destructive) {
+                                store.discardPendingOperation(operation)
+                            }
+                            .font(.caption.weight(.bold))
+                            .buttonStyle(.bordered)
+                            .accessibilityIdentifier("pending.discard.\(operation.id)")
+                        }
+                    }
+                    .padding(.top, 2)
+                }
+            }
+        }
+    }
+}
+
+struct CommandUndoCard: View {
+    @EnvironmentObject private var store: AppStore
+    let commandID: String
+
+    var body: some View {
+        KnockCard(padding: 13) {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.uturn.backward.circle.fill")
+                    .foregroundStyle(KnockDesign.mint)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Action completed")
+                        .font(.subheadline.weight(.bold))
+                    Text("This action can be undone.")
+                        .font(.caption)
+                        .foregroundStyle(KnockDesign.muted)
+                }
+                Spacer()
+                Button("Undo") {
+                    Task { await store.undoCommand(commandID: commandID) }
+                }
+                .font(.caption.weight(.bold))
+                .buttonStyle(.borderedProminent)
+                .tint(KnockDesign.lavender)
+                .accessibilityIdentifier("command.undo")
+            }
+        }
+    }
+}
+
+struct ProductionCommandConfirmationSheet: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.presentationMode) private var presentationMode
+    let confirmation: PendingCommandConfirmation
+
+    var body: some View {
+        NavigationView {
+            ZStack {
+                KnockDesign.canvas.ignoresSafeArea()
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "hand.raised.fill")
+                            .font(.title2.weight(.bold))
+                            .foregroundStyle(KnockDesign.coral)
+                            .frame(width: 48, height: 48)
+                            .background(KnockDesign.coralSoft)
+                            .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Your decision")
+                                .font(.title2.weight(.bold))
+                            Text("The backend marked this action for confirmation.")
+                                .font(.caption)
+                                .foregroundStyle(KnockDesign.muted)
+                        }
+                    }
+
+                    KnockCard(padding: 16) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(confirmation.title)
+                                .font(.headline.weight(.bold))
+                            RiskBadge(risk: DecisionRisk(actionRisk: confirmation.risk))
+                            Text("Confirming will send this command to the agent. Not now keeps it pending; it does not cancel it.")
+                                .font(.subheadline)
+                                .foregroundStyle(KnockDesign.muted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
+                    Button {
+                        Task { await store.confirmPendingCommand() }
+                    } label: {
+                        Text("Confirm")
+                            .font(.headline.weight(.bold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(KnockDesign.coral)
+                            .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                    }
+                    .accessibilityIdentifier("command.confirm")
+
+                    Button("Not now") {
+                        store.deferPendingCommandConfirmation()
+                        presentationMode.wrappedValue.dismiss()
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .accessibilityIdentifier("command.defer")
+
+                    Button("Cancel command", role: .destructive) {
+                        Task {
+                            await store.cancelPendingCommand()
+                            if store.pendingCommandConfirmation == nil {
+                                presentationMode.wrappedValue.dismiss()
+                            }
+                        }
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .accessibilityIdentifier("command.cancel")
+                    Spacer()
+                }
+                .padding(20)
+            }
+            .navigationTitle("Confirm action")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Not now") {
+                        store.deferPendingCommandConfirmation()
+                        presentationMode.wrappedValue.dismiss()
+                    }
+                }
+            }
+            .navigationViewStyle(.stack)
+        }
+        .accessibilityIdentifier("command.confirmationSheet")
     }
 }
 
@@ -2668,7 +2852,7 @@ struct ProductionActionCard: View {
                     let key = descriptor.action_key
                     let title = descriptor.title?.isEmpty == false
                         ? descriptor.title!
-                        : actionTitle(key)
+                        : "Agent action"
                     let risk = DecisionRisk(actionRisk: descriptor.risk)
                     Button {
                         Task {

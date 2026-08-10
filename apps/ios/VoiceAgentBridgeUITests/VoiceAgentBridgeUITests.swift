@@ -202,6 +202,13 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         }
     }
 
+    private func attachScreenshot(_ app: XCUIApplication, named name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     private func launchForIsolatedFixture() -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["KNOCK_UI_TEST_RESET_AUTH"] = "1"
@@ -232,6 +239,7 @@ final class VoiceAgentBridgeUITests: XCTestCase {
             "A fresh needs_user event must be present before running this flow."
         )
         review.tap()
+        attachScreenshot(app, named: "decision-detail")
 
         let rollback = app.buttons["decision.action.rollback"]
         if !rollback.waitForExistence(timeout: 3) {
@@ -242,12 +250,14 @@ final class VoiceAgentBridgeUITests: XCTestCase {
 
         let confirm = app.buttons["Confirm and continue"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        attachScreenshot(app, named: "command-confirmation")
         confirm.tap()
 
         XCTAssertTrue(
             app.staticTexts["Queued"].waitForExistence(timeout: 15),
             "The exact session should visibly move to queued after confirmation."
         )
+        attachScreenshot(app, named: "command-queued")
     }
 
     func testSettingsGeneratesAndCopiesPairingCode() async throws {
@@ -265,6 +275,7 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         let settings = app.buttons["drawer.settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 15))
         settings.tap()
+        attachScreenshot(app, named: "settings-sheet")
 
         let pair = app.buttons["settings.pair"]
         XCTAssertTrue(pair.waitForExistence(timeout: 15))
@@ -285,6 +296,7 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         let app = launchForIsolatedFixture()
         signInIfNeeded(app)
         dismissKnockIfPresent(app)
+        attachScreenshot(app, named: "home-today")
 
         let today = app.segmentedControls.buttons["Today"]
         XCTAssertTrue(today.waitForExistence(timeout: 15))
@@ -293,11 +305,13 @@ final class VoiceAgentBridgeUITests: XCTestCase {
 
         app.segmentedControls.buttons["This week"].tap()
         XCTAssertTrue(app.staticTexts["This week"].waitForExistence(timeout: 5))
+        attachScreenshot(app, named: "home-this-week")
 
         let menu = app.buttons["drawer.open"]
         XCTAssertTrue(menu.exists)
         menu.tap()
         XCTAssertTrue(app.buttons["drawer.home"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["PINNED"].exists)
+        attachScreenshot(app, named: "drawer")
     }
 }
