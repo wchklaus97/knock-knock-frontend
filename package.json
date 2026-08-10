@@ -16,6 +16,7 @@
     "test:ios": "bash scripts/ios-simulator-regression.sh",
     "test:installer": "bash scripts/install-agent-skill.test.sh",
     "test:rc": "bash scripts/rc-security-smoke.sh",
+    "test:security": "pnpm audit --prod --audit-level=moderate",
     "test:production-config": "bash scripts/production-config-smoke.sh",
     "release:ios": "bash scripts/ios-archive.sh",
     "skill:install": "bash scripts/install-agent-skill.sh",
