@@ -16,9 +16,20 @@ final class SQLiteStore {
     private enum Binding {
         case text(String)
         case blob(Data)
+        case integer(Int64)
+        case real(Double)
+        case null
     }
 
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+    /// Each identifier is append-only. Existing databases are upgraded by
+    /// adding tables/columns and are never rewritten destructively.
+    private static let migrationIDs = [
+        "ios_g1_001_pending_operation_state",
+        "ios_g1_002_pending_reconciliation_events",
+        "ios_g1_003_sync_cursor_state",
+    ]
 
     init(databaseURL: URL? = nil) {
         self.databaseURL = databaseURL ?? Self.defaultURL()
@@ -61,8 +72,8 @@ final class SQLiteStore {
 
             var cursorReady = true
             if let cursor = UserDefaults.standard.string(forKey: cursorKey), !cursor.isEmpty,
-               metadataLocked(key: "applied_cursor") == nil {
-                cursorReady = setMetadataLocked(key: "applied_cursor", value: cursor)
+               loadAppliedCursorLocked() == nil {
+                cursorReady = saveSyncStateLocked(cursor: cursor, appliedCursor: cursor)
             }
 
             if pendingReady {
@@ -74,19 +85,105 @@ final class SQLiteStore {
         }
     }
 
+    func loadCursor() -> String? {
+        queue.sync { loadCursorLocked() }
+    }
+
+    func saveCursor(_ cursor: String?) {
+        queue.sync {
+            let applied = loadAppliedCursorLocked()
+            _ = saveSyncStateLocked(cursor: cursor, appliedCursor: applied)
+        }
+    }
+
     func loadAppliedCursor() -> String? {
-        queue.sync { metadataLocked(key: "applied_cursor") }
+        queue.sync { loadAppliedCursorLocked() }
     }
 
     func saveAppliedCursor(_ cursor: String?) {
         queue.sync {
-            if let cursor, !cursor.isEmpty {
-                setMetadataLocked(key: "applied_cursor", value: cursor)
-            } else {
-                _ = executeLocked(
-                    "DELETE FROM metadata WHERE key = ?",
-                    bindings: [.text("applied_cursor")]
-                )
+            let received = loadCursorLocked()
+            _ = saveSyncStateLocked(cursor: received, appliedCursor: cursor)
+        }
+    }
+
+    /// Reset the receive/apply watermarks when the account or API base changes.
+    /// Queued invalidations belong to the old stream and must not be replayed
+    /// against a different account or server.
+    func resetSyncState(clearPendingEvents: Bool = false) {
+        queue.sync {
+            _ = transactionLocked {
+                if clearPendingEvents {
+                    guard executeLocked("DELETE FROM pending_sync_events") else { return false }
+                }
+                return saveSyncStateLocked(cursor: nil, appliedCursor: nil)
+            }
+        }
+    }
+
+    /// Persist an SSE event before scheduling its REST reconciliation. The
+    /// primary key makes duplicate deliveries harmless and keeps events that
+    /// arrive while another reconciliation is in flight.
+    @discardableResult
+    func recordPendingSyncEvent(
+        eventID: String,
+        eventName: String,
+        receivedAt: Date = Date()
+    ) -> Bool {
+        queue.sync {
+            guard !eventID.isEmpty else { return false }
+            guard executeLocked(
+                "INSERT OR IGNORE INTO pending_sync_events (event_id, event_name, received_at) VALUES (?, ?, ?)",
+                bindings: [
+                    .text(eventID),
+                    .text(eventName),
+                    .real(receivedAt.timeIntervalSince1970),
+                ]
+            ) else { return false }
+            let applied = loadAppliedCursorLocked()
+            let received = pendingSyncEventsLocked().last?.event_id ?? eventID
+            return saveSyncStateLocked(cursor: received, appliedCursor: applied)
+        }
+    }
+
+    func loadPendingSyncEvents() -> [PendingSyncEvent] {
+        queue.sync { pendingSyncEventsLocked() }
+    }
+
+    /// Commit the applied cursor and event consumption in one SQLite
+    /// transaction. Events inserted before this transaction are consumed;
+    /// events inserted afterward remain queued for the next pass.
+    @discardableResult
+    func commitReconciliation(
+        cursor: String?,
+        resetCursor: Bool,
+        consumedEventIDs: Set<String>
+    ) -> Bool {
+        queue.sync {
+            transactionLocked {
+                if !consumedEventIDs.isEmpty {
+                    let placeholders = Array(repeating: "?", count: consumedEventIDs.count)
+                        .joined(separator: ", ")
+                    let bindings = consumedEventIDs.sorted().map(Binding.text)
+                    guard executeLocked(
+                        "DELETE FROM pending_sync_events WHERE event_id IN (\(placeholders))",
+                        bindings: bindings
+                    ) else { return false }
+                }
+
+                let currentCursor = loadCursorLocked()
+                let currentApplied = loadAppliedCursorLocked()
+                let pending = pendingSyncEventsLocked()
+                let nextApplied: String?
+                if resetCursor {
+                    nextApplied = nil
+                } else {
+                    nextApplied = cursor ?? currentApplied
+                }
+                let nextCursor = resetCursor
+                    ? pending.last?.event_id
+                    : (pending.last?.event_id ?? cursor ?? currentCursor)
+                return saveSyncStateLocked(cursor: nextCursor, appliedCursor: nextApplied)
             }
         }
     }
@@ -95,8 +192,9 @@ final class SQLiteStore {
         queue.sync { pendingOperationsLocked() }
     }
 
-    func savePendingOperations(_ operations: [PendingOperation]) {
-        _ = queue.sync { savePendingLocked(operations) }
+    @discardableResult
+    func savePendingOperations(_ operations: [PendingOperation]) -> Bool {
+        queue.sync { savePendingLocked(operations) }
     }
 
     func loadPendingCommandConfirmation() -> PendingCommandConfirmation? {
@@ -308,6 +406,16 @@ final class SQLiteStore {
         }
     }
 
+    func clearDetailCaches() {
+        queue.sync {
+            _ = transactionLocked {
+                guard executeLocked("DELETE FROM cached_messages") else { return false }
+                guard executeLocked("DELETE FROM cached_retrievals") else { return false }
+                return executeLocked("DELETE FROM cached_history")
+            }
+        }
+    }
+
     func clearUserData() {
         queue.sync {
             _ = transactionLocked {
@@ -317,8 +425,10 @@ final class SQLiteStore {
                 guard executeLocked("DELETE FROM cached_history") else { return false }
                 guard executeLocked("DELETE FROM cached_pushes") else { return false }
                 guard executeLocked("DELETE FROM pending_operations") else { return false }
+                guard executeLocked("DELETE FROM pending_sync_events") else { return false }
+                guard executeLocked("DELETE FROM sync_state") else { return false }
                 return executeLocked(
-                    "DELETE FROM metadata WHERE key IN ('applied_cursor', 'pending_command_confirmation')"
+                    "DELETE FROM metadata WHERE key IN ('cursor', 'applied_cursor', 'pending_command_confirmation')"
                 )
             }
         }
@@ -348,6 +458,10 @@ final class SQLiteStore {
                         """
                         PRAGMA journal_mode = WAL;
                         PRAGMA foreign_keys = ON;
+                        CREATE TABLE IF NOT EXISTS schema_migrations (
+                          migration_id TEXT PRIMARY KEY NOT NULL,
+                          applied_at REAL NOT NULL
+                        );
                         CREATE TABLE IF NOT EXISTS metadata (
                           key TEXT PRIMARY KEY NOT NULL,
                           value TEXT NOT NULL
@@ -392,7 +506,125 @@ final class SQLiteStore {
                 database = nil
                 return
             }
+            guard applyMigrationsLocked() else {
+                sqlite3_close(database)
+                database = nil
+                return
+            }
         }
+    }
+
+    private func applyMigrationsLocked() -> Bool {
+        for migrationID in Self.migrationIDs {
+            guard !migrationAppliedLocked(migrationID) else { continue }
+            guard executeLocked("BEGIN IMMEDIATE") else { return false }
+
+            let applied: Bool
+            switch migrationID {
+            case "ios_g1_001_pending_operation_state":
+                applied = migratePendingOperationStateLocked()
+            case "ios_g1_002_pending_reconciliation_events":
+                applied = executeScriptLocked(
+                    """
+                    CREATE TABLE IF NOT EXISTS pending_sync_events (
+                      event_id TEXT PRIMARY KEY NOT NULL,
+                      event_name TEXT NOT NULL,
+                      received_at REAL NOT NULL
+                    );
+                    """
+                )
+            case "ios_g1_003_sync_cursor_state":
+                applied = executeScriptLocked(
+                    """
+                    CREATE TABLE IF NOT EXISTS sync_state (
+                      scope TEXT PRIMARY KEY NOT NULL,
+                      cursor TEXT,
+                      applied_cursor TEXT,
+                      updated_at REAL NOT NULL
+                    );
+                    """
+                )
+            default:
+                applied = false
+            }
+
+            guard applied,
+                  executeLocked(
+                      "INSERT INTO schema_migrations (migration_id, applied_at) VALUES (?, ?)",
+                      bindings: [.text(migrationID), .real(Date().timeIntervalSince1970)]
+                  ),
+                  executeLocked("COMMIT")
+            else {
+                _ = executeLocked("ROLLBACK")
+                return false
+            }
+        }
+        return true
+    }
+
+    private func migratePendingOperationStateLocked() -> Bool {
+        guard ensureColumnLocked(
+            table: "pending_operations",
+            name: "idempotency_key",
+            definition: "TEXT"
+        ) else { return false }
+        guard ensureColumnLocked(
+            table: "pending_operations",
+            name: "status",
+            definition: "TEXT NOT NULL DEFAULT 'pending'"
+        ) else { return false }
+        guard ensureColumnLocked(table: "pending_operations", name: "kind", definition: "TEXT") else { return false }
+        guard ensureColumnLocked(table: "pending_operations", name: "session_id", definition: "TEXT") else { return false }
+        guard ensureColumnLocked(table: "pending_operations", name: "action_key", definition: "TEXT") else { return false }
+        guard ensureColumnLocked(table: "pending_operations", name: "action_id", definition: "TEXT") else { return false }
+        guard ensureColumnLocked(table: "pending_operations", name: "confirm", definition: "INTEGER") else { return false }
+        guard ensureColumnLocked(table: "pending_operations", name: "last_error", definition: "TEXT") else { return false }
+        guard ensureColumnLocked(table: "pending_operations", name: "failure_code", definition: "TEXT") else { return false }
+        return executeLocked(
+            "UPDATE pending_operations SET idempotency_key = operation_id WHERE idempotency_key IS NULL OR idempotency_key = ''"
+        )
+    }
+
+    private func migrationAppliedLocked(_ migrationID: String) -> Bool {
+        guard let database else { return false }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "SELECT 1 FROM schema_migrations WHERE migration_id = ? LIMIT 1",
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK,
+        let statement
+        else { return false }
+        defer { sqlite3_finalize(statement) }
+        guard bindLocked(statement, bindings: [.text(migrationID)]) else { return false }
+        return sqlite3_step(statement) == SQLITE_ROW
+    }
+
+    private func ensureColumnLocked(table: String, name: String, definition: String) -> Bool {
+        guard !tableHasColumnLocked(table: table, name: name) else { return true }
+        return executeLocked("ALTER TABLE \(table) ADD COLUMN \(name) \(definition)")
+    }
+
+    private func tableHasColumnLocked(table: String, name: String) -> Bool {
+        guard let database else { return false }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "PRAGMA table_info(\(table))",
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK,
+        let statement
+        else { return false }
+        defer { sqlite3_finalize(statement) }
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let columnName = sqlite3_column_text(statement, 1) else { continue }
+            if String(cString: columnName) == name { return true }
+        }
+        return false
     }
 
     private func pendingOperationsLocked() -> [PendingOperation] {
@@ -400,6 +632,17 @@ final class SQLiteStore {
             "SELECT payload FROM pending_operations ORDER BY created_at ASC, operation_id ASC"
         ) else { return [] }
         return rows.compactMap { try? JSONDecoder().decode(PendingOperation.self, from: $0) }
+            .map { operation in
+                var recovered = operation
+                // A process can terminate after marking an intent in-flight
+                // but before receiving the HTTP response. Replaying the same
+                // key is safe; exposing it as in-flight across launches is
+                // not, so recover it to the explicit pending state.
+                if recovered.status == .inFlight {
+                    recovered.status = .pending
+                }
+                return recovered
+            }
     }
 
     @discardableResult
@@ -412,11 +655,25 @@ final class SQLiteStore {
         for operation in operations {
             guard let payload = try? JSONEncoder().encode(operation),
                   executeLocked(
-                "INSERT OR REPLACE INTO pending_operations (operation_id, payload, created_at) VALUES (?, ?, ?)",
+                """
+                INSERT OR REPLACE INTO pending_operations
+                  (operation_id, payload, created_at, idempotency_key, status, kind,
+                   session_id, action_key, action_id, confirm, last_error, failure_code)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                 bindings: [
                     .text(operation.id),
                     .blob(payload),
-                    .text(String(operation.created_at.timeIntervalSince1970)),
+                    .real(operation.created_at.timeIntervalSince1970),
+                    .text(operation.idempotency_key),
+                    .text(operation.status.rawValue),
+                    .text(operation.kind.rawValue),
+                    .text(operation.session_id),
+                    operation.action_key.map(Binding.text) ?? .null,
+                    operation.action_id.map(Binding.text) ?? .null,
+                    operation.confirm.map { .integer($0 ? 1 : 0) } ?? .null,
+                    operation.lastError.map(Binding.text) ?? .null,
+                    operation.failureCode.map(Binding.text) ?? .null,
                 ]
             ) else {
                 _ = executeLocked("ROLLBACK")
@@ -428,6 +685,98 @@ final class SQLiteStore {
             return false
         }
         return true
+    }
+
+    private func pendingSyncEventsLocked() -> [PendingSyncEvent] {
+        guard let database else { return [] }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "SELECT event_id, event_name, received_at FROM pending_sync_events ORDER BY received_at ASC, event_id ASC",
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK,
+        let statement
+        else { return [] }
+        defer { sqlite3_finalize(statement) }
+
+        var events: [PendingSyncEvent] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let eventID = sqlite3_column_text(statement, 0),
+                  let eventName = sqlite3_column_text(statement, 1)
+            else { continue }
+            events.append(
+                PendingSyncEvent(
+                    event_id: String(cString: eventID),
+                    event_name: String(cString: eventName),
+                    received_at: Date(timeIntervalSince1970: sqlite3_column_double(statement, 2))
+                )
+            )
+        }
+        return events
+    }
+
+    private func loadCursorLocked() -> String? {
+        syncStateLocked()?.cursor ?? metadataLocked(key: "cursor")
+    }
+
+    private func loadAppliedCursorLocked() -> String? {
+        syncStateLocked()?.appliedCursor ?? metadataLocked(key: "applied_cursor")
+    }
+
+    @discardableResult
+    private func saveSyncStateLocked(cursor: String?, appliedCursor: String?) -> Bool {
+        guard executeLocked(
+            "INSERT OR REPLACE INTO sync_state (scope, cursor, applied_cursor, updated_at) VALUES (?, ?, ?, ?)",
+            bindings: [
+                .text("phone"),
+                cursor.map(Binding.text) ?? .null,
+                appliedCursor.map(Binding.text) ?? .null,
+                .real(Date().timeIntervalSince1970),
+            ]
+        ) else { return false }
+
+        let cursorResult: Bool
+        if let cursor {
+            cursorResult = setMetadataLocked(key: "cursor", value: cursor)
+        } else {
+            cursorResult = executeLocked(
+                "DELETE FROM metadata WHERE key = ?",
+                bindings: [.text("cursor")]
+            )
+        }
+        guard cursorResult else { return false }
+
+        if let appliedCursor {
+            return setMetadataLocked(key: "applied_cursor", value: appliedCursor)
+        }
+        return executeLocked(
+            "DELETE FROM metadata WHERE key = ?",
+            bindings: [.text("applied_cursor")]
+        )
+    }
+
+    private func syncStateLocked() -> (cursor: String?, appliedCursor: String?)? {
+        guard let database else { return nil }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "SELECT cursor, applied_cursor FROM sync_state WHERE scope = ?",
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK,
+        let statement
+        else { return nil }
+        defer { sqlite3_finalize(statement) }
+        guard bindLocked(statement, bindings: [.text("phone")]),
+              sqlite3_step(statement) == SQLITE_ROW
+        else { return nil }
+        return (
+            textColumnLocked(statement, index: 0),
+            textColumnLocked(statement, index: 1)
+        )
     }
 
     private func executeScriptLocked(_ sql: String) -> Bool {
@@ -464,7 +813,7 @@ final class SQLiteStore {
               let statement
         else { return false }
         defer { sqlite3_finalize(statement) }
-        bindLocked(statement, bindings: bindings)
+        guard bindLocked(statement, bindings: bindings) else { return false }
         return sqlite3_step(statement) == SQLITE_DONE
     }
 
@@ -475,7 +824,7 @@ final class SQLiteStore {
               let statement
         else { return nil }
         defer { sqlite3_finalize(statement) }
-        bindLocked(statement, bindings: strings.map(Binding.text))
+        guard bindLocked(statement, bindings: strings.map(Binding.text)) else { return nil }
         var result: [Data] = []
         while sqlite3_step(statement) == SQLITE_ROW {
             guard let bytes = sqlite3_column_blob(statement, 0) else { continue }
@@ -530,17 +879,19 @@ final class SQLiteStore {
         )
     }
 
-    private func bindLocked(_ statement: OpaquePointer, bindings: [Binding]) {
+    @discardableResult
+    private func bindLocked(_ statement: OpaquePointer, bindings: [Binding]) -> Bool {
         var index: Int32 = 1
         for binding in bindings {
+            let result: Int32
             switch binding {
             case let .text(value):
-                value.withCString { pointer in
-                    _ = sqlite3_bind_text(statement, index, pointer, -1, Self.transient)
+                result = value.withCString { pointer in
+                    sqlite3_bind_text(statement, index, pointer, -1, Self.transient)
                 }
             case let .blob(value):
-                value.withUnsafeBytes { buffer in
-                    _ = sqlite3_bind_blob(
+                result = value.withUnsafeBytes { buffer in
+                    sqlite3_bind_blob(
                         statement,
                         index,
                         buffer.baseAddress,
@@ -548,9 +899,22 @@ final class SQLiteStore {
                         Self.transient
                     )
                 }
+            case let .integer(value):
+                result = sqlite3_bind_int64(statement, index, value)
+            case let .real(value):
+                result = sqlite3_bind_double(statement, index, value)
+            case .null:
+                result = sqlite3_bind_null(statement, index)
             }
+            guard result == SQLITE_OK else { return false }
             index += 1
         }
+        return true
+    }
+
+    private func textColumnLocked(_ statement: OpaquePointer, index: Int32) -> String? {
+        guard let value = sqlite3_column_text(statement, index) else { return nil }
+        return String(cString: value)
     }
 
     private static func defaultURL() -> URL {
