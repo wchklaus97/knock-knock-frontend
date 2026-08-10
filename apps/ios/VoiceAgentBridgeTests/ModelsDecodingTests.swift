@@ -209,7 +209,7 @@ final class ModelsDecodingTests: XCTestCase {
 
         let session = try decoder.decode(Session.self, from: data)
 
-        XCTAssertEqual(DecisionRisk(session: session).title, "High risk")
+        XCTAssertEqual(DecisionRisk(session: session).title, "Destructive risk")
         XCTAssertEqual(session.facts["attempt"]?.displayValue, "2")
         XCTAssertEqual(session.facts["production"]?.displayValue, "Yes")
     }

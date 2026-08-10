@@ -260,11 +260,15 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         XCTAssertTrue(menu.waitForExistence(timeout: 15))
         menu.tap()
 
-        XCTAssertTrue(app.buttons["drawer.dashboard"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["drawer.home"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["drawer.sessions"].waitForExistence(timeout: 5))
         let settings = app.buttons["drawer.settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 15))
         settings.tap()
+
+        let pair = app.buttons["settings.pair"]
+        XCTAssertTrue(pair.waitForExistence(timeout: 15))
+        pair.tap()
 
         let generate = app.buttons["pairing.generate"]
         XCTAssertTrue(generate.waitForExistence(timeout: 15))
@@ -276,23 +280,24 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Pairing code copied"].waitForExistence(timeout: 5))
     }
 
-    func testDashboardSearchAndFiltersStayUsable() async throws {
+    func testHomeScopesAndAgentRowsStayUsable() async throws {
         _ = try await UITestFixtureClient().prepareNeedsUserFixture()
         let app = launchForIsolatedFixture()
         signInIfNeeded(app)
         dismissKnockIfPresent(app)
 
-        let search = app.textFields["inbox.search"]
-        XCTAssertTrue(search.waitForExistence(timeout: 15))
-        XCTAssertTrue(app.buttons["filter.needs_user"].exists)
-        XCTAssertTrue(app.buttons["filter.active"].exists)
-        XCTAssertTrue(app.buttons["filter.all"].exists)
+        let today = app.segmentedControls.buttons["Today"]
+        XCTAssertTrue(today.waitForExistence(timeout: 15))
+        XCTAssertTrue(app.segmentedControls.buttons["This week"].exists)
+        XCTAssertTrue(app.staticTexts["Today"].exists)
 
-        search.tap()
-        search.typeText("not-a-real-session")
-        XCTAssertTrue(app.staticTexts["Nothing matches"].waitForExistence(timeout: 5))
+        app.segmentedControls.buttons["This week"].tap()
+        XCTAssertTrue(app.staticTexts["This week"].waitForExistence(timeout: 5))
 
-        app.buttons["Clear search"].tap()
-        XCTAssertTrue(app.staticTexts["Recent sessions"].waitForExistence(timeout: 5))
+        let menu = app.buttons["drawer.open"]
+        XCTAssertTrue(menu.exists)
+        menu.tap()
+        XCTAssertTrue(app.buttons["drawer.home"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["PINNED"].exists)
     }
 }
