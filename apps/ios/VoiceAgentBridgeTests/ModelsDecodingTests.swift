@@ -30,6 +30,48 @@ final class ModelsDecodingTests: XCTestCase {
         XCTAssertNil(override)
     }
 
+    func testProductionDrawerScrollAnchorStaysAtViewportTopAndFallsBack() {
+        let recent = ProductionDrawerScrollAnchors.recentSection
+        let positions = [
+            ProductionDrawerScrollAnchors.pinnedSection: CGFloat(-260),
+            ProductionDrawerScrollAnchors.workspaceSection: CGFloat(-88),
+            recent: CGFloat(-18),
+            ProductionDrawerScrollAnchors.recentSession("session-visible"): CGFloat(9),
+        ]
+
+        XCTAssertEqual(
+            ProductionDrawerScrollAnchors.preferredAnchor(from: positions),
+            recent
+        )
+        XCTAssertEqual(
+            ProductionDrawerScrollAnchors.restoredAnchor(
+                current: "removed-session",
+                available: [recent]
+            ),
+            recent
+        )
+        XCTAssertEqual(
+            ProductionDrawerScrollAnchors.restoredAnchor(
+                current: ProductionDrawerScrollAnchors.pinnedSession("removed"),
+                available: [ProductionDrawerScrollAnchors.pinnedSection, recent]
+            ),
+            ProductionDrawerScrollAnchors.pinnedSection
+        )
+        XCTAssertNil(
+            ProductionDrawerScrollAnchors.restoredAnchor(
+                current: nil,
+                available: [recent]
+            )
+        )
+        XCTAssertEqual(
+            ProductionDrawerScrollAnchors.restoredAnchor(
+                current: "session-still-present",
+                available: [recent, "session-still-present"]
+            ),
+            "session-still-present"
+        )
+    }
+
     func testReleaseEndpointPolicyMigratesDevelopmentAddress() {
         XCTAssertTrue(
             DemoConfig.isLegacyDevelopmentApiBase(

@@ -1720,14 +1720,135 @@ struct ProductionDrawerSessionRow: View {
     }
 }
 
+private struct ProductionDrawerScrollAnchorPreferenceKey: PreferenceKey {
+    static var defaultValue: [String: CGFloat] = [:]
+
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, next in next })
+    }
+}
+
+/// Stable logical anchors let the drawer keep the same content at the top of
+/// the viewport when a foreground reconciliation changes its sections. This
+/// is intentionally a small pure helper so the iOS 15 behavior is unit-tested
+/// without depending on private SwiftUI scroll-view APIs.
+enum ProductionDrawerScrollAnchors {
+    static let pinnedSection = "drawer.section.pinned"
+    static let workspaceSection = "drawer.section.workspace"
+    static let agentsSection = "drawer.section.agents"
+    static let recentSection = "drawer.section.recent"
+
+    static func pinnedSession(_ id: String) -> String {
+        "drawer.pinned.session.\(id)"
+    }
+
+    static func agent(_ id: String) -> String {
+        "drawer.agent.\(id)"
+    }
+
+    static func recentSession(_ id: String) -> String {
+        "drawer.recent.session.\(id)"
+    }
+
+    static func preferredAnchor(from positions: [String: CGFloat]) -> String? {
+        guard !positions.isEmpty else { return nil }
+
+        // The row/section whose top is closest to, but not below, the
+        // viewport top is the logical content the user is currently reading.
+        // A small tolerance avoids losing the anchor to fractional layout
+        // values while a scroll gesture is settling.
+        let atOrAboveViewport = positions.filter { $0.value <= 1 }
+        if let anchor = atOrAboveViewport.max(by: { lhs, rhs in
+            if lhs.value != rhs.value { return lhs.value < rhs.value }
+            return anchorPriority(lhs.key) > anchorPriority(rhs.key)
+        }) {
+            return anchor.key
+        }
+
+        return positions.min { lhs, rhs in
+            let leftDistance = abs(lhs.value)
+            let rightDistance = abs(rhs.value)
+            if leftDistance != rightDistance { return leftDistance < rightDistance }
+            return anchorPriority(lhs.key) < anchorPriority(rhs.key)
+        }?.key
+    }
+
+    static func restoredAnchor(current: String?, available: Set<String>) -> String? {
+        guard let current else { return nil }
+        if available.contains(current) { return current }
+
+        let sectionFallback: String?
+        if current.hasPrefix("drawer.pinned.") {
+            sectionFallback = pinnedSection
+        } else if current.hasPrefix("drawer.agent.") {
+            sectionFallback = agentsSection
+        } else if current.hasPrefix("drawer.recent.") {
+            sectionFallback = recentSection
+        } else {
+            sectionFallback = nil
+        }
+        if let sectionFallback, available.contains(sectionFallback) {
+            return sectionFallback
+        }
+        return [recentSection, agentsSection, workspaceSection, pinnedSection]
+            .first(where: available.contains)
+    }
+
+    private static func anchorPriority(_ id: String) -> Int {
+        id.hasPrefix("drawer.section.") ? 0 : 1
+    }
+}
+
+private extension View {
+    func productionDrawerScrollAnchor(_ id: String) -> some View {
+        background(
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: ProductionDrawerScrollAnchorPreferenceKey.self,
+                    value: [
+                        id: proxy.frame(in: .named("production-drawer-scroll")).minY
+                    ]
+                )
+            }
+        )
+    }
+}
+
 struct ProductionDrawer: View {
     @EnvironmentObject private var store: AppStore
+    @Binding var scrollAnchor: String?
 
     let selectedDestination: ProductionDestination
     let onClose: () -> Void
     let onSelect: (ProductionDestination) -> Void
     let onSelectAgent: (String?) -> Void
     let onOpenSession: (Session) -> Void
+
+    private var pinnedSessions: [Session] {
+        Array(store.sessions.filter(\.needsUser).prefix(3))
+    }
+
+    private var drawerContentIDs: [String] {
+        var ids = [
+            ProductionDrawerScrollAnchors.pinnedSection,
+            ProductionDrawerScrollAnchors.workspaceSection,
+            ProductionDrawerScrollAnchors.recentSection,
+        ]
+        ids.append(contentsOf: pinnedSessions.map {
+            ProductionDrawerScrollAnchors.pinnedSession($0.session_id)
+        })
+        if !store.agents.isEmpty {
+            ids.append(ProductionDrawerScrollAnchors.agentsSection)
+            ids.append(ProductionDrawerScrollAnchors.agent("all"))
+            ids.append(contentsOf: store.agents.map {
+                ProductionDrawerScrollAnchors.agent($0.agent_id)
+            })
+        }
+        ids.append(contentsOf: store.sessions.map {
+            ProductionDrawerScrollAnchors.recentSession($0.session_id)
+        })
+        return ids
+    }
 
     private var waitingCount: Int {
         store.sessions.filter(\.needsUser).count
@@ -1765,128 +1886,160 @@ struct ProductionDrawer: View {
             .padding(.top, 18)
             .padding(.bottom, 15)
 
-            ScrollView(showsIndicators: false) {
-                LazyVStack(alignment: .leading, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("PINNED")
-                            .font(.caption2.weight(.heavy))
-                            .tracking(1.2)
-                            .foregroundStyle(KnockDesign.muted)
-                            .padding(.horizontal, 12)
-
-                        let pinned = Array(store.sessions.filter(\.needsUser).prefix(3))
-                        if pinned.isEmpty {
-                            Text("No decisions waiting")
-                                .font(.caption)
+            ScrollViewReader { proxy in
+                ScrollView(showsIndicators: false) {
+                    LazyVStack(alignment: .leading, spacing: 18) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("PINNED")
+                                .font(.caption2.weight(.heavy))
+                                .tracking(1.2)
                                 .foregroundStyle(KnockDesign.muted)
                                 .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                        } else {
-                            ForEach(pinned) { session in
-                                ProductionDrawerSessionRow(
-                                    session: session,
-                                    agentLabel: store.agents.first { $0.agent_id == session.agent_id }?.displayLabel,
-                                    action: { onOpenSession(session) }
-                                )
+
+                            if pinnedSessions.isEmpty {
+                                Text("No decisions waiting")
+                                    .font(.caption)
+                                    .foregroundStyle(KnockDesign.muted)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                            } else {
+                                ForEach(pinnedSessions) { session in
+                                    ProductionDrawerSessionRow(
+                                        session: session,
+                                        agentLabel: store.agents.first { $0.agent_id == session.agent_id }?.displayLabel,
+                                        action: { onOpenSession(session) }
+                                    )
+                                    .id(ProductionDrawerScrollAnchors.pinnedSession(session.session_id))
+                                    .productionDrawerScrollAnchor(
+                                        ProductionDrawerScrollAnchors.pinnedSession(session.session_id)
+                                    )
+                                }
                             }
                         }
-                    }
+                        .id(ProductionDrawerScrollAnchors.pinnedSection)
+                        .productionDrawerScrollAnchor(ProductionDrawerScrollAnchors.pinnedSection)
 
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("WORKSPACE")
-                            .font(.caption2.weight(.heavy))
-                            .tracking(1.2)
-                            .foregroundStyle(KnockDesign.muted)
-                            .padding(.horizontal, 12)
-                        ProductionDrawerRow(
-                            title: "Sessions",
-                            subtitle: "Browse the full decision history",
-                            symbol: "tray.full.fill",
-                            selected: selectedDestination == .sessions,
-                            badge: store.sessions.isEmpty ? nil : "\(store.sessions.count)",
-                            action: { onSelect(.sessions) }
-                        )
-                        .accessibilityIdentifier("drawer.sessions")
-                    }
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("WORKSPACE")
+                                .font(.caption2.weight(.heavy))
+                                .tracking(1.2)
+                                .foregroundStyle(KnockDesign.muted)
+                                .padding(.horizontal, 12)
+                            ProductionDrawerRow(
+                                title: "Sessions",
+                                subtitle: "Browse the full decision history",
+                                symbol: "tray.full.fill",
+                                selected: selectedDestination == .sessions,
+                                badge: store.sessions.isEmpty ? nil : "\(store.sessions.count)",
+                                action: { onSelect(.sessions) }
+                            )
+                            .accessibilityIdentifier("drawer.sessions")
+                        }
+                        .id(ProductionDrawerScrollAnchors.workspaceSection)
+                        .productionDrawerScrollAnchor(ProductionDrawerScrollAnchors.workspaceSection)
 
-                    if !store.agents.isEmpty {
+                        if !store.agents.isEmpty {
+                            VStack(alignment: .leading, spacing: 5) {
+                                HStack {
+                                    Text("AGENTS")
+                                        .font(.caption2.weight(.heavy))
+                                        .tracking(1.2)
+                                        .foregroundStyle(KnockDesign.muted)
+                                    Spacer()
+                                    Text("\(store.agents.count)")
+                                        .font(.caption2.weight(.bold).monospacedDigit())
+                                        .foregroundStyle(KnockDesign.muted)
+                                }
+                                .padding(.horizontal, 12)
+
+                                ProductionDrawerRow(
+                                    title: "All agents",
+                                    subtitle: "Show the whole workspace",
+                                    symbol: "person.3.fill",
+                                    selected: store.selectedAgentId == nil && selectedDestination == .dashboard,
+                                    badge: waitingCount == 0 ? nil : "\(waitingCount)",
+                                    action: {
+                                        onSelectAgent(nil)
+                                        onSelect(.dashboard)
+                                    }
+                                )
+                                .accessibilityIdentifier("drawer.agent.all")
+                                .id(ProductionDrawerScrollAnchors.agent("all"))
+                                .productionDrawerScrollAnchor(ProductionDrawerScrollAnchors.agent("all"))
+
+                                ForEach(store.agents) { agent in
+                                    let count = store.sessions.filter { $0.agent_id == agent.agent_id }.count
+                                    ProductionDrawerRow(
+                                        title: agent.displayLabel,
+                                        subtitle: agent.host_label,
+                                        symbol: "circle.grid.2x2.fill",
+                                        selected: store.selectedAgentId == agent.agent_id && selectedDestination == .dashboard,
+                                        badge: count == 0 ? nil : "\(count)",
+                                        action: {
+                                            onSelectAgent(agent.agent_id)
+                                            onSelect(.dashboard)
+                                        }
+                                    )
+                                    .accessibilityIdentifier("drawer.agent.\(agent.agent_id)")
+                                    .id(ProductionDrawerScrollAnchors.agent(agent.agent_id))
+                                    .productionDrawerScrollAnchor(ProductionDrawerScrollAnchors.agent(agent.agent_id))
+                                }
+                            }
+                            .id(ProductionDrawerScrollAnchors.agentsSection)
+                            .productionDrawerScrollAnchor(ProductionDrawerScrollAnchors.agentsSection)
+                        }
+
                         VStack(alignment: .leading, spacing: 5) {
                             HStack {
-                                Text("AGENTS")
+                                Text("RECENT SESSIONS")
                                     .font(.caption2.weight(.heavy))
                                     .tracking(1.2)
                                     .foregroundStyle(KnockDesign.muted)
                                 Spacer()
-                                Text("\(store.agents.count)")
+                                Text("\(store.sessions.count)")
                                     .font(.caption2.weight(.bold).monospacedDigit())
                                     .foregroundStyle(KnockDesign.muted)
                             }
                             .padding(.horizontal, 12)
 
-                            ProductionDrawerRow(
-                                title: "All agents",
-                                subtitle: "Show the whole workspace",
-                                symbol: "person.3.fill",
-                                selected: store.selectedAgentId == nil && selectedDestination == .dashboard,
-                                badge: waitingCount == 0 ? nil : "\(waitingCount)",
-                                action: {
-                                    onSelectAgent(nil)
-                                    onSelect(.dashboard)
+                            if store.sessions.isEmpty {
+                                Text("Your connected agents will appear here.")
+                                    .font(.caption)
+                                    .foregroundStyle(KnockDesign.muted)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                            } else {
+                                ForEach(store.sessions) { session in
+                                    ProductionDrawerSessionRow(
+                                        session: session,
+                                        agentLabel: store.agents.first { $0.agent_id == session.agent_id }?.displayLabel,
+                                        action: { onOpenSession(session) }
+                                    )
+                                    .id(ProductionDrawerScrollAnchors.recentSession(session.session_id))
+                                    .productionDrawerScrollAnchor(
+                                        ProductionDrawerScrollAnchors.recentSession(session.session_id)
+                                    )
                                 }
-                            )
-                            .accessibilityIdentifier("drawer.agent.all")
-
-                            ForEach(store.agents) { agent in
-                                let count = store.sessions.filter { $0.agent_id == agent.agent_id }.count
-                                ProductionDrawerRow(
-                                    title: agent.displayLabel,
-                                    subtitle: agent.host_label,
-                                    symbol: "circle.grid.2x2.fill",
-                                    selected: store.selectedAgentId == agent.agent_id && selectedDestination == .dashboard,
-                                    badge: count == 0 ? nil : "\(count)",
-                                    action: {
-                                        onSelectAgent(agent.agent_id)
-                                        onSelect(.dashboard)
-                                    }
-                                )
-                                .accessibilityIdentifier("drawer.agent.\(agent.agent_id)")
                             }
                         }
+                        .id(ProductionDrawerScrollAnchors.recentSection)
+                        .productionDrawerScrollAnchor(ProductionDrawerScrollAnchors.recentSection)
+
                     }
-
-                    VStack(alignment: .leading, spacing: 5) {
-                        HStack {
-                            Text("RECENT SESSIONS")
-                                .font(.caption2.weight(.heavy))
-                                .tracking(1.2)
-                                .foregroundStyle(KnockDesign.muted)
-                            Spacer()
-                            Text("\(store.sessions.count)")
-                                .font(.caption2.weight(.bold).monospacedDigit())
-                                .foregroundStyle(KnockDesign.muted)
-                        }
-                        .padding(.horizontal, 12)
-
-                        if store.sessions.isEmpty {
-                            Text("Your connected agents will appear here.")
-                                .font(.caption)
-                                .foregroundStyle(KnockDesign.muted)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                        } else {
-                            ForEach(store.sessions) { session in
-                                ProductionDrawerSessionRow(
-                                    session: session,
-                                    agentLabel: store.agents.first { $0.agent_id == session.agent_id }?.displayLabel,
-                                    action: { onOpenSession(session) }
-                                )
-                            }
-                        }
-                    }
-
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 14)
                 }
-                .padding(.horizontal, 10)
-                .padding(.bottom, 14)
+                .accessibilityIdentifier("drawer.scroll")
+                .coordinateSpace(name: "production-drawer-scroll")
+                .onPreferenceChange(ProductionDrawerScrollAnchorPreferenceKey.self) { positions in
+                    scrollAnchor = ProductionDrawerScrollAnchors.preferredAnchor(from: positions)
+                }
+                .onAppear {
+                    restoreScrollAnchor(using: proxy)
+                }
+                .onChange(of: drawerContentIDs) { _ in
+                    restoreScrollAnchor(using: proxy)
+                }
             }
 
             Divider()
@@ -1927,6 +2080,25 @@ struct ProductionDrawer: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Knock Knock navigation")
     }
+
+    private func restoreScrollAnchor(using proxy: ScrollViewProxy) {
+        let available = Set(drawerContentIDs)
+        guard let target = ProductionDrawerScrollAnchors.restoredAnchor(
+            current: scrollAnchor,
+            available: available
+        ) else { return }
+
+        // SwiftUI may deliver the data change before LazyVStack has installed
+        // the new identity. Defer one main-queue turn so scrollTo targets the
+        // post-reconciliation tree, and suppress an unwanted jump animation.
+        DispatchQueue.main.async {
+            var transaction = Transaction()
+            transaction.animation = nil
+            withTransaction(transaction) {
+                proxy.scrollTo(target, anchor: .top)
+            }
+        }
+    }
 }
 
 struct ProductionMainShellView: View {
@@ -1935,6 +2107,7 @@ struct ProductionMainShellView: View {
     @State private var selectedDestination: ProductionDestination = .dashboard
     @State private var drawerOpen = false
     @State private var settingsSheetPresented = false
+    @State private var drawerScrollAnchor: String?
 
     var body: some View {
         GeometryReader { proxy in
@@ -1948,6 +2121,7 @@ struct ProductionMainShellView: View {
                         .accessibilityLabel("Close navigation")
 
                     ProductionDrawer(
+                        scrollAnchor: $drawerScrollAnchor,
                         selectedDestination: selectedDestination,
                         onClose: closeDrawer,
                         onSelect: selectDestination,
