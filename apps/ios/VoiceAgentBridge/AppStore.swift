@@ -45,6 +45,9 @@ final class AppStore: ObservableObject {
     @Published private(set) var messagesBySession: [String: [SessionMessage]] = [:]
     @Published private(set) var retrievalsBySession: [String: [RetrievalItem]] = [:]
     @Published private(set) var pendingOperations: [PendingOperation] = []
+    @Published var pendingCommandConfirmation: PendingCommandConfirmation? = nil
+    @Published private(set) var latestCommandResponse: CommandResponse? = nil
+    @Published private(set) var undoableCommandID: String? = nil
     @Published private(set) var voiceModelStatus = "Not prepared"
     @Published private(set) var voiceController: LocalVoiceCommandController?
     /// A knock can ask the main tab to open one exact agent session.
@@ -84,6 +87,22 @@ final class AppStore: ObservableObject {
     }
 
     init() {
+        #if DEBUG
+        // UI tests run repeatedly against isolated local Workers. Keychain
+        // entries survive app reinstall, so an old access/refresh token can
+        // silently authenticate the test app against a different database.
+        // Reset only when the UI test explicitly opts in; normal debug and
+        // release launches keep their existing session and local cache.
+        if ProcessInfo.processInfo.environment["KNOCK_UI_TEST_RESET_AUTH"] == "1" {
+            KeychainStore.delete()
+            KeychainStore.delete(account: "refresh-token")
+            UserDefaults.standard.removeObject(forKey: "vab.token")
+            UserDefaults.standard.removeObject(forKey: "vab.email")
+            UserDefaults.standard.removeObject(forKey: "vab.apiBase")
+            UserDefaults.standard.removeObject(forKey: "vab.selectedAgentId")
+            localStore.clearUserData()
+        }
+        #endif
         let storedToken = KeychainStore.read() ?? UserDefaults.standard.string(forKey: "vab.token")
         let storedRefreshToken = KeychainStore.read(account: "refresh-token")
         token = storedToken
@@ -125,7 +144,9 @@ final class AppStore: ObservableObject {
         #endif
 
         email = UserDefaults.standard.string(forKey: "vab.email") ?? DemoConfig.email
-        apiBase = UserDefaults.standard.string(forKey: "vab.apiBase") ?? DemoConfig.defaultApiBase
+        apiBase = DemoConfig.runtimeApiBaseOverride()
+            ?? UserDefaults.standard.string(forKey: "vab.apiBase")
+            ?? DemoConfig.defaultApiBase
         if !email.isEmpty && UserDefaults.standard.string(forKey: "vab.email") == nil {
             UserDefaults.standard.set(email, forKey: "vab.email")
         }
@@ -137,6 +158,7 @@ final class AppStore: ObservableObject {
         sessions = localStore.loadSessions()
         pushes = localStore.loadPushes()
         pendingOperations = localStore.loadPendingOperations()
+        pendingCommandConfirmation = localStore.loadPendingCommandConfirmation()
         if let url = URL(string: apiBase), url.host != nil {
             client.baseURL = url
         }
@@ -526,9 +548,11 @@ final class AppStore: ObservableObject {
                 _ = try await manager.install(descriptor)
             }
             let generator = try manager.makeCommandGenerator()
-            let client = self.client
-            voiceController = LocalVoiceCommandController(generator: generator) { envelope in
-                try await client.createCommand(envelope)
+            voiceController = LocalVoiceCommandController(generator: generator) { [weak self] envelope in
+                guard let self else {
+                    throw APIClientError.network("Knock Knock is no longer available")
+                }
+                return try await self.submitLocalCommand(envelope)
             }
             if let model = manager.activeModel {
                 voiceModelStatus = "Ready · Gemma \(model.manifest.modelVersion)"
@@ -539,6 +563,109 @@ final class AppStore: ObservableObject {
             voiceController = nil
             voiceModelStatus = "Unavailable · \(error.localizedDescription)"
             errorMessage = "On-device voice is not ready: \(error.localizedDescription)"
+        }
+    }
+
+    private func submitLocalCommand(_ envelope: CommandEnvelope) async throws -> CommandResponse {
+        let created = try await client.createCommand(envelope)
+        handleCommandResponse(created)
+
+        // Read back the server-owned state before presenting it. The create
+        // response is useful for degraded connectivity, but GET is the
+        // canonical source for risk, confirmation, and lifecycle state.
+        guard let canonical = try? await client.getCommand(commandID: created.command_id) else {
+            return created
+        }
+        handleCommandResponse(canonical)
+        return canonical
+    }
+
+    private func handleCommandResponse(_ response: CommandResponse) {
+        latestCommandResponse = response
+        undoableCommandID = response.state == "succeeded" && response.action?.reversible == true
+            ? response.command_id
+            : nil
+        guard response.state == "awaiting_confirmation" else { return }
+        guard let action = response.action,
+              action.confirm_required
+        else {
+            // Never infer a confirmation title or risk from the local intent.
+            // An awaiting state without backend metadata is fail-closed.
+            errorMessage = "This command needs server confirmation metadata before it can run."
+            return
+        }
+        let token = response.confirmation_token
+            ?? pendingCommandConfirmation
+                .flatMap { $0.command_id == response.command_id ? $0.confirmation_token : nil }
+        guard let token else {
+            // GET intentionally does not repeat a one-time token. If the
+            // create response was lost before persistence, fail closed and
+            // require a new command instead of inventing or reusing a token.
+            errorMessage = "This command needs a fresh confirmation token before it can run."
+            return
+        }
+        let confirmation = PendingCommandConfirmation(
+            command_id: response.command_id,
+            confirmation_token: token,
+            title: action.title,
+            risk: action.risk,
+            confirm_required: action.confirm_required,
+            reversible: action.reversible
+        )
+        pendingCommandConfirmation = confirmation
+        localStore.savePendingCommandConfirmation(confirmation)
+    }
+
+    func deferPendingCommandConfirmation() {
+        // Keep the token in SQLite. The command remains awaiting confirmation
+        // and will be restored on the next app launch.
+        pendingCommandConfirmation = nil
+    }
+
+    func confirmPendingCommand() async {
+        guard let confirmation = pendingCommandConfirmation else { return }
+        errorMessage = nil
+        do {
+            let response = try await client.confirmCommand(
+                commandID: confirmation.command_id,
+                confirmationToken: confirmation.confirmation_token
+            )
+            let canonical = (try? await client.getCommand(commandID: confirmation.command_id)) ?? response
+            handleCommandResponse(canonical)
+            if canonical.state != "awaiting_confirmation" {
+                pendingCommandConfirmation = nil
+                localStore.clearPendingCommandConfirmation()
+                await refresh()
+            }
+        } catch {
+            errorMessage = "Confirmation was not sent. (error.localizedDescription)"
+        }
+    }
+
+    func cancelPendingCommand() async {
+        guard let confirmation = pendingCommandConfirmation else { return }
+        errorMessage = nil
+        do {
+            let response = try await client.cancelCommand(commandID: confirmation.command_id)
+            let canonical = (try? await client.getCommand(commandID: confirmation.command_id)) ?? response
+            latestCommandResponse = canonical
+            pendingCommandConfirmation = nil
+            localStore.clearPendingCommandConfirmation()
+            await refresh()
+        } catch {
+            errorMessage = "The command was not cancelled. (error.localizedDescription)"
+        }
+    }
+
+    func undoCommand(commandID: String) async {
+        errorMessage = nil
+        do {
+            let response = try await client.undoCommand(commandID: commandID)
+            latestCommandResponse = (try? await client.getCommand(commandID: commandID)) ?? response
+            undoableCommandID = nil
+            await refresh()
+        } catch {
+            errorMessage = "Undo was not completed. (error.localizedDescription)"
         }
     }
 
@@ -567,6 +694,9 @@ final class AppStore: ObservableObject {
         messagesBySession = [:]
         retrievalsBySession = [:]
         pendingOperations = []
+        pendingCommandConfirmation = nil
+        latestCommandResponse = nil
+        undoableCommandID = nil
         voiceController = nil
         voiceModelStatus = "Not prepared"
         localStore.clearUserData()
@@ -1120,10 +1250,21 @@ final class AppStore: ObservableObject {
         var remaining: [PendingOperation] = []
         var completedAny = false
         for operation in pendingOperations {
+            if operation.status == .failed {
+                remaining.append(operation)
+                continue
+            }
+            var next = operation
             do {
                 switch operation.kind {
                 case .reply:
-                    guard let actionKey = operation.action_key else { continue }
+                    guard let actionKey = operation.action_key else {
+                        next.status = .failed
+                        next.lastError = "The saved reply has no action key."
+                        next.failureCode = "missing_action_key"
+                        remaining.append(next)
+                        continue
+                    }
                     _ = try await client.reply(
                         sessionId: operation.session_id,
                         actionKey: actionKey,
@@ -1131,7 +1272,13 @@ final class AppStore: ObservableObject {
                         idempotencyKey: operation.id
                     )
                 case .confirm:
-                    guard let actionId = operation.action_id, let confirm = operation.confirm else { continue }
+                    guard let actionId = operation.action_id, let confirm = operation.confirm else {
+                        next.status = .failed
+                        next.lastError = "The saved confirmation is incomplete."
+                        next.failureCode = "missing_confirmation_fields"
+                        remaining.append(next)
+                        continue
+                    }
                     _ = try await client.confirm(
                         sessionId: operation.session_id,
                         actionId: actionId,
@@ -1147,12 +1294,23 @@ final class AppStore: ObservableObject {
                     {
                         print("[pending] retryable request=\(requestID) retry_after=\(metadata.retryAfter ?? 0)")
                     }
-                    remaining.append(operation)
+                    next.status = .pending
+                    next.lastError = nil
+                    next.failureCode = nil
+                    remaining.append(next)
+                } else {
+                    next.status = .failed
+                    next.lastError = error.localizedDescription
+                    next.failureCode = Self.pendingFailureCode(error)
+                    remaining.append(next)
                 }
             } catch {
-                // Decoding, validation, conflict, and expiry failures are
-                // permanent for this pending operation. Keeping them queued
-                // would retry invalid user input forever.
+                // Permanent failures stay visible so the user can retry after
+                // fixing the cause or explicitly discard the saved intent.
+                next.status = .failed
+                next.lastError = error.localizedDescription
+                next.failureCode = "permanent_failure"
+                remaining.append(next)
             }
         }
         if let generation,
@@ -1167,6 +1325,20 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func retryPendingOperation(_ operation: PendingOperation) async {
+        guard let index = pendingOperations.firstIndex(where: { $0.id == operation.id }) else { return }
+        pendingOperations[index].status = .pending
+        pendingOperations[index].lastError = nil
+        pendingOperations[index].failureCode = nil
+        localStore.savePendingOperations(pendingOperations)
+        await retryPendingOperations()
+    }
+
+    func discardPendingOperation(_ operation: PendingOperation) {
+        pendingOperations.removeAll { $0.id == operation.id }
+        localStore.savePendingOperations(pendingOperations)
+    }
+
     nonisolated private static func isRetryableNetwork(_ error: APIClientError) -> Bool {
         if case .network = error { return true }
         if case let .badStatus(code, _, metadata) = error {
@@ -1178,6 +1350,12 @@ final class AppStore: ObservableObject {
     nonisolated static func shouldRetryPendingOperation(_ error: Error) -> Bool {
         guard let error = error as? APIClientError else { return false }
         return isRetryableNetwork(error)
+    }
+
+    nonisolated private static func pendingFailureCode(_ error: APIClientError) -> String {
+        if case let .badStatus(code, _, _) = error { return "http_\(code)" }
+        if case .network = error { return "network" }
+        return "permanent_failure"
     }
 
 }

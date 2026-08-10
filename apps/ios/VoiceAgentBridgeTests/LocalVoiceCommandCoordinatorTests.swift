@@ -97,6 +97,7 @@ final class LocalVoiceCommandCoordinatorTests: XCTestCase {
             command_id: "cmd_voice_1",
             state: "queued",
             command: envelope,
+            action: nil,
             confirmation_token: nil,
             result: nil,
             error: nil,

@@ -120,12 +120,29 @@ enum DecisionRisk: String {
     case low
     case medium
     case high
+    case destructive
+    case unknown
+
+    init(actionRisk raw: String) {
+        switch raw.lowercased() {
+        case "destructive": self = .destructive
+        case "high": self = .high
+        case "medium": self = .medium
+        case "low": self = .low
+        default: self = .unknown
+        }
+    }
 
     init(session: Session) {
-        if session.available_actions?.contains("rollback") == true {
+        let descriptorRisks = session.actionDescriptors.map { DecisionRisk(actionRisk: $0.risk) }
+        if descriptorRisks.contains(.destructive) {
+            self = .destructive
+        } else if descriptorRisks.contains(.high) {
             self = .high
-        } else if session.needsUser {
+        } else if descriptorRisks.contains(.medium) {
             self = .medium
+        } else if descriptorRisks.contains(.unknown) || descriptorRisks.isEmpty {
+            self = .unknown
         } else {
             self = .low
         }
@@ -137,7 +154,8 @@ enum DecisionRisk: String {
         switch self {
         case .low: return KnockDesign.mint
         case .medium: return Color.orange
-        case .high: return KnockDesign.coral
+        case .high, .destructive: return KnockDesign.coral
+        case .unknown: return KnockDesign.muted
         }
     }
 
@@ -145,7 +163,8 @@ enum DecisionRisk: String {
         switch self {
         case .low: return KnockDesign.mintSoft
         case .medium: return Color.orange.opacity(0.13)
-        case .high: return KnockDesign.coralSoft
+        case .high, .destructive: return KnockDesign.coralSoft
+        case .unknown: return KnockDesign.card
         }
     }
 }
@@ -809,19 +828,564 @@ private func parsedDate(_ value: String) -> Date? {
     return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
 }
 
-private func actionTitle(_ key: String) -> String {
-    switch key {
-    case "rollback": return "Rollback"
-    case "ack": return "Acknowledge"
-    default: return key.replacingOccurrences(of: "_", with: " ").capitalized
-    }
-}
-
 private func actionSymbol(_ key: String) -> String {
     switch key {
     case "rollback": return "arrow.uturn.backward.circle.fill"
     case "ack": return "checkmark.circle.fill"
     default: return "hand.tap.fill"
+    }
+}
+
+// MARK: - Home
+
+enum HomeScope: String, CaseIterable, Identifiable {
+    case today
+    case week
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .today: return "Today"
+        case .week: return "This week"
+        }
+    }
+}
+
+struct HomeAgentSummary: Identifiable {
+    let agent: Agent
+    let session: Session?
+    let sessionCount: Int
+
+    var id: String { agent.agent_id }
+}
+
+struct AgentHomeRow: View {
+    let summary: HomeAgentSummary
+    let scope: HomeScope
+    let focused: Bool
+    let onFocus: () -> Void
+
+    private var sessionTitle: String {
+        guard let session = summary.session else {
+            return "No activity in \(scope.title)"
+        }
+        return session.progress_message
+            ?? session.summary_text
+            ?? session.title
+            ?? session.skill_id
+    }
+
+    private var stateTitle: String {
+        summary.session?.stateTitle ?? "Connected"
+    }
+
+    private var stateTint: Color {
+        guard let session = summary.session else { return KnockDesign.mint }
+        if session.needsUser { return KnockDesign.coral }
+        if session.isTerminal { return KnockDesign.mint }
+        return KnockDesign.lavender
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button(action: onFocus) {
+                HStack(spacing: 12) {
+                    AgentGlyph(seed: summary.agent.agent_id, size: 46)
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 7) {
+                            Text(summary.agent.displayLabel)
+                                .font(.headline.weight(.bold))
+                                .foregroundStyle(KnockDesign.ink)
+                                .lineLimit(1)
+                            if focused {
+                                Image(systemName: "mic.fill")
+                                    .font(.caption2.weight(.bold))
+                                    .foregroundStyle(KnockDesign.coral)
+                            }
+                        }
+                        Text(sessionTitle)
+                            .font(.subheadline)
+                            .foregroundStyle(KnockDesign.muted)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(stateTint)
+                                .frame(width: 6, height: 6)
+                            Text(stateTitle)
+                            if summary.sessionCount > 1 {
+                                Text("· \(summary.sessionCount) sessions")
+                            }
+                        }
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(stateTint)
+                    }
+                    Spacer(minLength: 2)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if let session = summary.session {
+                NavigationLink(destination: ProductionDecisionDetailView(sessionId: session.session_id)) {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(KnockDesign.muted)
+                        .frame(width: 30, height: 44)
+                }
+                .accessibilityLabel("Open \(session.title ?? session.skill_id)")
+            }
+        }
+        .padding(14)
+        .background(focused ? KnockDesign.coralSoft : KnockDesign.card)
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(focused ? KnockDesign.coral.opacity(0.35) : KnockDesign.border, lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .accessibilityIdentifier("home.agent.\(summary.agent.agent_id)")
+    }
+}
+
+struct HomeVoiceDock: View {
+    @ObservedObject var controller: LocalVoiceCommandController
+    let targetLabel: String?
+
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: controller.state.isListening ? "waveform" : "mic.fill")
+                    .foregroundStyle(KnockDesign.coral)
+                Text(targetLabel.map { "Ask \($0)" } ?? "Hold to speak")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(KnockDesign.ink)
+                Spacer()
+                Text(controller.state.isListening ? "Release to submit" : "Push to talk")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(KnockDesign.muted)
+            }
+            HStack(spacing: 9) {
+                Image(systemName: controller.state.isListening ? "mic.circle.fill" : "mic.circle")
+                Text(controller.state.isListening ? "Listening…" : "Hold and speak a command")
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .background(controller.state.isListening ? KnockDesign.lavender : KnockDesign.coral)
+            .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+            .onLongPressGesture(minimumDuration: 0, maximumDistance: 44, pressing: { pressing in
+                if pressing {
+                    controller.start()
+                } else {
+                    controller.stop()
+                }
+            }, perform: {})
+            .accessibilityLabel("Push to talk")
+            .accessibilityHint("Hold to speak a command. Release to submit it for backend validation.")
+            .accessibilityIdentifier("voice.dock")
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 11)
+        .padding(.bottom, 8)
+        .background(KnockDesign.canvas.opacity(0.98))
+    }
+}
+
+struct HomeVoicePrepareDock: View {
+    let onPrepare: () -> Void
+
+    var body: some View {
+        Button(action: onPrepare) {
+            HStack(spacing: 9) {
+                Image(systemName: "mic.fill")
+                Text("Prepare on-device voice in Settings")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 15)
+            .padding(.vertical, 13)
+            .frame(maxWidth: .infinity)
+            .background(KnockDesign.coral)
+            .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("voice.prepare")
+    }
+}
+
+struct ProductionHomeView: View {
+    @EnvironmentObject private var store: AppStore
+    let onOpenDrawer: () -> Void
+
+    @State private var scope: HomeScope = .today
+    @State private var focusedAgentId: String?
+
+    private var scopedSessions: [Session] {
+        store.sessions
+            .filter(matchesScope)
+            .sorted {
+                if $0.needsUser != $1.needsUser { return $0.needsUser && !$1.needsUser }
+                return $0.updated_at > $1.updated_at
+            }
+    }
+
+    private var summaries: [HomeAgentSummary] {
+        let agents = store.agents
+        return agents
+            .map { agent in
+                let sessions = scopedSessions.filter { $0.agent_id == agent.agent_id }
+                let session = sessions.first(where: \.needsUser) ?? sessions.first
+                return HomeAgentSummary(agent: agent, session: session, sessionCount: sessions.count)
+            }
+            .sorted { lhs, rhs in
+                if lhs.session?.needsUser != rhs.session?.needsUser {
+                    return lhs.session?.needsUser == true
+                }
+                return lhs.agent.displayLabel.localizedCaseInsensitiveCompare(rhs.agent.displayLabel) == .orderedAscending
+            }
+    }
+
+    init(onOpenDrawer: @escaping () -> Void = {}) {
+        self.onOpenDrawer = onOpenDrawer
+    }
+
+    var body: some View {
+        NavigationView {
+            ZStack(alignment: .top) {
+                KnockDesign.canvas.ignoresSafeArea()
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            HStack(spacing: 10) {
+                                KnockMascot(size: 38)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Knock Knock")
+                                        .font(.title2.weight(.bold))
+                                        .foregroundStyle(KnockDesign.ink)
+                                    Text("Agents knock. You decide.")
+                                        .font(.caption)
+                                        .foregroundStyle(KnockDesign.muted)
+                                }
+                                Spacer(minLength: 5)
+                                ConnectionPill(state: store.connectionState)
+                                    .opacity(0.72)
+                                    .scaleEffect(0.86)
+                            }
+                        }
+
+                        Picker("Home scope", selection: $scope) {
+                            ForEach(HomeScope.allCases) { value in
+                                Text(value.title).tag(value)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .accessibilityIdentifier("home.scope")
+
+                        Text(scope == .today ? "Today" : "This week")
+                            .font(.headline.weight(.bold))
+                            .foregroundStyle(KnockDesign.ink)
+
+                        if store.connectionState == .unavailable {
+                            KnockCard(padding: 13) {
+                                HStack(spacing: 10) {
+                                    Image(systemName: "wifi.exclamationmark")
+                                        .foregroundStyle(KnockDesign.coral)
+                                    Text("Showing the last synced agent state.")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(KnockDesign.muted)
+                                    Spacer()
+                                    Button("Retry") { Task { await store.refresh() } }
+                                        .font(.caption.weight(.bold))
+                                }
+                            }
+                        }
+
+                        if !store.pendingOperations.isEmpty {
+                            PendingOperationsCard()
+                        }
+
+                        if let commandID = store.undoableCommandID {
+                            CommandUndoCard(commandID: commandID)
+                        }
+
+                        if summaries.isEmpty {
+                            ProductionEmptyState(
+                                title: store.agents.isEmpty ? "Connect an agent" : "No activity yet",
+                                symbol: "person.2.fill",
+                                description: store.agents.isEmpty
+                                    ? "Pair an agent from Settings and its current work will appear here."
+                                    : "Your agents have no session activity in this time range.",
+                                actionTitle: "Refresh"
+                            ) { Task { await store.refresh() } }
+                        } else {
+                            ForEach(summaries) { summary in
+                                AgentHomeRow(
+                                    summary: summary,
+                                    scope: scope,
+                                    focused: focusedAgentId == summary.agent.agent_id,
+                                    onFocus: {
+                                        focusedAgentId = summary.agent.agent_id
+                                        store.selectAgent(summary.agent.agent_id)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 7)
+                    .padding(.bottom, 18)
+                }
+                .refreshable { await store.refresh() }
+            }
+            .navigationTitle("Home")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button(action: onOpenDrawer) {
+                        Image(systemName: "sidebar.left")
+                    }
+                    .accessibilityLabel("Open navigation")
+                    .accessibilityIdentifier("drawer.open")
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button { Task { await store.refresh() } } label: {
+                        Image(systemName: store.isRefreshing ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
+                    }
+                    .disabled(store.isRefreshing)
+                    .accessibilityLabel("Refresh home")
+                }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if let controller = store.voiceController {
+                    HomeVoiceDock(
+                        controller: controller,
+                        targetLabel: focusedAgentId.flatMap { id in
+                            store.agents.first { $0.agent_id == id }?.displayLabel
+                        }
+                    )
+                } else {
+                    HomeVoicePrepareDock {
+                        Task { await store.prepareLocalVoiceModel() }
+                    }
+                }
+            }
+            .navigationViewStyle(.stack)
+            .sheet(
+                item: Binding<Session?>(
+                    get: {
+                        guard let requestedID = store.openSessionId else { return nil }
+                        return store.sessions.first { $0.session_id == requestedID }
+                    },
+                    set: { value in
+                        if value == nil { store.openSessionId = nil }
+                    }
+                )
+            ) { session in
+                ProductionDecisionDetailView(sessionId: session.session_id)
+                    .environmentObject(store)
+            }
+        }
+    }
+
+    private func matchesScope(_ session: Session) -> Bool {
+        guard let date = parsedDate(session.updated_at) else { return true }
+        let calendar = Calendar.current
+        switch scope {
+        case .today:
+            return calendar.isDateInToday(date)
+        case .week:
+            guard let start = calendar.date(byAdding: .day, value: -6, to: calendar.startOfDay(for: Date())) else {
+                return true
+            }
+            return date >= start
+        }
+    }
+}
+
+struct PendingOperationsCard: View {
+    @EnvironmentObject private var store: AppStore
+
+    var body: some View {
+        KnockCard(padding: 13) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+                        .foregroundStyle(KnockDesign.lavender)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Saved decisions")
+                            .font(.subheadline.weight(.bold))
+                        Text("Offline choices stay here until they succeed or you discard them.")
+                            .font(.caption)
+                            .foregroundStyle(KnockDesign.muted)
+                    }
+                    Spacer()
+                }
+
+                ForEach(store.pendingOperations) { operation in
+                    VStack(alignment: .leading, spacing: 7) {
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(operation.status == .failed ? KnockDesign.coral : KnockDesign.lavender)
+                                .frame(width: 7, height: 7)
+                            Text(operation.kind == .reply ? "Agent decision" : "Confirmation")
+                                .font(.caption.weight(.bold))
+                            Spacer()
+                            Text(operation.status == .failed ? "Needs attention" : "Waiting to retry")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(operation.status == .failed ? KnockDesign.coral : KnockDesign.muted)
+                        }
+                        if let lastError = operation.lastError {
+                            Text(lastError)
+                                .font(.caption2)
+                                .foregroundStyle(KnockDesign.coral)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        HStack(spacing: 8) {
+                            Button("Retry") {
+                                Task { await store.retryPendingOperation(operation) }
+                            }
+                            .font(.caption.weight(.bold))
+                            .buttonStyle(.borderedProminent)
+                            .tint(KnockDesign.lavender)
+                            .accessibilityIdentifier("pending.retry.\(operation.id)")
+
+                            Button("Discard", role: .destructive) {
+                                store.discardPendingOperation(operation)
+                            }
+                            .font(.caption.weight(.bold))
+                            .buttonStyle(.bordered)
+                            .accessibilityIdentifier("pending.discard.\(operation.id)")
+                        }
+                    }
+                    .padding(.top, 2)
+                }
+            }
+        }
+    }
+}
+
+struct CommandUndoCard: View {
+    @EnvironmentObject private var store: AppStore
+    let commandID: String
+
+    var body: some View {
+        KnockCard(padding: 13) {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.uturn.backward.circle.fill")
+                    .foregroundStyle(KnockDesign.mint)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Action completed")
+                        .font(.subheadline.weight(.bold))
+                    Text("This action can be undone.")
+                        .font(.caption)
+                        .foregroundStyle(KnockDesign.muted)
+                }
+                Spacer()
+                Button("Undo") {
+                    Task { await store.undoCommand(commandID: commandID) }
+                }
+                .font(.caption.weight(.bold))
+                .buttonStyle(.borderedProminent)
+                .tint(KnockDesign.lavender)
+                .accessibilityIdentifier("command.undo")
+            }
+        }
+    }
+}
+
+struct ProductionCommandConfirmationSheet: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.presentationMode) private var presentationMode
+    let confirmation: PendingCommandConfirmation
+
+    var body: some View {
+        NavigationView {
+            ZStack {
+                KnockDesign.canvas.ignoresSafeArea()
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "hand.raised.fill")
+                            .font(.title2.weight(.bold))
+                            .foregroundStyle(KnockDesign.coral)
+                            .frame(width: 48, height: 48)
+                            .background(KnockDesign.coralSoft)
+                            .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Your decision")
+                                .font(.title2.weight(.bold))
+                            Text("The backend marked this action for confirmation.")
+                                .font(.caption)
+                                .foregroundStyle(KnockDesign.muted)
+                        }
+                    }
+
+                    KnockCard(padding: 16) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(confirmation.title)
+                                .font(.headline.weight(.bold))
+                            RiskBadge(risk: DecisionRisk(actionRisk: confirmation.risk))
+                            Text("Confirming will send this command to the agent. Not now keeps it pending; it does not cancel it.")
+                                .font(.subheadline)
+                                .foregroundStyle(KnockDesign.muted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
+                    Button {
+                        Task { await store.confirmPendingCommand() }
+                    } label: {
+                        Text("Confirm")
+                            .font(.headline.weight(.bold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(KnockDesign.coral)
+                            .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                    }
+                    .accessibilityIdentifier("command.confirm")
+
+                    Button("Not now") {
+                        store.deferPendingCommandConfirmation()
+                        presentationMode.wrappedValue.dismiss()
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .accessibilityIdentifier("command.defer")
+
+                    Button("Cancel command", role: .destructive) {
+                        Task {
+                            await store.cancelPendingCommand()
+                            if store.pendingCommandConfirmation == nil {
+                                presentationMode.wrappedValue.dismiss()
+                            }
+                        }
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .accessibilityIdentifier("command.cancel")
+                    Spacer()
+                }
+                .padding(20)
+            }
+            .navigationTitle("Confirm action")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Not now") {
+                        store.deferPendingCommandConfirmation()
+                        presentationMode.wrappedValue.dismiss()
+                    }
+                }
+            }
+            .navigationViewStyle(.stack)
+        }
+        .accessibilityIdentifier("command.confirmationSheet")
     }
 }
 
@@ -1152,7 +1716,7 @@ struct ProductionDrawerSessionRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Open (session.title ?? session.skill_id)")
+        .accessibilityLabel("Open \(session.title ?? session.skill_id)")
     }
 }
 
@@ -1180,6 +1744,11 @@ struct ProductionDrawer: View {
                     Text("Your agent control room")
                         .font(.caption)
                         .foregroundStyle(KnockDesign.muted)
+                    Text(store.email)
+                        .font(.caption2)
+                        .foregroundStyle(KnockDesign.muted)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
                 Spacer(minLength: 8)
                 Button(action: onClose) {
@@ -1199,21 +1768,38 @@ struct ProductionDrawer: View {
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 18) {
                     VStack(alignment: .leading, spacing: 5) {
+                        Text("PINNED")
+                            .font(.caption2.weight(.heavy))
+                            .tracking(1.2)
+                            .foregroundStyle(KnockDesign.muted)
+                            .padding(.horizontal, 12)
+
+                        let pinned = Array(store.sessions.filter(\.needsUser).prefix(3))
+                        if pinned.isEmpty {
+                            Text("No decisions waiting")
+                                .font(.caption)
+                                .foregroundStyle(KnockDesign.muted)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                        } else {
+                            ForEach(pinned) { session in
+                                ProductionDrawerSessionRow(
+                                    session: session,
+                                    agentLabel: store.agents.first { $0.agent_id == session.agent_id }?.displayLabel,
+                                    action: { onOpenSession(session) }
+                                )
+                            }
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 5) {
                         Text("WORKSPACE")
                             .font(.caption2.weight(.heavy))
                             .tracking(1.2)
                             .foregroundStyle(KnockDesign.muted)
                             .padding(.horizontal, 12)
                         ProductionDrawerRow(
-                            title: "Dashboard",
-                            subtitle: "A calm overview of every agent",
-                            symbol: "square.grid.2x2.fill",
-                            selected: selectedDestination == .dashboard,
-                            action: { onSelect(.dashboard) }
-                        )
-                        .accessibilityIdentifier("drawer.dashboard")
-                        ProductionDrawerRow(
-                            title: "All sessions",
+                            title: "Sessions",
                             subtitle: "Browse the full decision history",
                             symbol: "tray.full.fill",
                             selected: selectedDestination == .sessions,
@@ -1298,23 +1884,6 @@ struct ProductionDrawer: View {
                         }
                     }
 
-                    #if targetEnvironment(simulator)
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("DEVELOPMENT")
-                            .font(.caption2.weight(.heavy))
-                            .tracking(1.2)
-                            .foregroundStyle(KnockDesign.muted)
-                            .padding(.horizontal, 12)
-                        ProductionDrawerRow(
-                            title: "Dev push inbox",
-                            subtitle: "Simulator notification fixtures",
-                            symbol: "bell.badge.fill",
-                            selected: selectedDestination == .devPush,
-                            action: { onSelect(.devPush) }
-                        )
-                        .accessibilityIdentifier("drawer.dev-push")
-                    }
-                    #endif
                 }
                 .padding(.horizontal, 10)
                 .padding(.bottom, 14)
@@ -1325,6 +1894,14 @@ struct ProductionDrawer: View {
 
             VStack(alignment: .leading, spacing: 5) {
                 ProductionDrawerRow(
+                    title: "Home",
+                    subtitle: "Today and this week",
+                    symbol: "house.fill",
+                    selected: selectedDestination == .dashboard,
+                    action: { onSelect(.dashboard) }
+                )
+                .accessibilityIdentifier("drawer.home")
+                ProductionDrawerRow(
                     title: "Settings",
                     subtitle: "Pairing, notifications, diagnostics",
                     symbol: "gearshape.fill",
@@ -1332,11 +1909,9 @@ struct ProductionDrawer: View {
                     action: { onSelect(.settings) }
                 )
                 .accessibilityIdentifier("drawer.settings")
-                Text(store.email)
-                    .font(.caption2)
+                Text("Agents knock. You decide.")
+                    .font(.caption2.weight(.semibold))
                     .foregroundStyle(KnockDesign.muted)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
                     .padding(.horizontal, 15)
                     .padding(.bottom, 13)
             }
@@ -1359,6 +1934,7 @@ struct ProductionMainShellView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selectedDestination: ProductionDestination = .dashboard
     @State private var drawerOpen = false
+    @State private var settingsSheetPresented = false
 
     var body: some View {
         GeometryReader { proxy in
@@ -1399,19 +1975,23 @@ struct ProductionMainShellView: View {
             }
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.errorMessage)
+        .sheet(isPresented: $settingsSheetPresented) {
+            ProductionSettingsSheetView()
+                .environmentObject(store)
+        }
     }
 
     @ViewBuilder
     private var mainContent: some View {
         switch selectedDestination {
         case .dashboard:
-            ProductionInboxView(mode: .dashboard, onOpenDrawer: openDrawer)
+            ProductionHomeView(onOpenDrawer: openDrawer)
         case .sessions:
             ProductionInboxView(mode: .allSessions, onOpenDrawer: openDrawer)
         case .devPush:
             ProductionPushInboxView(onOpenDrawer: openDrawer)
         case .settings:
-            ProductionSettingsView(onOpenDrawer: openDrawer)
+            ProductionHomeView(onOpenDrawer: openDrawer)
         }
     }
 
@@ -1429,8 +2009,12 @@ struct ProductionMainShellView: View {
 
     private func selectDestination(_ destination: ProductionDestination) {
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.22)) {
-            selectedDestination = destination
             drawerOpen = false
+        }
+        if destination == .settings {
+            settingsSheetPresented = true
+        } else {
+            selectedDestination = destination
         }
     }
 
@@ -2254,7 +2838,8 @@ struct ProductionActionCard: View {
                 Text("Your choice will be sent back to this agent.")
                     .font(.caption)
                     .foregroundStyle(KnockDesign.muted)
-                if (session.available_actions ?? []).isEmpty {
+                let descriptors = session.actionDescriptors
+                if descriptors.isEmpty {
                     Label("No actions are available right now.", systemImage: "clock.badge.exclamationmark")
                         .font(.subheadline)
                         .foregroundStyle(KnockDesign.muted)
@@ -2263,7 +2848,12 @@ struct ProductionActionCard: View {
                     }
                     .font(.subheadline.weight(.semibold))
                 }
-                ForEach(session.available_actions ?? [], id: \.self) { key in
+                ForEach(descriptors) { descriptor in
+                    let key = descriptor.action_key
+                    let title = descriptor.title?.isEmpty == false
+                        ? descriptor.title!
+                        : "Agent action"
+                    let risk = DecisionRisk(actionRisk: descriptor.risk)
                     Button {
                         Task {
                             if let response = await store.reply(session: session, actionKey: key), response.needs_confirm == true {
@@ -2275,13 +2865,13 @@ struct ProductionActionCard: View {
                         HStack(spacing: 12) {
                             Image(systemName: actionSymbol(key))
                                 .font(.title3.weight(.semibold))
-                                .foregroundStyle(key == "rollback" ? KnockDesign.coral : KnockDesign.mint)
+                                .foregroundStyle(risk.color)
                                 .frame(width: 28)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(actionTitle(key))
+                                Text(title)
                                     .font(.subheadline.weight(.semibold))
                                     .foregroundStyle(KnockDesign.ink)
-                                if key == "rollback" {
+                                if descriptor.confirm_required {
                                     Text("Requires a second confirmation")
                                         .font(.caption2)
                                         .foregroundStyle(KnockDesign.muted)
@@ -2297,7 +2887,7 @@ struct ProductionActionCard: View {
                             }
                         }
                         .padding(13)
-                        .background(key == "rollback" ? KnockDesign.coralSoft : KnockDesign.mintSoft)
+                        .background(risk.background)
                         .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
                     }
                     .buttonStyle(.plain)
@@ -2600,6 +3190,363 @@ struct ProductionSettingsView: View {
                 Text("Your saved connection will be removed from this device. You can sign in again later.")
             }
         }
+    }
+}
+
+enum SettingsPanel: String, Identifiable {
+    case pair
+    case notifications
+    case voice
+    case data
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .pair: return "Pair"
+        case .notifications: return "Notifications"
+        case .voice: return "Voice"
+        case .data: return "Data"
+        }
+    }
+}
+
+struct SettingsActionRow: View {
+    let title: String
+    let subtitle: String
+    let symbol: String
+    let identifier: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: symbol)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(KnockDesign.lavender)
+                    .frame(width: 28, height: 28)
+                    .background(KnockDesign.lavenderSoft)
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(KnockDesign.ink)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(KnockDesign.muted)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(KnockDesign.muted)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 13)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(KnockDesign.card)
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(KnockDesign.border, lineWidth: 1)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(identifier)
+    }
+}
+
+struct ProductionSettingsSheetView: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.presentationMode) private var presentationMode
+    @State private var panel: SettingsPanel?
+    @State private var showSignOut = false
+
+    var body: some View {
+        NavigationView {
+            ZStack {
+                KnockDesign.canvas.ignoresSafeArea()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(spacing: 12) {
+                            KnockMascot(size: 48)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Settings")
+                                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                                    .foregroundStyle(KnockDesign.ink)
+                                Text(store.email)
+                                    .font(.caption)
+                                    .foregroundStyle(KnockDesign.muted)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                ConnectionPill(state: store.connectionState)
+                                    .scaleEffect(0.82, anchor: .leading)
+                                    .frame(height: 20)
+                            }
+                            Spacer(minLength: 4)
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("settings.account")
+
+                        VStack(alignment: .leading, spacing: 9) {
+                            Text("WORKSPACE")
+                                .font(.caption2.weight(.heavy))
+                                .tracking(1.2)
+                                .foregroundStyle(KnockDesign.muted)
+                                .padding(.horizontal, 3)
+                            SettingsActionRow(
+                                title: "Pair",
+                                subtitle: "Connect Codex, Cursor, or Paperclip",
+                                symbol: "link.circle.fill",
+                                identifier: "settings.pair"
+                            ) { panel = .pair }
+                            SettingsActionRow(
+                                title: "Notifications",
+                                subtitle: store.notificationStatusText,
+                                symbol: "bell.badge.fill",
+                                identifier: "settings.notifications"
+                            ) { panel = .notifications }
+                            SettingsActionRow(
+                                title: "Voice",
+                                subtitle: store.voiceController == nil ? "Push-to-talk is not prepared" : "On-device voice is ready",
+                                symbol: "waveform.and.mic",
+                                identifier: "settings.voice"
+                            ) { panel = .voice }
+                            SettingsActionRow(
+                                title: "Data",
+                                subtitle: "Saved sessions, retries, and diagnostics",
+                                symbol: "externaldrive.fill",
+                                identifier: "settings.data"
+                            ) { panel = .data }
+                        }
+
+                        Button("Sign out", role: .destructive) {
+                            showSignOut = true
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 5)
+                        .accessibilityIdentifier("settings.signOut")
+                    }
+                    .padding(18)
+                    .padding(.bottom, 24)
+                }
+            }
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { presentationMode.wrappedValue.dismiss() }
+                        .font(.subheadline.weight(.semibold))
+                        .accessibilityIdentifier("settings.done")
+                }
+            }
+            .navigationViewStyle(.stack)
+            .confirmationDialog("Sign out of Knock Knock?", isPresented: $showSignOut, titleVisibility: .visible) {
+                Button("Sign out", role: .destructive) { store.logout() }
+                Button("Not now", role: .cancel) { }
+            } message: {
+                Text("Your saved connection will be removed from this device.")
+            }
+        }
+        .sheet(item: $panel) { selected in
+            SettingsPanelView(panel: selected)
+                .environmentObject(store)
+        }
+        .accessibilityIdentifier("settings.sheet")
+    }
+}
+
+struct SettingsPanelView: View {
+    @EnvironmentObject private var store: AppStore
+    @Environment(\.presentationMode) private var presentationMode
+    let panel: SettingsPanel
+    @State private var codeCopied = false
+    @State private var apiDraft = ""
+
+    var body: some View {
+        NavigationView {
+            ZStack {
+                KnockDesign.canvas.ignoresSafeArea()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 15) {
+                        switch panel {
+                        case .pair:
+                            pairContent
+                        case .notifications:
+                            notificationsContent
+                        case .voice:
+                            voiceContent
+                        case .data:
+                            dataContent
+                        }
+                    }
+                    .padding(18)
+                }
+            }
+            .navigationTitle(panel.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { presentationMode.wrappedValue.dismiss() }
+                }
+            }
+            .navigationViewStyle(.stack)
+            .onAppear {
+                if apiDraft.isEmpty { apiDraft = store.apiBase }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var pairContent: some View {
+        Text("Pair one agent at a time. The code expires and can be used only once.")
+            .font(.subheadline)
+            .foregroundStyle(KnockDesign.muted)
+        if let code = store.pairingCode {
+            KnockCard(padding: 14) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("One-time code")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(KnockDesign.muted)
+                    HStack {
+                        Text(code)
+                            .font(.system(size: 29, weight: .bold, design: .monospaced))
+                            .foregroundStyle(KnockDesign.lavender)
+                            .textSelection(.enabled)
+                        Spacer()
+                        Button {
+                            UIPasteboard.general.string = code
+                            codeCopied = true
+                        } label: {
+                            Image(systemName: codeCopied ? "checkmark" : "doc.on.doc")
+                                .padding(9)
+                                .background(KnockDesign.lavenderSoft)
+                                .clipShape(Circle())
+                        }
+                        .accessibilityLabel(codeCopied ? "Pairing code copied" : "Copy pairing code")
+                    }
+                    if let expires = store.pairingExpiresAt {
+                        Text("Expires \(expires)")
+                            .font(.caption2)
+                            .foregroundStyle(KnockDesign.muted)
+                    }
+                }
+            }
+        }
+        Button {
+            Task { await store.createPairingCode() }
+        } label: {
+            HStack {
+                if store.isCreatingPairingCode { ProgressView().tint(.white) }
+                Text(store.isCreatingPairingCode ? "Generating…" : store.pairingCode == nil ? "Generate pairing code" : "Generate a new code")
+                Spacer()
+                Image(systemName: "arrow.right")
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(14)
+            .background(KnockDesign.coral)
+            .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+        }
+        .disabled(store.isCreatingPairingCode)
+        .accessibilityIdentifier("pairing.generate")
+    }
+
+    @ViewBuilder
+    private var notificationsContent: some View {
+        KnockCard(padding: 14) {
+            HStack(spacing: 11) {
+                Image(systemName: store.notificationStatusText.contains("authorized") ? "checkmark.circle.fill" : "bell.badge.fill")
+                    .font(.title2)
+                    .foregroundStyle(store.notificationStatusText.contains("authorized") ? KnockDesign.mint : KnockDesign.coral)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Notification status")
+                        .font(.headline)
+                    Text(store.notificationStatusText)
+                        .font(.caption)
+                        .foregroundStyle(KnockDesign.muted)
+                }
+                Spacer()
+            }
+        }
+        Button("Check notification settings") { store.refreshNotificationStatus() }
+            .font(.subheadline.weight(.semibold))
+        Button("Enable notifications") { store.requestNotificationsAgain() }
+            .font(.subheadline.weight(.semibold))
+        Button("Open iPhone Settings") {
+            if let url = URL(string: UIApplication.openSettingsURLString) {
+                UIApplication.shared.open(url)
+            }
+        }
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(KnockDesign.lavender)
+    }
+
+    @ViewBuilder
+    private var voiceContent: some View {
+        Text("Push-to-talk keeps microphone capture in the foreground. The local model only produces a CommandEnvelope; the backend remains the execution authority.")
+            .font(.subheadline)
+            .foregroundStyle(KnockDesign.muted)
+        KnockCard(padding: 14) {
+            HStack(spacing: 10) {
+                Image(systemName: "waveform.and.mic")
+                    .foregroundStyle(KnockDesign.lavender)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(store.voiceController == nil ? "Voice model not prepared" : "Voice model ready")
+                        .font(.headline)
+                    Text(store.voiceModelStatus)
+                        .font(.caption)
+                        .foregroundStyle(KnockDesign.muted)
+                }
+                Spacer()
+            }
+        }
+        Button {
+            Task { await store.prepareLocalVoiceModel() }
+        } label: {
+            HStack {
+                if store.voiceModelStatus.hasPrefix("Preparing") { ProgressView() }
+                Text(store.voiceController == nil ? "Prepare voice model" : "Refresh voice model")
+                Spacer()
+                Image(systemName: "arrow.down.circle")
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(14)
+            .background(KnockDesign.lavender)
+            .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+        }
+        .disabled(store.voiceModelStatus.hasPrefix("Preparing"))
+    }
+
+    @ViewBuilder
+    private var dataContent: some View {
+        Text("Local cache is SQLite-backed on iOS 15. It stores the last synced workspace, messages, retrieval metadata, cursor, and pending operations.")
+            .font(.subheadline)
+            .foregroundStyle(KnockDesign.muted)
+        KnockCard(padding: 14) {
+            VStack(alignment: .leading, spacing: 9) {
+                DetailLine(label: "Sessions", value: "\(store.sessions.count)")
+                DetailLine(label: "Agents", value: "\(store.agents.count)")
+                DetailLine(label: "Saved retries", value: "\(store.pendingOperations.count)")
+                DetailLine(label: "API", value: store.apiBase)
+            }
+        }
+        TextField("API base URL", text: $apiDraft)
+            .textInputAutocapitalization(.never)
+            .keyboardType(.URL)
+            .autocorrectionDisabled()
+            .textFieldStyle(.roundedBorder)
+        Button("Save server URL and retry") {
+            store.apiBase = apiDraft
+            if store.applyApiBase() {
+                Task { await store.refresh() }
+            }
+        }
+        .font(.subheadline.weight(.semibold))
+        Button("Refresh now") { Task { await store.refresh() } }
+            .font(.subheadline.weight(.semibold))
     }
 }
 

@@ -99,6 +99,33 @@ final class SQLiteStore {
         _ = queue.sync { savePendingLocked(operations) }
     }
 
+    func loadPendingCommandConfirmation() -> PendingCommandConfirmation? {
+        queue.sync {
+            guard let value = metadataLocked(key: "pending_command_confirmation"),
+                  let data = value.data(using: .utf8)
+            else { return nil }
+            return try? JSONDecoder().decode(PendingCommandConfirmation.self, from: data)
+        }
+    }
+
+    func savePendingCommandConfirmation(_ confirmation: PendingCommandConfirmation) {
+        queue.sync {
+            guard let data = try? JSONEncoder().encode(confirmation),
+                  let value = String(data: data, encoding: .utf8)
+            else { return }
+            _ = setMetadataLocked(key: "pending_command_confirmation", value: value)
+        }
+    }
+
+    func clearPendingCommandConfirmation() {
+        queue.sync {
+            _ = executeLocked(
+                "DELETE FROM metadata WHERE key = ?",
+                bindings: [.text("pending_command_confirmation")]
+            )
+        }
+    }
+
     func cacheSessions(_ sessions: [Session]) {
         queue.sync {
             let now = ISO8601DateFormatter().string(from: Date())
@@ -290,7 +317,9 @@ final class SQLiteStore {
                 guard executeLocked("DELETE FROM cached_history") else { return false }
                 guard executeLocked("DELETE FROM cached_pushes") else { return false }
                 guard executeLocked("DELETE FROM pending_operations") else { return false }
-                return executeLocked("DELETE FROM metadata WHERE key = 'applied_cursor'")
+                return executeLocked(
+                    "DELETE FROM metadata WHERE key IN ('applied_cursor', 'pending_command_confirmation')"
+                )
             }
         }
     }

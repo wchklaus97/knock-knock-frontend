@@ -202,10 +202,31 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         }
     }
 
+    private func attachScreenshot(_ app: XCUIApplication, named name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    private func launchForIsolatedFixture() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchEnvironment["KNOCK_UI_TEST_RESET_AUTH"] = "1"
+        // Pass the same endpoint explicitly to the application process. This
+        // prevents a stale simulator UserDefaults value from winning over
+        // the Worker selected by the fixture runner.
+        if let configuredURL = ProcessInfo.processInfo.environment["KNOCK_UI_TEST_API_BASE_URL"]
+            ?? ProcessInfo.processInfo.environment["KNOCK_API_BASE_URL"] {
+            app.launchEnvironment["KNOCK_UI_TEST_API_BASE_URL"] = configuredURL
+            app.launchEnvironment["KNOCK_API_BASE_URL"] = configuredURL
+        }
+        app.launch()
+        return app
+    }
+
     func testDecisionSurfaceCompletesDestructiveConfirmationFlow() async throws {
         _ = try await UITestFixtureClient().prepareNeedsUserFixture()
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchForIsolatedFixture()
 
         // Keep the test repeatable on a clean simulator. The app ships with
         // the local demo account prefilled, so a fresh install only needs the
@@ -218,6 +239,7 @@ final class VoiceAgentBridgeUITests: XCTestCase {
             "A fresh needs_user event must be present before running this flow."
         )
         review.tap()
+        attachScreenshot(app, named: "decision-detail")
 
         let rollback = app.buttons["decision.action.rollback"]
         if !rollback.waitForExistence(timeout: 3) {
@@ -227,19 +249,23 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         rollback.tap()
 
         let confirm = app.buttons["Confirm and continue"]
-        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        // iPhone 17 presents the confirmation dialog after the navigation
+        // transition has settled. Wait for the actual action instead of
+        // treating the animation duration as a fixed five-second contract.
+        XCTAssertTrue(confirm.waitForExistence(timeout: 15))
+        attachScreenshot(app, named: "command-confirmation")
         confirm.tap()
 
         XCTAssertTrue(
             app.staticTexts["Queued"].waitForExistence(timeout: 15),
             "The exact session should visibly move to queued after confirmation."
         )
+        attachScreenshot(app, named: "command-queued")
     }
 
     func testSettingsGeneratesAndCopiesPairingCode() async throws {
         _ = try await UITestFixtureClient().prepareNeedsUserFixture()
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchForIsolatedFixture()
         signInIfNeeded(app)
         dismissKnockIfPresent(app)
 
@@ -247,11 +273,16 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         XCTAssertTrue(menu.waitForExistence(timeout: 15))
         menu.tap()
 
-        XCTAssertTrue(app.buttons["drawer.dashboard"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["drawer.home"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["drawer.sessions"].waitForExistence(timeout: 5))
         let settings = app.buttons["drawer.settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 15))
         settings.tap()
+        attachScreenshot(app, named: "settings-sheet")
+
+        let pair = app.buttons["settings.pair"]
+        XCTAssertTrue(pair.waitForExistence(timeout: 15))
+        pair.tap()
 
         let generate = app.buttons["pairing.generate"]
         XCTAssertTrue(generate.waitForExistence(timeout: 15))
@@ -263,24 +294,29 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Pairing code copied"].waitForExistence(timeout: 5))
     }
 
-    func testDashboardSearchAndFiltersStayUsable() async throws {
+    func testHomeScopesAndAgentRowsStayUsable() async throws {
         _ = try await UITestFixtureClient().prepareNeedsUserFixture()
-        let app = XCUIApplication()
-        app.launch()
+        let app = launchForIsolatedFixture()
         signInIfNeeded(app)
         dismissKnockIfPresent(app)
+        attachScreenshot(app, named: "home-today")
 
-        let search = app.textFields["inbox.search"]
-        XCTAssertTrue(search.waitForExistence(timeout: 15))
-        XCTAssertTrue(app.buttons["filter.needs_user"].exists)
-        XCTAssertTrue(app.buttons["filter.active"].exists)
-        XCTAssertTrue(app.buttons["filter.all"].exists)
+        let today = app.segmentedControls.buttons["Today"]
+        XCTAssertTrue(today.waitForExistence(timeout: 15))
+        XCTAssertTrue(app.segmentedControls.buttons["This week"].exists)
+        XCTAssertTrue(app.staticTexts["Today"].exists)
 
-        search.tap()
-        search.typeText("not-a-real-session")
-        XCTAssertTrue(app.staticTexts["Nothing matches"].waitForExistence(timeout: 5))
+        app.segmentedControls.buttons["This week"].tap()
+        XCTAssertTrue(app.staticTexts["This week"].waitForExistence(timeout: 5))
+        attachScreenshot(app, named: "home-this-week")
 
-        app.buttons["Clear search"].tap()
-        XCTAssertTrue(app.staticTexts["Recent sessions"].waitForExistence(timeout: 5))
+        let menu = app.buttons["drawer.open"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 15))
+        menu.tap()
+        // The drawer uses a full-height transition on larger devices. Wait
+        // for its anchored footer and section label after the transition.
+        XCTAssertTrue(app.buttons["drawer.home"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["PINNED"].waitForExistence(timeout: 15))
+        attachScreenshot(app, named: "drawer")
     }
 }

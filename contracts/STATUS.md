@@ -1,6 +1,6 @@
 # Status Enum Cheat Sheet / 状态枚举速查
 
-Aligned with MVP API (`apps/api`) and OpenAPI.
+Aligned with the backend canonical OpenAPI contract and the current Rust Worker.
 
 ## Canonical backend architecture references
 
@@ -8,11 +8,12 @@ The backend contract is the sole protocol source of truth. This iOS status docum
 
 - [Backend architecture decisions](https://github.com/wchklaus97/knock-knock-backend/blob/main/docs/ARCHITECTURE_DECISIONS.md) — canonical architecture decisions (cross-repo placeholder).
 - [Backend implementation roadmap](https://github.com/wchklaus97/knock-knock-backend/blob/main/docs/IMPLEMENTATION_ROADMAP.md) — canonical implementation sequencing (cross-repo placeholder).
+- [Backend OpenAPI contract](https://github.com/wchklaus97/knock-knock-backend/blob/main/contracts/openapi.yaml) — canonical REST, SSE, error, and `CommandEnvelope v1` contract.
 
-The current Phase 4/5 iOS implementation is validated by 33 unit tests and an
-unsigned iOS 15 Release device build. Model publication, public-key
-configuration, deployed E2E fixtures, physical-device voice evaluation, and
-human release approval remain backend-canonical release gates.
+The current Phase 4/5 iOS implementation is validated by 36 unit tests and a
+three-test UI suite against a fresh local Rust Worker/D1. Model publication,
+public-key configuration, deployed E2E fixtures, physical-device voice
+evaluation, and human release approval remain backend-canonical release gates.
 
 ## ProgressStatus — `update_progress` only / 仅进度
 

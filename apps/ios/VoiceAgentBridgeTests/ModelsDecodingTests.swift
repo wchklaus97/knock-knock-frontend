@@ -9,6 +9,27 @@ final class ModelsDecodingTests: XCTestCase {
         XCTAssertFalse(DemoConfig.isLegacyDemoEmail("user@example.com"))
     }
 
+    func testDebugApiBaseOverridePrecedesPersistedSimulatorEndpoint() {
+        let override = DemoConfig.runtimeApiBaseOverride(environment: [
+            "KNOCK_UI_TEST_API_BASE_URL": "http://127.0.0.1:8798",
+            "KNOCK_API_BASE_URL": "http://127.0.0.1:8797"
+        ])
+
+        #if DEBUG
+        XCTAssertEqual(override, "http://127.0.0.1:8798")
+        #else
+        XCTAssertNil(override)
+        #endif
+    }
+
+    func testUnresolvedApiBaseBuildSettingIsIgnored() {
+        let override = DemoConfig.runtimeApiBaseOverride(environment: [
+            "KNOCK_UI_TEST_API_BASE_URL": "$(KNOCK_API_BASE_URL)"
+        ])
+
+        XCTAssertNil(override)
+    }
+
     func testReleaseEndpointPolicyMigratesDevelopmentAddress() {
         XCTAssertTrue(
             DemoConfig.isLegacyDevelopmentApiBase(
@@ -55,6 +76,14 @@ final class ModelsDecodingTests: XCTestCase {
                 "summary_text": "api 在 prod 部署失败",
                 "voice_script": "api 在 prod 部署失败",
                 "available_actions": ["rollback", "ack"],
+                "available_action_descriptors": [{
+                  "action_key": "rollback",
+                  "title": "Rollback production",
+                  "risk": "destructive",
+                  "confirm_required": true,
+                  "payload": {"scope": "prod"}
+                }],
+                "version": 8,
                 "facts": {"service": "api"},
                 "expires_at": "2026-08-06T00:00:00.000Z",
                 "created_at": "2026-08-05T00:00:00.000Z",
@@ -71,6 +100,10 @@ final class ModelsDecodingTests: XCTestCase {
         XCTAssertTrue(session.needsUser)
         XCTAssertEqual(session.progress_percent, 42)
         XCTAssertEqual(session.available_actions, ["rollback", "ack"])
+        XCTAssertEqual(session.available_action_descriptors?.first?.action_key, "rollback")
+        XCTAssertEqual(session.available_action_descriptors?.first?.title, "Rollback production")
+        XCTAssertTrue(session.available_action_descriptors?.first?.confirm_required == true)
+        XCTAssertEqual(session.version, 8)
         XCTAssertEqual(session.summary_text, "api 在 prod 部署失败")
         XCTAssertEqual(session.facts["service"]?.displayValue, "api")
     }
@@ -160,7 +193,7 @@ final class ModelsDecodingTests: XCTestCase {
         XCTAssertFalse(SessionSearchMatcher(query: "paperclip").matches(session, agent: agent))
     }
 
-    func testDecisionRiskUsesAvailableDestructiveAction() throws {
+    func testDecisionRiskDoesNotInferRiskFromLegacyActionNames() throws {
         let data = Data(
             """
             {
@@ -176,7 +209,7 @@ final class ModelsDecodingTests: XCTestCase {
 
         let session = try decoder.decode(Session.self, from: data)
 
-        XCTAssertEqual(DecisionRisk(session: session).title, "High risk")
+        XCTAssertEqual(DecisionRisk(session: session).title, "Unknown risk")
         XCTAssertEqual(session.facts["attempt"]?.displayValue, "2")
         XCTAssertEqual(session.facts["production"]?.displayValue, "Yes")
     }
@@ -185,6 +218,10 @@ final class ModelsDecodingTests: XCTestCase {
         let auth = try decoder.decode(
             AuthResponse.self,
             from: Data(#"{"user_id":"usr_1","token":"jwt","refresh_token":"vbr_refresh","expires_in":900}"#.utf8)
+        )
+        let canonicalAuth = try decoder.decode(
+            AuthResponse.self,
+            from: Data(#"{"access_token":"canonical-jwt","refresh_token":"vbr_refresh_2","expires_in":900,"user":{"id":"usr_2","email":"user@example.com"}}"#.utf8)
         )
         let agents = try decoder.decode(
             AgentsResponse.self,
@@ -197,6 +234,10 @@ final class ModelsDecodingTests: XCTestCase {
 
         XCTAssertEqual(auth.refresh_token, "vbr_refresh")
         XCTAssertEqual(auth.expires_in, 900)
+        XCTAssertEqual(auth.access_token, "jwt")
+        XCTAssertEqual(canonicalAuth.token, "canonical-jwt")
+        XCTAssertEqual(canonicalAuth.user_id, "usr_2")
+        XCTAssertEqual(canonicalAuth.user?.email, "user@example.com")
         XCTAssertEqual(agents.agents.first?.displayLabel, "Codex")
         XCTAssertEqual(history.entries.first?.title, "Phone Confirm")
         XCTAssertEqual(history.entries.first?.metadata["action_id"]?.displayValue, "act_1")
@@ -242,6 +283,27 @@ final class ModelsDecodingTests: XCTestCase {
         store.clearUserData()
         XCTAssertNil(store.loadAppliedCursor())
         XCTAssertTrue(store.loadPendingOperations().isEmpty)
+    }
+
+    func testSQLiteStorePersistsCommandConfirmationAndClearsItWithUserData() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knock-knock-confirmation-(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let store = SQLiteStore(databaseURL: url)
+        let confirmation = PendingCommandConfirmation(
+            command_id: "cmd_confirm",
+            confirmation_token: "ctok_once",
+            title: "Send message",
+            risk: "high",
+            confirm_required: true,
+            reversible: false
+        )
+        store.savePendingCommandConfirmation(confirmation)
+
+        XCTAssertEqual(store.loadPendingCommandConfirmation(), confirmation)
+        store.clearUserData()
+        XCTAssertNil(store.loadPendingCommandConfirmation())
     }
 
     func testAPIErrorDecoderAcceptsCanonicalAndLegacyEnvelopes() throws {
@@ -319,6 +381,29 @@ final class ModelsDecodingTests: XCTestCase {
         XCTAssertEqual(legacyPage.messages.first?.message_id, "msg_legacy")
         XCTAssertEqual(detail.retrieval_items.first?.content_hash, "sha")
         XCTAssertNotNil(push.read_at)
+    }
+
+    func testSessionAndHistoryPaginationFieldsDecodeWithLegacyDefaults() throws {
+        let sessionPage = try decoder.decode(
+            SessionsResponse.self,
+            from: Data(#"{"sessions":[{"session_id":"ses_1","agent_id":"agt_1","skill_id":"research","state":"running"}],"next_cursor":"session-cursor","has_more":true}"#.utf8)
+        )
+        let legacySessionPage = try decoder.decode(
+            SessionsResponse.self,
+            from: Data(#"{"sessions":[]}"#.utf8)
+        )
+        let historyPage = try decoder.decode(
+            HistoryResponse.self,
+            from: Data(#"{"entries":[],"next_cursor":"history-cursor","has_more":true}"#.utf8)
+        )
+
+        XCTAssertEqual(sessionPage.sessions.first?.session_id, "ses_1")
+        XCTAssertEqual(sessionPage.next_cursor, "session-cursor")
+        XCTAssertTrue(sessionPage.has_more)
+        XCTAssertNil(legacySessionPage.next_cursor)
+        XCTAssertFalse(legacySessionPage.has_more)
+        XCTAssertEqual(historyPage.next_cursor, "history-cursor")
+        XCTAssertTrue(historyPage.has_more)
     }
 
     func testSQLiteStoreCachesMessagesAndRetrievals() throws {
