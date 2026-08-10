@@ -535,6 +535,46 @@ struct SyncResponse: Decodable {
     let cursor: String
     let changes: [PhoneChange]
     let has_more: Bool
+
+    /// Newer sync endpoints can explicitly report that the requested cursor
+    /// is outside their retention window. Older endpoints simply return a
+    /// normal page, so all of these fields remain backward-compatible.
+    let next_cursor: String?
+    let full_sync_required: Bool
+    let gap: Bool
+
+    var requiresFullSync: Bool {
+        full_sync_required || gap
+    }
+
+    var effectiveNextCursor: String {
+        if let next_cursor, !next_cursor.isEmpty {
+            return next_cursor
+        }
+        return cursor
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case cursor, changes, has_more, next_cursor, full_sync_required, gap
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        cursor = try container.decodeIfPresent(String.self, forKey: .cursor) ?? ""
+        changes = try container.decodeIfPresent([PhoneChange].self, forKey: .changes) ?? []
+        has_more = try container.decodeIfPresent(Bool.self, forKey: .has_more) ?? false
+        next_cursor = try container.decodeIfPresent(String.self, forKey: .next_cursor)
+        full_sync_required = try container.decodeIfPresent(Bool.self, forKey: .full_sync_required) ?? false
+        gap = try container.decodeIfPresent(Bool.self, forKey: .gap) ?? false
+    }
+}
+
+struct PendingSyncEvent: Codable, Identifiable, Hashable {
+    let event_id: String
+    let event_name: String
+    let received_at: Date
+
+    var id: String { event_id }
 }
 
 struct PendingOperation: Codable, Identifiable, Hashable {
@@ -543,12 +583,15 @@ struct PendingOperation: Codable, Identifiable, Hashable {
         case confirm
     }
 
-    enum Status: String, Codable {
+    enum Status: String, Codable, CaseIterable {
         case pending
+        case inFlight = "in_flight"
         case failed
     }
 
-    let id: String
+    /// The server idempotency key is the durable identity of a local intent.
+    /// It must remain unchanged across retries and app relaunches.
+    let idempotency_key: String
     let kind: Kind
     let session_id: String
     let action_key: String?
@@ -559,6 +602,38 @@ struct PendingOperation: Codable, Identifiable, Hashable {
     var lastError: String?
     var failureCode: String?
 
+    var id: String { idempotency_key }
+
+    var isPending: Bool {
+        status == .pending || status == .inFlight
+    }
+
+    init(
+        idempotencyKey: String,
+        kind: Kind,
+        session_id: String,
+        action_key: String?,
+        action_id: String?,
+        confirm: Bool?,
+        created_at: Date,
+        status: Status = .pending,
+        lastError: String? = nil,
+        failureCode: String? = nil
+    ) {
+        self.idempotency_key = idempotencyKey
+        self.kind = kind
+        self.session_id = session_id
+        self.action_key = action_key
+        self.action_id = action_id
+        self.confirm = confirm
+        self.created_at = created_at
+        self.status = status
+        self.lastError = lastError
+        self.failureCode = failureCode
+    }
+
+    /// Compatibility initializer for the pre-G1 queue, where `id` was the
+    /// implicit idempotency key.
     init(
         id: String,
         kind: Kind,
@@ -571,35 +646,84 @@ struct PendingOperation: Codable, Identifiable, Hashable {
         lastError: String? = nil,
         failureCode: String? = nil
     ) {
-        self.id = id
-        self.kind = kind
-        self.session_id = session_id
-        self.action_key = action_key
-        self.action_id = action_id
-        self.confirm = confirm
-        self.created_at = created_at
-        self.status = status
-        self.lastError = lastError
-        self.failureCode = failureCode
+        self.init(
+            idempotencyKey: id,
+            kind: kind,
+            session_id: session_id,
+            action_key: action_key,
+            action_id: action_id,
+            confirm: confirm,
+            created_at: created_at,
+            status: status,
+            lastError: lastError,
+            failureCode: failureCode
+        )
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, kind, session_id, action_key, action_id, confirm, created_at
-        case status, lastError, failureCode
+        case idempotency_key, id, kind, session_id, action_key, action_id, confirm, created_at
+        case status, lastError, last_error, failureCode, failure_code
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(idempotency_key, forKey: .idempotency_key)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(session_id, forKey: .session_id)
+        try container.encodeIfPresent(action_key, forKey: .action_key)
+        try container.encodeIfPresent(action_id, forKey: .action_id)
+        try container.encodeIfPresent(confirm, forKey: .confirm)
+        try container.encode(created_at, forKey: .created_at)
+        try container.encode(status, forKey: .status)
+        try container.encodeIfPresent(lastError, forKey: .lastError)
+        try container.encodeIfPresent(failureCode, forKey: .failureCode)
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(String.self, forKey: .id)
+        let canonicalKey = try container.decodeIfPresent(String.self, forKey: .idempotency_key)
+        let legacyKey = try container.decodeIfPresent(String.self, forKey: .id)
+        guard let resolvedKey = canonicalKey ?? legacyKey, !resolvedKey.isEmpty else {
+            throw DecodingError.keyNotFound(
+                CodingKeys.idempotency_key,
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "Pending operation did not contain an idempotency key"
+                )
+            )
+        }
+        idempotency_key = resolvedKey
         kind = try container.decode(Kind.self, forKey: .kind)
         session_id = try container.decode(String.self, forKey: .session_id)
         action_key = try container.decodeIfPresent(String.self, forKey: .action_key)
         action_id = try container.decodeIfPresent(String.self, forKey: .action_id)
         confirm = try container.decodeIfPresent(Bool.self, forKey: .confirm)
-        created_at = try container.decode(Date.self, forKey: .created_at)
+        if let decodedDate = try? container.decode(Date.self, forKey: .created_at) {
+            created_at = decodedDate
+        } else if let decodedString = try? container.decode(String.self, forKey: .created_at),
+                  let decodedDate = ISO8601DateFormatter().date(from: decodedString)
+        {
+            created_at = decodedDate
+        } else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .created_at,
+                in: container,
+                debugDescription: "Pending operation has an invalid created_at value"
+            )
+        }
         status = try container.decodeIfPresent(Status.self, forKey: .status) ?? .pending
-        lastError = try container.decodeIfPresent(String.self, forKey: .lastError)
-        failureCode = try container.decodeIfPresent(String.self, forKey: .failureCode)
+        let canonicalLastError = try container.decodeIfPresent(String.self, forKey: .lastError)
+        if let canonicalLastError {
+            lastError = canonicalLastError
+        } else {
+            lastError = try container.decodeIfPresent(String.self, forKey: .last_error)
+        }
+        let canonicalFailureCode = try container.decodeIfPresent(String.self, forKey: .failureCode)
+        if let canonicalFailureCode {
+            failureCode = canonicalFailureCode
+        } else {
+            failureCode = try container.decodeIfPresent(String.self, forKey: .failure_code)
+        }
     }
 }
 
