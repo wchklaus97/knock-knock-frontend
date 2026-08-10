@@ -20,17 +20,18 @@ The backend contract is the sole protocol source of truth. This iOS handoff is a
 
 - [Backend architecture decisions](https://github.com/wchklaus97/knock-knock-backend/blob/main/docs/ARCHITECTURE_DECISIONS.md) — canonical architecture decisions (cross-repo placeholder).
 - [Backend implementation roadmap](https://github.com/wchklaus97/knock-knock-backend/blob/main/docs/IMPLEMENTATION_ROADMAP.md) — canonical implementation sequencing (cross-repo placeholder).
+- [Backend OpenAPI contract](https://github.com/wchklaus97/knock-knock-backend/blob/main/contracts/openapi.yaml) — canonical REST, SSE, error, and `CommandEnvelope v1` contract.
 
 ## Current Phase 4/5 completion branch
 
 The active follow-up branch adds iOS 15 push-to-talk/VAD, system on-device
 speech recognition, strict `CommandEnvelope v1` submission, signed model
 download/verification/rollback, and the official LiteRT-LM 0.12 C framework
-adapter. `VoiceAgentBridgeTests` passes 33/33 and the unsigned Release device
-build passes. Full UI E2E still requires the deployed Rust Worker and the
-deterministic `needs_user` fixture; it is not counted as passed from a login
-screen-only simulator run. See the backend canonical roadmap above for the
-cross-repository gates and handoff order.
+adapter. `VoiceAgentBridgeTests` passes 36/36, and the three-test UI suite
+passes against a fresh local Rust Worker/D1 with an isolated fixture. Physical
+device, APNs, vendor-model, staging, and release-approval gates remain
+separate. See the backend canonical roadmap above for the cross-repository
+gates and handoff order.
 
 **Locked MVP loop:**
 

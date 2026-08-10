@@ -58,6 +58,26 @@ enum DemoConfig {
         #endif
     }
 
+    /// Returns an explicit endpoint supplied by a local Debug/UI-test launch.
+    ///
+    /// This must be checked before persisted settings: a simulator may retain
+    /// an older `vab.apiBase` value and silently send a test run to the wrong
+    /// Worker. Release builds intentionally ignore process environment values.
+    static func runtimeApiBaseOverride(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String? {
+        #if DEBUG
+        for key in ["KNOCK_UI_TEST_API_BASE_URL", "KNOCK_API_BASE_URL"] {
+            guard let value = environment[key] else { continue }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty && !trimmed.hasPrefix("$(") {
+                return trimmed
+            }
+        }
+        #endif
+        return nil
+    }
+
     /// Validates an API base URL for the current build policy.
     ///
     /// Debug builds may use a local HTTP bridge. Distribution builds must

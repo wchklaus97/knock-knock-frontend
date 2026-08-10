@@ -36,7 +36,10 @@ final class APIClient: @unchecked Sendable {
     /// device address because a Mac's LAN address can change at any time.
     var baseURL: URL? {
         get {
-            let raw = (UserDefaults.standard.string(forKey: "vab.apiBase") ?? DemoConfig.defaultApiBase)
+            let configured = DemoConfig.runtimeApiBaseOverride()
+                ?? UserDefaults.standard.string(forKey: "vab.apiBase")
+                ?? DemoConfig.defaultApiBase
+            let raw = configured
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             #if DEBUG
             let requiresHTTPS = false
@@ -134,9 +137,33 @@ final class APIClient: @unchecked Sendable {
         return generated
     }
 
+    func listSessionsPage(
+        before: String? = nil,
+        limit: Int = 50
+    ) async throws -> SessionsResponse {
+        var query = [URLQueryItem(name: "limit", value: String(min(max(limit, 1), 50)))]
+        if let before, !before.isEmpty {
+            query.append(URLQueryItem(name: "before", value: before))
+        }
+        return try await get("/v1/phone/sessions", query: query)
+    }
+
     func listSessions() async throws -> [Session] {
-        let res: SessionsResponse = try await get("/v1/phone/sessions")
-        return res.sessions
+        var sessions: [Session] = []
+        var cursor: String?
+        while true {
+            let page = try await listSessionsPage(before: cursor)
+            sessions.append(contentsOf: page.sessions)
+            guard page.has_more,
+                  let nextCursor = page.next_cursor,
+                  !nextCursor.isEmpty,
+                  nextCursor != cursor
+            else {
+                break
+            }
+            cursor = nextCursor
+        }
+        return sessions
     }
 
     /// Fetch durable phone changes after an applied cursor. The endpoint is
@@ -157,11 +184,37 @@ final class APIClient: @unchecked Sendable {
         return res.agents
     }
 
-    func listHistory(sessionId: String) async throws -> [HistoryEntry] {
-        let res: HistoryResponse = try await get(
-            "/v1/phone/sessions/\(sessionId)/history"
+    func listHistoryPage(
+        sessionId: String,
+        before: String? = nil,
+        limit: Int = 50
+    ) async throws -> HistoryResponse {
+        var query = [URLQueryItem(name: "limit", value: String(min(max(limit, 1), 50)))]
+        if let before, !before.isEmpty {
+            query.append(URLQueryItem(name: "before", value: before))
+        }
+        return try await get(
+            "/v1/phone/sessions/\(sessionId)/history",
+            query: query
         )
-        return res.entries
+    }
+
+    func listHistory(sessionId: String) async throws -> [HistoryEntry] {
+        var entries: [HistoryEntry] = []
+        var cursor: String?
+        while true {
+            let page = try await listHistoryPage(sessionId: sessionId, before: cursor)
+            entries.append(contentsOf: page.entries)
+            guard page.has_more,
+                  let nextCursor = page.next_cursor,
+                  !nextCursor.isEmpty,
+                  nextCursor != cursor
+            else {
+                break
+            }
+            cursor = nextCursor
+        }
+        return entries
     }
 
     func getSessionDetail(sessionId: String) async throws -> SessionDetailResponse {
@@ -173,7 +226,7 @@ final class APIClient: @unchecked Sendable {
         before: String? = nil,
         limit: Int = 50
     ) async throws -> MessagePage {
-        var query = [URLQueryItem(name: "limit", value: String(min(max(limit, 1), 100)))]
+        var query = [URLQueryItem(name: "limit", value: String(min(max(limit, 1), 50)))]
         if let before, !before.isEmpty {
             query.append(URLQueryItem(name: "before", value: before))
         }

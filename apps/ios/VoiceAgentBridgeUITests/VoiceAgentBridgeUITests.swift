@@ -205,6 +205,14 @@ final class VoiceAgentBridgeUITests: XCTestCase {
     private func launchForIsolatedFixture() -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["KNOCK_UI_TEST_RESET_AUTH"] = "1"
+        // Pass the same endpoint explicitly to the application process. This
+        // prevents a stale simulator UserDefaults value from winning over
+        // the Worker selected by the fixture runner.
+        if let configuredURL = ProcessInfo.processInfo.environment["KNOCK_UI_TEST_API_BASE_URL"]
+            ?? ProcessInfo.processInfo.environment["KNOCK_API_BASE_URL"] {
+            app.launchEnvironment["KNOCK_UI_TEST_API_BASE_URL"] = configuredURL
+            app.launchEnvironment["KNOCK_API_BASE_URL"] = configuredURL
+        }
         app.launch()
         return app
     }
