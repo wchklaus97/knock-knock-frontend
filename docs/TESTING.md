@@ -114,6 +114,7 @@ pnpm test:canonical:codex
 
 # RC auth/security/history/metrics smoke
 pnpm test:rc
+pnpm test:security
 
 # Codex/Cursor/Paperclip installer smoke (uses a temporary home)
 pnpm test:installer
