@@ -141,7 +141,9 @@ final class AppStore: ObservableObject {
         #endif
 
         email = UserDefaults.standard.string(forKey: "vab.email") ?? DemoConfig.email
-        apiBase = UserDefaults.standard.string(forKey: "vab.apiBase") ?? DemoConfig.defaultApiBase
+        apiBase = DemoConfig.runtimeApiBaseOverride()
+            ?? UserDefaults.standard.string(forKey: "vab.apiBase")
+            ?? DemoConfig.defaultApiBase
         if !email.isEmpty && UserDefaults.standard.string(forKey: "vab.email") == nil {
             UserDefaults.standard.set(email, forKey: "vab.email")
         }

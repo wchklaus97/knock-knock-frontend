@@ -1,10 +1,49 @@
 import Foundation
 
+struct AuthUser: Decodable, Equatable {
+    let id: String
+    let email: String?
+}
+
 struct AuthResponse: Decodable {
+    /// Legacy names remain exposed to the current store while the wire
+    /// contract uses access_token/user. The decoder accepts both shapes so an
+    /// older Worker can be upgraded independently of the app.
     let user_id: String
     let token: String
     let refresh_token: String?
     let expires_in: Int?
+    let access_token: String
+    let user: AuthUser?
+
+    private enum CodingKeys: String, CodingKey {
+        case user_id, token, refresh_token, expires_in, access_token, user
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let canonicalToken = try container.decodeIfPresent(String.self, forKey: .access_token)
+        let legacyToken = try container.decodeIfPresent(String.self, forKey: .token)
+        guard let resolvedToken = canonicalToken ?? legacyToken, !resolvedToken.isEmpty else {
+            throw DecodingError.keyNotFound(
+                CodingKeys.access_token,
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "Auth response did not contain an access token"
+                )
+            )
+        }
+        user = try container.decodeIfPresent(AuthUser.self, forKey: .user)
+        if let user {
+            user_id = user.id
+        } else {
+            user_id = try container.decode(String.self, forKey: .user_id)
+        }
+        token = resolvedToken
+        access_token = canonicalToken ?? resolvedToken
+        refresh_token = try container.decodeIfPresent(String.self, forKey: .refresh_token)
+        expires_in = try container.decodeIfPresent(Int.self, forKey: .expires_in)
+    }
 }
 
 struct Agent: Codable, Identifiable, Hashable {
@@ -97,6 +136,16 @@ struct PairingCodeResponse: Decodable {
     let expires_at: String
 }
 
+struct ActionDescriptor: Codable, Identifiable, Hashable {
+    let action_key: String
+    let title: String?
+    let risk: String
+    let confirm_required: Bool
+    let payload: [String: JSONValue]?
+
+    var id: String { action_key }
+}
+
 struct Session: Codable, Identifiable, Hashable {
     var id: String { session_id }
     let session_id: String
@@ -111,6 +160,8 @@ struct Session: Codable, Identifiable, Hashable {
     let summary_text: String?
     var voice_script: String?
     let available_actions: [String]?
+    let available_action_descriptors: [ActionDescriptor]?
+    let version: Int?
     var facts: [String: JSONValue]
     let expires_at: String
     let created_at: String
@@ -121,6 +172,24 @@ struct Session: Codable, Identifiable, Hashable {
 
     var needsUser: Bool { state == "needs_user" || state == "awaiting_confirm" }
 
+    /// The registry descriptor is authoritative. The fallback keeps older
+    /// Workers usable while defaulting unknown actions to a non-destructive,
+    /// confirmation-safe presentation.
+    var actionDescriptors: [ActionDescriptor] {
+        if let descriptors = available_action_descriptors, !descriptors.isEmpty {
+            return descriptors
+        }
+        return (available_actions ?? []).map { key in
+            ActionDescriptor(
+                action_key: key,
+                title: nil,
+                risk: key == "rollback" ? "destructive" : "low",
+                confirm_required: key == "rollback",
+                payload: nil
+            )
+        }
+    }
+
     mutating func mergeDetail(from detail: Session) {
         if facts.isEmpty { facts = detail.facts }
         if (voice_script ?? "").isEmpty { voice_script = detail.voice_script }
@@ -129,7 +198,7 @@ struct Session: Codable, Identifiable, Hashable {
     enum CodingKeys: String, CodingKey {
         case session_id, agent_id, skill_id, state
         case progress_status, progress_message, progress_percent, chat_id, title
-        case summary_text, voice_script, available_actions, facts
+        case summary_text, voice_script, available_actions, available_action_descriptors, version, facts
         case expires_at, created_at, updated_at, archived_at, deleted_at, retention_expires_at
     }
 
@@ -147,6 +216,11 @@ struct Session: Codable, Identifiable, Hashable {
         summary_text = try c.decodeIfPresent(String.self, forKey: .summary_text)
         voice_script = try c.decodeIfPresent(String.self, forKey: .voice_script)
         available_actions = try c.decodeIfPresent([String].self, forKey: .available_actions)
+        available_action_descriptors = try c.decodeIfPresent(
+            [ActionDescriptor].self,
+            forKey: .available_action_descriptors
+        )
+        version = try c.decodeIfPresent(Int.self, forKey: .version)
         facts = try c.decodeIfPresent([String: JSONValue].self, forKey: .facts) ?? [:]
         expires_at = try c.decodeIfPresent(String.self, forKey: .expires_at) ?? ""
         created_at = try c.decodeIfPresent(String.self, forKey: .created_at) ?? ""
@@ -291,6 +365,19 @@ struct SessionSearchMatcher {
 
 struct SessionsResponse: Decodable {
     let sessions: [Session]
+    let next_cursor: String?
+    let has_more: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case sessions, next_cursor, has_more
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessions = try container.decodeIfPresent([Session].self, forKey: .sessions) ?? []
+        next_cursor = try container.decodeIfPresent(String.self, forKey: .next_cursor)
+        has_more = try container.decodeIfPresent(Bool.self, forKey: .has_more) ?? false
+    }
 }
 
 struct DevPush: Codable, Identifiable {
@@ -331,6 +418,19 @@ struct HistoryEntry: Codable, Identifiable, Hashable {
 
 struct HistoryResponse: Decodable {
     let entries: [HistoryEntry]
+    let next_cursor: String?
+    let has_more: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case entries, next_cursor, has_more
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        entries = try container.decodeIfPresent([HistoryEntry].self, forKey: .entries) ?? []
+        next_cursor = try container.decodeIfPresent(String.self, forKey: .next_cursor)
+        has_more = try container.decodeIfPresent(Bool.self, forKey: .has_more) ?? false
+    }
 }
 
 struct SessionMessage: Codable, Identifiable, Hashable {

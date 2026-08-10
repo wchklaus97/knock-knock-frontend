@@ -121,10 +121,19 @@ enum DecisionRisk: String {
     case medium
     case high
 
+    init(actionRisk raw: String) {
+        switch raw.lowercased() {
+        case "destructive", "high": self = .high
+        case "medium": self = .medium
+        default: self = .low
+        }
+    }
+
     init(session: Session) {
-        if session.available_actions?.contains("rollback") == true {
+        let descriptorRisks = session.actionDescriptors.map { DecisionRisk(actionRisk: $0.risk) }
+        if descriptorRisks.contains(.high) {
             self = .high
-        } else if session.needsUser {
+        } else if descriptorRisks.contains(.medium) || session.needsUser {
             self = .medium
         } else {
             self = .low
@@ -2254,7 +2263,8 @@ struct ProductionActionCard: View {
                 Text("Your choice will be sent back to this agent.")
                     .font(.caption)
                     .foregroundStyle(KnockDesign.muted)
-                if (session.available_actions ?? []).isEmpty {
+                let descriptors = session.actionDescriptors
+                if descriptors.isEmpty {
                     Label("No actions are available right now.", systemImage: "clock.badge.exclamationmark")
                         .font(.subheadline)
                         .foregroundStyle(KnockDesign.muted)
@@ -2263,7 +2273,12 @@ struct ProductionActionCard: View {
                     }
                     .font(.subheadline.weight(.semibold))
                 }
-                ForEach(session.available_actions ?? [], id: \.self) { key in
+                ForEach(descriptors) { descriptor in
+                    let key = descriptor.action_key
+                    let title = descriptor.title?.isEmpty == false
+                        ? descriptor.title!
+                        : actionTitle(key)
+                    let risk = DecisionRisk(actionRisk: descriptor.risk)
                     Button {
                         Task {
                             if let response = await store.reply(session: session, actionKey: key), response.needs_confirm == true {
@@ -2275,13 +2290,13 @@ struct ProductionActionCard: View {
                         HStack(spacing: 12) {
                             Image(systemName: actionSymbol(key))
                                 .font(.title3.weight(.semibold))
-                                .foregroundStyle(key == "rollback" ? KnockDesign.coral : KnockDesign.mint)
+                                .foregroundStyle(risk.color)
                                 .frame(width: 28)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(actionTitle(key))
+                                Text(title)
                                     .font(.subheadline.weight(.semibold))
                                     .foregroundStyle(KnockDesign.ink)
-                                if key == "rollback" {
+                                if descriptor.confirm_required {
                                     Text("Requires a second confirmation")
                                         .font(.caption2)
                                         .foregroundStyle(KnockDesign.muted)
@@ -2297,7 +2312,7 @@ struct ProductionActionCard: View {
                             }
                         }
                         .padding(13)
-                        .background(key == "rollback" ? KnockDesign.coralSoft : KnockDesign.mintSoft)
+                        .background(risk.background)
                         .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
                     }
                     .buttonStyle(.plain)
