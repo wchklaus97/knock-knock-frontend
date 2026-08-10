@@ -16,8 +16,15 @@ else
   DESTINATION="platform=iOS Simulator,id=$SIMULATOR_ID"
 fi
 
-# shellcheck disable=SC1091
-source "$ROOT/scripts/use-agent-env.sh"
+if [[ -z "${BRIDGE_API_URL:-}" && -f "$ROOT/.env.agent" ]]; then
+  BRIDGE_API_URL="$(sed -n 's/^BRIDGE_API_URL=//p' "$ROOT/.env.agent" | head -n 1)"
+  BRIDGE_API_URL="${BRIDGE_API_URL#\"}"
+  BRIDGE_API_URL="${BRIDGE_API_URL%\"}"
+  export BRIDGE_API_URL
+fi
+BRIDGE_API_URL="${BRIDGE_API_URL:-http://127.0.0.1:8787}"
+BRIDGE_API_URL="${BRIDGE_API_URL%/}"
+export BRIDGE_API_URL
 
 echo "== API health =="
 HEALTH="$(curl -sf "${BRIDGE_API_URL}/health")"
@@ -26,10 +33,6 @@ test "$(jq -r '.api // empty' <<<"$HEALTH")" = "rust" || {
   echo "iOS regression must run against the canonical Rust Worker." >&2
   exit 1
 }
-
-echo "== create deterministic needs_user fixture =="
-cd "$ROOT"
-bash scripts/ios-test-fixture.sh
 
 echo "== generate Xcode project =="
 cd "$ROOT/apps/ios"
