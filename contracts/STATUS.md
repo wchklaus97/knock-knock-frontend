@@ -1,6 +1,6 @@
 # Status Enum Cheat Sheet / 状态枚举速查
 
-Aligned with MVP API (`apps/api`) and OpenAPI.
+Aligned with the backend canonical OpenAPI contract and the current Rust Worker.
 
 ## Canonical backend architecture references
 
