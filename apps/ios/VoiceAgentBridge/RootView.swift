@@ -43,10 +43,13 @@ struct RootView: View {
                 guard store.token != nil else { return }
                 store.startEventStream()
                 Task { await store.refresh() }
+            case .inactive:
+                store.voiceController?.abort()
             case .background:
+                store.voiceController?.abort()
                 store.stopEventStream()
-            default:
-                break
+            @unknown default:
+                store.voiceController?.abort()
             }
         }
     }

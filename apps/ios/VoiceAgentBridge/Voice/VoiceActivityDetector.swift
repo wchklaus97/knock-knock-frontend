@@ -8,15 +8,21 @@ struct VoiceActivityDetector {
         var speechThresholdDB: Float = -42
         var minimumSpeechDuration: TimeInterval = 0.12
         var silenceDurationToStop: TimeInterval = 0.8
+        var noSpeechTimeout: TimeInterval = 4
+        var maximumCaptureDuration: TimeInterval = 30
 
         init(
             speechThresholdDB: Float = -42,
             minimumSpeechDuration: TimeInterval = 0.12,
-            silenceDurationToStop: TimeInterval = 0.8
+            silenceDurationToStop: TimeInterval = 0.8,
+            noSpeechTimeout: TimeInterval = 4,
+            maximumCaptureDuration: TimeInterval = 30
         ) {
             self.speechThresholdDB = speechThresholdDB
             self.minimumSpeechDuration = minimumSpeechDuration
             self.silenceDurationToStop = silenceDurationToStop
+            self.noSpeechTimeout = noSpeechTimeout
+            self.maximumCaptureDuration = maximumCaptureDuration
         }
     }
 
@@ -24,12 +30,16 @@ struct VoiceActivityDetector {
         case none
         case speechStarted
         case silenceLimitReached
+        case noSpeechTimeoutReached
+        case maximumDurationReached
     }
 
     private let configuration: Configuration
     private(set) var hasDetectedSpeech = false
     private var candidateSpeechDuration: TimeInterval = 0
     private var trailingSilenceDuration: TimeInterval = 0
+    private var captureDuration: TimeInterval = 0
+    private var isTerminal = false
 
     init(configuration: Configuration = Configuration()) {
         self.configuration = configuration
@@ -39,10 +49,18 @@ struct VoiceActivityDetector {
         hasDetectedSpeech = false
         candidateSpeechDuration = 0
         trailingSilenceDuration = 0
+        captureDuration = 0
+        isTerminal = false
     }
 
     mutating func process(levelDB: Float, duration: TimeInterval) -> Event {
-        guard duration > 0, duration.isFinite else { return .none }
+        guard !isTerminal, duration > 0, duration.isFinite else { return .none }
+        captureDuration += duration
+        if captureDuration >= configuration.maximumCaptureDuration {
+            isTerminal = true
+            return .maximumDurationReached
+        }
+
         let isSpeech = levelDB.isFinite && levelDB >= configuration.speechThresholdDB
 
         if !hasDetectedSpeech {
@@ -51,6 +69,10 @@ struct VoiceActivityDetector {
                 hasDetectedSpeech = true
                 trailingSilenceDuration = 0
                 return .speechStarted
+            }
+            if captureDuration >= configuration.noSpeechTimeout {
+                isTerminal = true
+                return .noSpeechTimeoutReached
             }
             return .none
         }
@@ -62,6 +84,7 @@ struct VoiceActivityDetector {
 
         trailingSilenceDuration += duration
         if trailingSilenceDuration >= configuration.silenceDurationToStop {
+            isTerminal = true
             return .silenceLimitReached
         }
         return .none

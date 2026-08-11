@@ -3,6 +3,8 @@ import Foundation
 
 struct ModelManifest: Codable, Equatable {
     static let supportedSchemaVersion = 1
+    static let maximumArtifactSizeBytes: UInt64 = 2 * 1024 * 1024 * 1024
+    static let signatureDomain = "com.knockknock.voice-model-manifest.ed25519.v1"
 
     let schemaVersion: Int
     let modelID: String
@@ -76,27 +78,77 @@ struct ModelManifest: Codable, Equatable {
         return try JSONDecoder().decode(ModelManifest.self, from: data)
     }
 
+    /// The signature binds the artifact digest to all security-relevant manifest
+    /// metadata. Values are validated as separator-free ASCII before this payload
+    /// is used, and the final newline is part of the versioned wire format.
+    var signaturePayload: Data {
+        Self.signaturePayload(
+            schemaVersion: schemaVersion,
+            modelID: modelID,
+            modelVersion: modelVersion,
+            sha256: sha256,
+            sizeBytes: sizeBytes,
+            minimumCapability: minimumCapability
+        )
+    }
+
+    static func signaturePayload(
+        schemaVersion: Int,
+        modelID: String,
+        modelVersion: String,
+        sha256: String,
+        sizeBytes: UInt64,
+        minimumCapability: String
+    ) -> Data {
+        let lines = [
+            signatureDomain,
+            "schema_version=\(schemaVersion)",
+            "model_id=\(modelID)",
+            "model_version=\(modelVersion)",
+            "sha256=\(sha256.lowercased())",
+            "size_bytes=\(sizeBytes)",
+            "minimum_capability=\(minimumCapability)",
+        ]
+        return Data((lines.joined(separator: "\n") + "\n").utf8)
+    }
+
     private func validate() throws {
         guard schemaVersion == Self.supportedSchemaVersion else {
             throw ModelManifestError.unsupportedSchemaVersion
         }
-        guard modelID.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"#, options: .regularExpression) != nil else {
+        guard Self.validIdentifier(modelID, maximumLength: 128) else {
             throw ModelManifestError.invalidModelID
         }
-        guard SemanticVersion(modelVersion) != nil else {
+        guard modelVersion.utf8.count <= 128, SemanticVersion(modelVersion) != nil else {
             throw ModelManifestError.invalidModelVersion
         }
-        guard sha256.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil else {
+        guard sha256.utf8.count == 64,
+              sha256.utf8.allSatisfy({ byte in
+                  (48...57).contains(byte) || (97...102).contains(byte)
+              })
+        else {
             throw ModelManifestError.invalidHash
         }
-        guard !signature.isEmpty else {
+        guard signature.count == 64 else {
             throw ModelManifestError.invalidSignatureEncoding
         }
-        guard sizeBytes > 0 else {
+        guard sizeBytes > 0, sizeBytes <= Self.maximumArtifactSizeBytes else {
             throw ModelManifestError.invalidSize
         }
-        guard minimumCapability.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"#, options: .regularExpression) != nil else {
+        guard Self.validIdentifier(minimumCapability, maximumLength: 64) else {
             throw ModelManifestError.invalidMinimumCapability
+        }
+    }
+
+    private static func validIdentifier(_ value: String, maximumLength: Int) -> Bool {
+        let bytes = Array(value.utf8)
+        guard !bytes.isEmpty, bytes.count <= maximumLength else { return false }
+        return bytes.enumerated().allSatisfy { index, byte in
+            let isLetter = (65...90).contains(byte) || (97...122).contains(byte)
+            let isNumber = (48...57).contains(byte)
+            return isLetter
+                || isNumber
+                || (index > 0 && (byte == 46 || byte == 95 || byte == 45))
         }
     }
 }
@@ -124,8 +176,9 @@ enum ModelArtifactVerificationError: Error, Equatable {
     case signatureMismatch
 }
 
-/// Production verifier for model artifacts. The Ed25519 signature covers the raw
-/// 32-byte SHA-256 digest, while size and digest are independently checked first.
+/// Production verifier for model artifacts. The Ed25519 signature covers the
+/// versioned manifest payload, while size and digest are independently checked
+/// against the artifact first using bounded, streaming I/O.
 struct Ed25519ModelArtifactVerifier: ModelArtifactVerifying {
     let publicKey: Curve25519.Signing.PublicKey
 
@@ -151,7 +204,7 @@ struct Ed25519ModelArtifactVerifier: ModelArtifactVerifying {
         guard Self.hex(digest) == manifest.sha256 else {
             throw ModelArtifactVerificationError.hashMismatch
         }
-        guard publicKey.isValidSignature(manifest.signature, for: digest) else {
+        guard publicKey.isValidSignature(manifest.signature, for: manifest.signaturePayload) else {
             throw ModelArtifactVerificationError.signatureMismatch
         }
     }
@@ -204,6 +257,12 @@ enum ModelSelectionError: Error, Equatable {
     case unsupportedCapability(String)
     case noRollbackCandidate
     case downgradeRejected
+    case invalidRestoredSelection
+}
+
+struct ModelSelectionSnapshot: Equatable {
+    let activeModel: InstalledModel?
+    let rollbackModel: InstalledModel?
 }
 
 /// Verification completes before selection state changes. A failed update therefore
@@ -240,13 +299,45 @@ final class RollbackSafeModelSelector {
         {
             throw ModelSelectionError.downgradeRejected
         }
-
         try verifier.verifyArtifact(at: candidate.artifactURL, against: candidate.manifest)
 
         if candidate != activeModel {
             rollbackModel = activeModel
             activeModel = candidate
         }
+    }
+
+    var selectionSnapshot: ModelSelectionSnapshot {
+        ModelSelectionSnapshot(activeModel: activeModel, rollbackModel: rollbackModel)
+    }
+
+    /// Restores an explicitly persisted active/rollback pair only after both
+    /// artifacts pass the current trust-root and capability checks.
+    func restoreVerifiedSelection(
+        activeModel: InstalledModel?,
+        rollbackModel: InstalledModel?
+    ) throws {
+        guard activeModel != nil || rollbackModel == nil else {
+            throw ModelSelectionError.invalidRestoredSelection
+        }
+        if let activeModel {
+            try verifyForSelection(activeModel)
+        }
+        if let rollbackModel {
+            guard rollbackModel.artifactURL != activeModel?.artifactURL else {
+                throw ModelSelectionError.invalidRestoredSelection
+            }
+            try verifyForSelection(rollbackModel)
+        }
+        self.activeModel = activeModel
+        self.rollbackModel = rollbackModel
+    }
+
+    /// Used only to unwind an in-memory selection when durable state cannot be
+    /// written. The snapshot was already verified before the attempted change.
+    func restoreKnownVerifiedSelection(_ snapshot: ModelSelectionSnapshot) {
+        activeModel = snapshot.activeModel
+        rollbackModel = snapshot.rollbackModel
     }
 
     @discardableResult
@@ -256,16 +347,27 @@ final class RollbackSafeModelSelector {
                 let lhs = SemanticVersion($0.manifest.modelVersion),
                 let rhs = SemanticVersion($1.manifest.modelVersion)
             else { return $0.manifest.modelVersion > $1.manifest.modelVersion }
-            return lhs > rhs
+            if lhs != rhs { return lhs > rhs }
+            if $0.manifest.modelVersion != $1.manifest.modelVersion {
+                return $0.manifest.modelVersion > $1.manifest.modelVersion
+            }
+            return $0.artifactURL.lastPathComponent < $1.artifactURL.lastPathComponent
         }
+        var verified: [InstalledModel] = []
         for candidate in ordered {
             do {
-                try activate(candidate)
-                return activeModel
+                try verifyForSelection(candidate)
+                guard !verified.contains(where: { $0.artifactURL == candidate.artifactURL }) else {
+                    continue
+                }
+                verified.append(candidate)
+                if verified.count == 2 { break }
             } catch {
                 continue
             }
         }
+        activeModel = verified.first
+        rollbackModel = verified.count > 1 ? verified[1] : nil
         return activeModel
     }
 
@@ -274,54 +376,124 @@ final class RollbackSafeModelSelector {
         guard let candidate = rollbackModel else {
             throw ModelSelectionError.noRollbackCandidate
         }
-        guard capabilities.supports(minimumCapability: candidate.manifest.minimumCapability) else {
-            throw ModelSelectionError.unsupportedCapability(candidate.manifest.minimumCapability)
-        }
-        try verifier.verifyArtifact(at: candidate.artifactURL, against: candidate.manifest)
+        try verifyForSelection(candidate)
 
         let previousActive = activeModel
         activeModel = candidate
         rollbackModel = previousActive
         return candidate
     }
+
+    private func verifyForSelection(_ candidate: InstalledModel) throws {
+        guard capabilities.supports(minimumCapability: candidate.manifest.minimumCapability) else {
+            throw ModelSelectionError.unsupportedCapability(candidate.manifest.minimumCapability)
+        }
+        try verifier.verifyArtifact(at: candidate.artifactURL, against: candidate.manifest)
+    }
 }
 
 private struct SemanticVersion: Comparable {
-    let major: Int
-    let minor: Int
-    let patch: Int
-    let suffix: String
+    let core: [String]
+    let prerelease: [String]?
 
     init?(_ value: String) {
-        let pattern = #"^([0-9]+)\.([0-9]+)\.([0-9]+)([-+][0-9A-Za-z.-]+)?$"#
-        guard let expression = try? NSRegularExpression(pattern: pattern) else { return nil }
-        let range = NSRange(value.startIndex..<value.endIndex, in: value)
-        guard
-            let match = expression.firstMatch(in: value, range: range),
-            match.range == range,
-            let majorRange = Range(match.range(at: 1), in: value),
-            let minorRange = Range(match.range(at: 2), in: value),
-            let patchRange = Range(match.range(at: 3), in: value),
-            let major = Int(value[majorRange]),
-            let minor = Int(value[minorRange]),
-            let patch = Int(value[patchRange])
-        else { return nil }
+        let buildParts = value.split(separator: "+", maxSplits: 1, omittingEmptySubsequences: false)
+        guard buildParts.count <= 2 else { return nil }
+        if buildParts.count == 2 {
+            guard Self.validIdentifiers(buildParts[1], numericLeadingZeroAllowed: true) else {
+                return nil
+            }
+        }
 
-        self.major = major
-        self.minor = minor
-        self.patch = patch
-        if let suffixRange = Range(match.range(at: 4), in: value) {
-            suffix = String(value[suffixRange])
+        let precedenceParts = buildParts[0].split(
+            separator: "-",
+            maxSplits: 1,
+            omittingEmptySubsequences: false
+        )
+        let core = precedenceParts[0].split(separator: ".", omittingEmptySubsequences: false)
+        guard core.count == 3, core.allSatisfy(Self.validNumericIdentifier) else {
+            return nil
+        }
+        self.core = core.map(String.init)
+
+        if precedenceParts.count == 2 {
+            guard Self.validIdentifiers(
+                precedenceParts[1],
+                numericLeadingZeroAllowed: false
+            ) else {
+                return nil
+            }
+            prerelease = precedenceParts[1].split(separator: ".").map(String.init)
         } else {
-            suffix = ""
+            prerelease = nil
         }
     }
 
+    static func == (lhs: SemanticVersion, rhs: SemanticVersion) -> Bool {
+        lhs.core == rhs.core && lhs.prerelease == rhs.prerelease
+    }
+
     static func < (lhs: SemanticVersion, rhs: SemanticVersion) -> Bool {
-        if lhs.major != rhs.major { return lhs.major < rhs.major }
-        if lhs.minor != rhs.minor { return lhs.minor < rhs.minor }
-        if lhs.patch != rhs.patch { return lhs.patch < rhs.patch }
-        if lhs.suffix.isEmpty != rhs.suffix.isEmpty { return !lhs.suffix.isEmpty }
-        return lhs.suffix < rhs.suffix
+        for (left, right) in zip(lhs.core, rhs.core) where left != right {
+            return Self.numericLessThan(left, right)
+        }
+
+        switch (lhs.prerelease, rhs.prerelease) {
+        case (nil, nil):
+            return false
+        case (nil, .some):
+            return false
+        case (.some, nil):
+            return true
+        case (.some(let left), .some(let right)):
+            for (leftIdentifier, rightIdentifier) in zip(left, right) {
+                if leftIdentifier == rightIdentifier { continue }
+                let leftIsNumeric = leftIdentifier.allSatisfy(\.isNumber)
+                let rightIsNumeric = rightIdentifier.allSatisfy(\.isNumber)
+                switch (leftIsNumeric, rightIsNumeric) {
+                case (true, true):
+                    return Self.numericLessThan(leftIdentifier, rightIdentifier)
+                case (true, false):
+                    return true
+                case (false, true):
+                    return false
+                case (false, false):
+                    return leftIdentifier < rightIdentifier
+                }
+            }
+            return left.count < right.count
+        }
+    }
+
+    private static func validNumericIdentifier(_ value: Substring) -> Bool {
+        !value.isEmpty
+            && value.allSatisfy { $0.isASCII && $0.isNumber }
+            && (value.count == 1 || value.first != "0")
+    }
+
+    private static func validIdentifiers(
+        _ value: Substring,
+        numericLeadingZeroAllowed: Bool
+    ) -> Bool {
+        let identifiers = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard !identifiers.isEmpty else { return false }
+        return identifiers.allSatisfy { identifier in
+            guard !identifier.isEmpty,
+                  identifier.allSatisfy({ character in
+                      character.isASCII && (character.isLetter || character.isNumber || character == "-")
+                  })
+            else {
+                return false
+            }
+            if !numericLeadingZeroAllowed && identifier.allSatisfy(\.isNumber) {
+                return identifier.count == 1 || identifier.first != "0"
+            }
+            return true
+        }
+    }
+
+    private static func numericLessThan(_ lhs: String, _ rhs: String) -> Bool {
+        if lhs.count != rhs.count { return lhs.count < rhs.count }
+        return lhs < rhs
     }
 }

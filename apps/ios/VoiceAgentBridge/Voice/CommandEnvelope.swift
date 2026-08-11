@@ -1,8 +1,8 @@
 import Foundation
 
-/// The only shape allowed to cross from a local intent model into the app and
-/// backend. It intentionally matches the canonical backend CommandEnvelope v1
-/// contract; local models never receive an API client or an executable action.
+/// The authoritative wire envelope sent to, and revalidated by, the backend.
+/// Local model output is decoded into a separate DTO before this value can be
+/// constructed.
 struct CommandEnvelope: Codable, Equatable {
     static let supportedVersion = 1
     static let maximumEncodedSize = 64 * 1024
@@ -115,6 +115,7 @@ struct CommandEnvelope: Codable, Equatable {
         guard !data.isEmpty, data.count <= maximumEncodedSize else {
             throw CommandEnvelopeError.encodedSizeOutOfRange
         }
+        try StrictJSON.validate(data)
         return try JSONDecoder().decode(CommandEnvelope.self, from: data)
     }
 
@@ -154,13 +155,17 @@ struct CommandEnvelope: Codable, Equatable {
             throw CommandEnvelopeError.invalidTimezone
         }
         for optional in [deviceID, sessionID, modelVersion].compactMap({ $0 }) {
-            guard optional.utf8.count <= 128 else { throw CommandEnvelopeError.optionalFieldTooLong }
+            guard !optional.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  optional.utf8.count <= 128
+            else { throw CommandEnvelopeError.invalidOptionalField }
         }
     }
 }
 
 enum CommandEnvelopeError: Error, Equatable {
     case encodedSizeOutOfRange
+    case malformedJSON
+    case duplicateJSONKey(String)
     case unsupportedVersion
     case invalidCommandID
     case invalidIntent
@@ -170,7 +175,7 @@ enum CommandEnvelopeError: Error, Equatable {
     case invalidConfidence
     case invalidLocale
     case invalidTimezone
-    case optionalFieldTooLong
+    case invalidOptionalField
     case valueTooDeep
     case valueTooLarge
     case nonFiniteNumber
@@ -228,6 +233,209 @@ enum StrictDecoding {
                 in: container,
                 debugDescription: "Unknown key '\(unknown.stringValue)'"
             )
+        }
+    }
+}
+
+/// `JSONDecoder` accepts duplicate object keys and keeps one value. That is not
+/// safe for command policy fields, so every object is checked before decoding.
+enum StrictJSON {
+    static func validate(_ data: Data) throws {
+        var parser = Parser(bytes: Array(data))
+        try parser.parseDocument()
+    }
+
+    private struct Parser {
+        private static let maximumNestingDepth = 64
+
+        let bytes: [UInt8]
+        var index = 0
+
+        mutating func parseDocument() throws {
+            skipWhitespace()
+            try parseValue(depth: 0)
+            skipWhitespace()
+            guard index == bytes.count else {
+                throw CommandEnvelopeError.malformedJSON
+            }
+        }
+
+        private mutating func parseValue(depth: Int) throws {
+            guard depth <= Self.maximumNestingDepth, index < bytes.count else {
+                throw CommandEnvelopeError.malformedJSON
+            }
+
+            switch bytes[index] {
+            case 0x7B: // {
+                try parseObject(depth: depth)
+            case 0x5B: // [
+                try parseArray(depth: depth)
+            case 0x22: // "
+                _ = try parseString()
+            case 0x74: // true
+                try consumeLiteral([0x74, 0x72, 0x75, 0x65])
+            case 0x66: // false
+                try consumeLiteral([0x66, 0x61, 0x6C, 0x73, 0x65])
+            case 0x6E: // null
+                try consumeLiteral([0x6E, 0x75, 0x6C, 0x6C])
+            case 0x2D, 0x30...0x39: // - or digit
+                try parseNumber()
+            default:
+                throw CommandEnvelopeError.malformedJSON
+            }
+        }
+
+        private mutating func parseObject(depth: Int) throws {
+            index += 1
+            skipWhitespace()
+            if consume(0x7D) { // }
+                return
+            }
+
+            var keys = Set<String>()
+            while true {
+                guard index < bytes.count, bytes[index] == 0x22 else {
+                    throw CommandEnvelopeError.malformedJSON
+                }
+                let key = try parseString()
+                guard keys.insert(key).inserted else {
+                    throw CommandEnvelopeError.duplicateJSONKey(key)
+                }
+
+                skipWhitespace()
+                guard consume(0x3A) else { // :
+                    throw CommandEnvelopeError.malformedJSON
+                }
+                skipWhitespace()
+                try parseValue(depth: depth + 1)
+                skipWhitespace()
+
+                if consume(0x7D) { // }
+                    return
+                }
+                guard consume(0x2C) else { // ,
+                    throw CommandEnvelopeError.malformedJSON
+                }
+                skipWhitespace()
+            }
+        }
+
+        private mutating func parseArray(depth: Int) throws {
+            index += 1
+            skipWhitespace()
+            if consume(0x5D) { // ]
+                return
+            }
+
+            while true {
+                try parseValue(depth: depth + 1)
+                skipWhitespace()
+                if consume(0x5D) { // ]
+                    return
+                }
+                guard consume(0x2C) else { // ,
+                    throw CommandEnvelopeError.malformedJSON
+                }
+                skipWhitespace()
+            }
+        }
+
+        private mutating func parseString() throws -> String {
+            let start = index
+            guard consume(0x22) else { // "
+                throw CommandEnvelopeError.malformedJSON
+            }
+
+            while index < bytes.count {
+                switch bytes[index] {
+                case 0x22: // "
+                    index += 1
+                    do {
+                        return try JSONDecoder().decode(
+                            String.self,
+                            from: Data(bytes[start..<index])
+                        )
+                    } catch {
+                        throw CommandEnvelopeError.malformedJSON
+                    }
+                case 0x5C: // \
+                    index += 1
+                    guard index < bytes.count else {
+                        throw CommandEnvelopeError.malformedJSON
+                    }
+                    index += 1
+                case 0x00...0x1F:
+                    throw CommandEnvelopeError.malformedJSON
+                default:
+                    index += 1
+                }
+            }
+            throw CommandEnvelopeError.malformedJSON
+        }
+
+        private mutating func parseNumber() throws {
+            _ = consume(0x2D) // -
+            guard index < bytes.count else {
+                throw CommandEnvelopeError.malformedJSON
+            }
+
+            if consume(0x30) { // 0
+                if index < bytes.count, (0x30...0x39).contains(bytes[index]) {
+                    throw CommandEnvelopeError.malformedJSON
+                }
+            } else {
+                guard index < bytes.count, (0x31...0x39).contains(bytes[index]) else {
+                    throw CommandEnvelopeError.malformedJSON
+                }
+                consumeDigits()
+            }
+
+            if consume(0x2E) { // .
+                let fractionStart = index
+                consumeDigits()
+                guard index > fractionStart else {
+                    throw CommandEnvelopeError.malformedJSON
+                }
+            }
+
+            if consume(0x65) || consume(0x45) { // e or E
+                _ = consume(0x2B) || consume(0x2D) // + or -
+                let exponentStart = index
+                consumeDigits()
+                guard index > exponentStart else {
+                    throw CommandEnvelopeError.malformedJSON
+                }
+            }
+        }
+
+        private mutating func consumeDigits() {
+            while index < bytes.count, (0x30...0x39).contains(bytes[index]) {
+                index += 1
+            }
+        }
+
+        private mutating func consumeLiteral(_ literal: [UInt8]) throws {
+            guard bytes[index...].starts(with: literal) else {
+                throw CommandEnvelopeError.malformedJSON
+            }
+            index += literal.count
+        }
+
+        private mutating func consume(_ byte: UInt8) -> Bool {
+            guard index < bytes.count, bytes[index] == byte else {
+                return false
+            }
+            index += 1
+            return true
+        }
+
+        private mutating func skipWhitespace() {
+            while index < bytes.count,
+                  bytes[index] == 0x20 || bytes[index] == 0x09
+                    || bytes[index] == 0x0A || bytes[index] == 0x0D
+            {
+                index += 1
+            }
         }
     }
 }

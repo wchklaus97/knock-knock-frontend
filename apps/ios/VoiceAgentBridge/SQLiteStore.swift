@@ -224,6 +224,66 @@ final class SQLiteStore {
         }
     }
 
+    func loadActiveCommandCheckpoint() -> ActiveCommandCheckpoint? {
+        queue.sync {
+            guard let value = metadataLocked(key: "active_command_checkpoint") else {
+                _ = executeLocked(
+                    "DELETE FROM metadata WHERE key = ?",
+                    bindings: [.text("active_command_id")]
+                )
+                return nil
+            }
+            guard let data = value.data(using: .utf8),
+                  let checkpoint = try? JSONDecoder().decode(ActiveCommandCheckpoint.self, from: data),
+                  checkpoint.isStructurallyValid
+            else {
+                _ = executeLocked(
+                    "DELETE FROM metadata WHERE key = ?",
+                    bindings: [.text("active_command_checkpoint")]
+                )
+                return nil
+            }
+            return checkpoint
+        }
+    }
+
+    /// Returns false when encoding or the SQLite write fails. Callers must
+    /// treat that as a hard boundary and must not send the command.
+    @discardableResult
+    func saveActiveCommandCheckpoint(_ checkpoint: ActiveCommandCheckpoint) -> Bool {
+        guard checkpoint.isStructurallyValid,
+              let data = try? JSONEncoder().encode(checkpoint),
+              let value = String(data: data, encoding: .utf8)
+        else { return false }
+        return queue.sync {
+            transactionLocked {
+                guard setMetadataLocked(key: "active_command_checkpoint", value: value) else {
+                    return false
+                }
+                return executeLocked(
+                    "DELETE FROM metadata WHERE key = ?",
+                    bindings: [.text("active_command_id")]
+                )
+            }
+        }
+    }
+
+    @discardableResult
+    func clearActiveCommandCheckpoint() -> Bool {
+        queue.sync {
+            transactionLocked {
+                guard executeLocked(
+                    "DELETE FROM metadata WHERE key = ?",
+                    bindings: [.text("active_command_checkpoint")]
+                ) else { return false }
+                return executeLocked(
+                    "DELETE FROM metadata WHERE key = ?",
+                    bindings: [.text("active_command_id")]
+                )
+            }
+        }
+    }
+
     func cacheSessions(_ sessions: [Session]) {
         queue.sync {
             let now = ISO8601DateFormatter().string(from: Date())
@@ -428,7 +488,7 @@ final class SQLiteStore {
                 guard executeLocked("DELETE FROM pending_sync_events") else { return false }
                 guard executeLocked("DELETE FROM sync_state") else { return false }
                 return executeLocked(
-                    "DELETE FROM metadata WHERE key IN ('cursor', 'applied_cursor', 'pending_command_confirmation')"
+                    "DELETE FROM metadata WHERE key IN ('cursor', 'applied_cursor', 'pending_command_confirmation', 'active_command_id', 'active_command_checkpoint')"
                 )
             }
         }
