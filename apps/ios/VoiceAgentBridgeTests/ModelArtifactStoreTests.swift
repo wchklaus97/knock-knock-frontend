@@ -3,6 +3,34 @@ import XCTest
 @testable import VoiceAgentBridge
 
 final class ModelArtifactStoreTests: XCTestCase {
+    func testModelManagerErrorsHaveActionableUserDescriptions() {
+        let bridgedPublicKeyError: Error = LocalVoiceModelManagerError.publicKeyNotConfigured
+        XCTAssertEqual(
+            bridgedPublicKeyError.localizedDescription,
+            "A trusted voice model has not been configured for this build."
+        )
+        XCTAssertEqual(
+            LocalVoiceModelManagerError.publicKeyNotConfigured.errorDescription,
+            "A trusted voice model has not been configured for this build."
+        )
+        XCTAssertEqual(
+            LocalVoiceModelManagerError.invalidPublicKey.errorDescription,
+            "The configured voice-model trust key is invalid."
+        )
+        XCTAssertEqual(
+            LocalVoiceModelManagerError.modelNotInstalled.errorDescription,
+            "The signed voice model is not installed."
+        )
+        XCTAssertEqual(
+            LocalVoiceModelManagerError.invalidDownloadURL.errorDescription,
+            "The voice-model download address is invalid."
+        )
+        XCTAssertEqual(
+            LocalVoiceModelManagerError.descriptorModelIDMismatch.errorDescription,
+            "The downloaded voice model does not match the required model."
+        )
+    }
+
     func testFileInstallVerifiesBeforeActivationAndPersistsManifest() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("model-store-\(UUID().uuidString)", isDirectory: true)

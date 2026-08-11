@@ -1,11 +1,26 @@
 import Foundation
 
-enum LocalVoiceModelManagerError: Error, Equatable {
+enum LocalVoiceModelManagerError: LocalizedError, Equatable {
     case publicKeyNotConfigured
     case invalidPublicKey
     case modelNotInstalled
     case invalidDownloadURL
     case descriptorModelIDMismatch
+
+    var errorDescription: String? {
+        switch self {
+        case .publicKeyNotConfigured:
+            return "A trusted voice model has not been configured for this build."
+        case .invalidPublicKey:
+            return "The configured voice-model trust key is invalid."
+        case .modelNotInstalled:
+            return "The signed voice model is not installed."
+        case .invalidDownloadURL:
+            return "The voice-model download address is invalid."
+        case .descriptorModelIDMismatch:
+            return "The downloaded voice model does not match the required model."
+        }
+    }
 }
 
 /// Owns the trust root, signed model cache and rollback-safe selection used by
