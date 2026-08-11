@@ -65,7 +65,7 @@ Agent (MCP/CLI) → bridge API :8787 → iPhone app
 | iOS | SwiftUI app; Build25 release candidate archive with production onboarding defaulting to account creation; iOS 15.0 deployment floor; warm/cute production visual system with vector mascot; decision-inbox filters (Needs me / Active / All) plus search; offline/connection state with retry; agent/skill/facts/expiry/progress detail; one-time pairing-code generation + copy; iOS 15-compatible navigation and empty states; full-screen knock overlay with direct session review; safe destructive confirmation with alternate-action path; Keychain JWT storage; APNs deep-link handling; notification diagnostics; simulator UI tests |
 | E2E script | `pnpm test:e2e` runs the canonical Rust Worker/D1 contract smoke; `pnpm test:e2e:node` is migration-only |
 | Canonical host | Codex MCP/CLI; `pnpm test:canonical:codex` verifies the configured Codex bridge, and `pnpm test:canonical:codex:multiturn` verifies two replies on one session/chat |
-| iOS tests | The completion branch passes 113 tests on the iOS 17.2 simulator and on both physical iPhone 13 Pro and iPhone 17 Pro Max: 112 passed, 0 failed, 1 real signed-model evaluation intentionally skipped. The isolated Worker/D1 UI suite passes 3/3 flows covering Home Today/Week, drawer, Settings/pairing, destructive confirmation, and queued state. |
+| iOS tests | Current head passes 114 tests on the iOS 17.2 simulator and physical iPhone 17 Pro Max: 113 passed, 0 failed, 1 real signed-model evaluation intentionally skipped. The iPhone 13 Pro passed the preceding 113-test revision; its final user-copy-only follow-up rerun waits for unlock. The isolated Worker/D1 UI suite passes 3/3 flows covering Home Today/Week, drawer, Settings/pairing, destructive confirmation, and queued state. |
 | MCP smoke | Direct stdio MCP server loop passes create/progress/needs_user/phone reply/claim/result/retry |
 | Real phone | The exact completion revision builds, signs, installs, launches, and passes its full test target on an iPhone 13 Pro and an iPhone 17 Pro Max. This proves compatibility and command/model safety code on both devices, but not the unavailable signed Gemma artifact, microphone-to-TTS UAT, thermal target, real APNs delivery, or simultaneous two-device convergence. |
 | Remaining external step | Approve a licensed `.litertlm` Gemma artifact and pinned public key, publish it privately to staging R2, run the real-model golden/latency/thermal gates, then complete real APNs and simultaneous same-account two-device UAT. Production rollout remains human-approved. |
@@ -176,8 +176,8 @@ cd apps/api && node ../../scripts/apns-test.mjs
 
 - [x] Rust Worker/D1 contract, Paperclip boundary, canonical Codex multi-turn, RC security, installer, and type checks pass.
 - [x] Rust backend has 63 unit tests plus fmt, Clippy, WASM, Worker build, local contract, and release gates passing.
-- [x] iOS simulator regression passes 112/113 tests with only the explicitly unconfigured real-model gate skipped, plus 3/3 UI flows against a fresh local Worker/D1 fixture.
-- [x] The same 112/113 test result passes on physical iPhone 13 Pro and iPhone 17 Pro Max; the Staging app installs and launches on both.
+- [x] iOS simulator regression passes 113/114 tests with only the explicitly unconfigured real-model gate skipped, plus 3/3 UI flows against a fresh local Worker/D1 fixture.
+- [x] The same 113/114 current-head result passes on physical iPhone 17 Pro Max; the preceding 112/113 result passed on iPhone 13 Pro, and the Staging app installs and launches on both.
 - [x] Production Worker health, metrics, migrations, secrets presence, and D1 backup evidence are verified.
 - [x] Build21 is officially signed with production APNs entitlement and uploaded to TestFlight.
 - [x] Frontend and backend are published in their independent GitHub repositories and synchronized by the root submodules.
