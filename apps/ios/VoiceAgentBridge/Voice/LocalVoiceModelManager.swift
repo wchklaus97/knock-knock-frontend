@@ -7,7 +7,7 @@ enum LocalVoiceModelManagerError: LocalizedError, Equatable {
     case invalidDownloadURL
     case descriptorModelIDMismatch
 
-    var errorDescription: String? {
+    var userFacingDescription: String {
         switch self {
         case .publicKeyNotConfigured:
             return "A trusted voice model has not been configured for this build."
@@ -21,6 +21,8 @@ enum LocalVoiceModelManagerError: LocalizedError, Equatable {
             return "The downloaded voice model does not match the required model."
         }
     }
+
+    var errorDescription: String? { userFacingDescription }
 }
 
 /// Owns the trust root, signed model cache and rollback-safe selection used by

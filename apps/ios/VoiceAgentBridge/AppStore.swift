@@ -110,6 +110,13 @@ final class AppStore: ObservableObject {
             !reconciliationExists
     }
 
+    nonisolated static func voicePreparationErrorMessage(for error: Error) -> String {
+        if let modelError = error as? LocalVoiceModelManagerError {
+            return modelError.userFacingDescription
+        }
+        return "The signed voice model could not be prepared. Please try again later."
+    }
+
     init(
         localStore: SQLiteStore = .shared,
         commandSynthesizer: VoiceSynthesizing = SystemVoiceSynthesizer()
@@ -691,8 +698,9 @@ final class AppStore: ObservableObject {
         } catch {
             if error is CancellationError { return }
             voiceController = nil
-            voiceModelStatus = "Unavailable · \(error.localizedDescription)"
-            errorMessage = "On-device voice is not ready: \(error.localizedDescription)"
+            let message = Self.voicePreparationErrorMessage(for: error)
+            voiceModelStatus = "Unavailable · \(message)"
+            errorMessage = "On-device voice is not ready: \(message)"
         }
     }
 
