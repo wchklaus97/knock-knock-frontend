@@ -1676,12 +1676,18 @@ final class AppStore: ObservableObject {
                 upsertPendingOperation(operation)
                 errorMessage = "Offline. Your choice is saved and will retry automatically."
             } else {
-                removePendingOperation(operation.id)
+                upsertPendingOperation(Self.pendingOperationAfterPermanentFailure(
+                    operation,
+                    error: error
+                ))
                 errorMessage = error.localizedDescription
             }
             return nil
         } catch {
-            removePendingOperation(operation.id)
+            upsertPendingOperation(Self.pendingOperationAfterPermanentFailure(
+                operation,
+                error: error
+            ))
             errorMessage = error.localizedDescription
             return nil
         }
@@ -1727,11 +1733,17 @@ final class AppStore: ObservableObject {
                 upsertPendingOperation(operation)
                 errorMessage = "Offline. Your decision is saved and will retry automatically."
             } else {
-                removePendingOperation(operation.id)
+                upsertPendingOperation(Self.pendingOperationAfterPermanentFailure(
+                    operation,
+                    error: error
+                ))
                 errorMessage = error.localizedDescription
             }
         } catch {
-            removePendingOperation(operation.id)
+            upsertPendingOperation(Self.pendingOperationAfterPermanentFailure(
+                operation,
+                error: error
+            ))
             errorMessage = error.localizedDescription
         }
     }
@@ -1837,10 +1849,10 @@ final class AppStore: ObservableObject {
                     next.failureCode = nil
                     upsertPendingOperation(next)
                 } else {
-                    next.status = .failed
-                    next.lastError = error.localizedDescription
-                    next.failureCode = Self.pendingFailureCode(error)
-                    upsertPendingOperation(next)
+                    upsertPendingOperation(Self.pendingOperationAfterPermanentFailure(
+                        operation,
+                        error: error
+                    ))
                 }
             } catch {
                 // Permanent failures stay visible so the user can retry after
@@ -1848,10 +1860,10 @@ final class AppStore: ObservableObject {
                 guard Self.retryContextIsActive(generation: generation, currentGeneration: reconciliationGeneration, tokenAvailable: token != nil) else {
                     return
                 }
-                next.status = .failed
-                next.lastError = error.localizedDescription
-                next.failureCode = "permanent_failure"
-                upsertPendingOperation(next)
+                upsertPendingOperation(Self.pendingOperationAfterPermanentFailure(
+                    operation,
+                    error: error
+                ))
             }
         }
         if completedAny {
@@ -1894,6 +1906,18 @@ final class AppStore: ObservableObject {
     nonisolated static func shouldRetryPendingOperation(_ error: Error) -> Bool {
         guard let error = error as? APIClientError else { return false }
         return isRetryableNetwork(error)
+    }
+
+    nonisolated static func pendingOperationAfterPermanentFailure(
+        _ operation: PendingOperation,
+        error: Error
+    ) -> PendingOperation {
+        var failed = operation
+        failed.status = .failed
+        failed.lastError = error.localizedDescription
+        failed.failureCode = (error as? APIClientError).map(pendingFailureCode)
+            ?? "permanent_failure"
+        return failed
     }
 
     nonisolated private static func pendingFailureCode(_ error: APIClientError) -> String {

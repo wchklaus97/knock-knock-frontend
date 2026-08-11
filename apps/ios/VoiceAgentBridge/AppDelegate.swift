@@ -1,12 +1,102 @@
 import UIKit
 import UserNotifications
 
+enum RemoteNotificationWakeHint: String, Equatable {
+    case command
+    case session
+
+    static let payloadKey = "wake_hint"
+
+    init?(userInfo: [AnyHashable: Any]) {
+        if let rawHint = userInfo[Self.payloadKey] {
+            guard let hint = rawHint as? String else { return nil }
+            self.init(rawValue: hint.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+            return
+        }
+
+        // Opaque identifiers from older alert payloads are accepted only as
+        // wake hints. Their values are deliberately not retained or applied.
+        if Self.hasOpaqueIdentifier(userInfo["command_id"]) {
+            self = .command
+        } else if Self.hasOpaqueIdentifier(userInfo["session_id"]) {
+            self = .session
+        } else {
+            return nil
+        }
+    }
+
+    private static func hasOpaqueIdentifier(_ value: Any?) -> Bool {
+        guard let value = value as? String else { return false }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && trimmed.utf8.count <= 128
+    }
+}
+
+final class BackgroundReconciliationRequest {
+    let hint: RemoteNotificationWakeHint
+
+    private let lock = NSLock()
+    private var isClaimed = false
+    private var completionHandler: ((UIBackgroundFetchResult) -> Void)?
+
+    init(
+        hint: RemoteNotificationWakeHint,
+        completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+    ) {
+        self.hint = hint
+        self.completionHandler = completionHandler
+    }
+
+    /// Claims this request for one REST reconciliation task.
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard completionHandler != nil, !isClaimed else { return false }
+        isClaimed = true
+        return true
+    }
+
+    /// Finishes the UIKit background fetch exactly once, including timeout races.
+    func complete(_ result: UIBackgroundFetchResult) {
+        lock.lock()
+        let completion = completionHandler
+        completionHandler = nil
+        lock.unlock()
+        completion?(result)
+    }
+}
+
+extension Notification.Name {
+    static let backgroundReconciliationRequested = Notification.Name(
+        "hk.knockknock.backgroundReconciliationRequested"
+    )
+}
+
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     var onDeviceToken: ((String) -> Void)?
     var onAuthorizationStatus: ((UNAuthorizationStatus) -> Void)?
     var onNotificationDiagnostics: ((NotificationDiagnostics) -> Void)?
     private var onNotificationTap: ((String) -> Void)?
     private var pendingNotificationSessionId: String?
+    private let notificationCenter: NotificationCenter
+    private let backgroundCompletionTimeout: TimeInterval
+    private var backgroundReconciliationDeliveryIsActive = false
+    private var pendingBackgroundReconciliations: [BackgroundReconciliationRequest] = []
+
+    override init() {
+        notificationCenter = .default
+        backgroundCompletionTimeout = 25
+        super.init()
+    }
+
+    init(
+        notificationCenter: NotificationCenter,
+        backgroundCompletionTimeout: TimeInterval = 25
+    ) {
+        self.notificationCenter = notificationCenter
+        self.backgroundCompletionTimeout = backgroundCompletionTimeout
+        super.init()
+    }
 
     func application(
         _ application: UIApplication,
@@ -66,6 +156,62 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         }
     }
 
+    /// Enables delivery after RootView has installed its NotificationCenter observer.
+    /// Requests received during a background launch remain queued until this point.
+    func activateBackgroundReconciliationDelivery() {
+        let activate = { [self] in
+            backgroundReconciliationDeliveryIsActive = true
+            let pending = pendingBackgroundReconciliations
+            pendingBackgroundReconciliations.removeAll()
+            for request in pending {
+                postBackgroundReconciliation(request)
+            }
+        }
+        if Thread.isMainThread {
+            activate()
+        } else {
+            DispatchQueue.main.async(execute: activate)
+        }
+    }
+
+    func handleRemoteNotification(
+        _ userInfo: [AnyHashable: Any],
+        fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+    ) {
+        guard let hint = RemoteNotificationWakeHint(userInfo: userInfo) else {
+            completionHandler(.noData)
+            return
+        }
+
+        let request = BackgroundReconciliationRequest(
+            hint: hint,
+            completionHandler: completionHandler
+        )
+        DispatchQueue.main.asyncAfter(deadline: .now() + backgroundCompletionTimeout) {
+            request.complete(.failed)
+        }
+
+        let route = { [self] in
+            if backgroundReconciliationDeliveryIsActive {
+                postBackgroundReconciliation(request)
+            } else {
+                pendingBackgroundReconciliations.append(request)
+            }
+        }
+        if Thread.isMainThread {
+            route()
+        } else {
+            DispatchQueue.main.async(execute: route)
+        }
+    }
+
+    private func postBackgroundReconciliation(_ request: BackgroundReconciliationRequest) {
+        notificationCenter.post(
+            name: .backgroundReconciliationRequested,
+            object: request
+        )
+    }
+
     private func routeNotificationTap(_ notification: UNNotification) {
         guard let sessionId = notification.request.content.userInfo["session_id"] as? String,
               !sessionId.isEmpty
@@ -87,6 +233,14 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
         print("[push] register failed: \(error.localizedDescription)")
+    }
+
+    func application(
+        _ application: UIApplication,
+        didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+        fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+    ) {
+        handleRemoteNotification(userInfo, fetchCompletionHandler: completionHandler)
     }
 
     func userNotificationCenter(

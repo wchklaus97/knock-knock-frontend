@@ -30,6 +30,7 @@
 		8E39FCC5139F5AA07C78C74F /* LocalVoiceCommandCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FD236C7A543804B27C041D4 /* LocalVoiceCommandCoordinatorTests.swift */; };
 		A17DC2B4DBF67D961CE4EBDE /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D395F5693E39802D84A2DE0 /* AppStore.swift */; };
 		A4F7B8446C4AAAC4DE5C5037 /* NotificationDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A3102CC0FD64B33E8C6512 /* NotificationDiagnostics.swift */; };
+		B0C1D2E3F405162738495A6B /* BackgroundRemoteNotificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B1C2D3E4F5061728394A5B /* BackgroundRemoteNotificationTests.swift */; };
 		B008650A594C298E52098E25 /* VoiceActivityDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F323B1159699C0C4BA9C7B7 /* VoiceActivityDetectorTests.swift */; };
 		B049614B0D5B76A5CAEFD5FC /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3B75AF8190D9C92C0C3CD6F /* RootView.swift */; };
 		B4FE287C30FBAA073FAF97B6 /* LocalCommandEnvelopeCanonicalizerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D0AFE1014DA172AD7A6CBB1 /* LocalCommandEnvelopeCanonicalizerTests.swift */; };
@@ -90,6 +91,7 @@
 		9D0AFE1014DA172AD7A6CBB1 /* LocalCommandEnvelopeCanonicalizerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalCommandEnvelopeCanonicalizerTests.swift; sourceTree = "<group>"; };
 		9F323B1159699C0C4BA9C7B7 /* VoiceActivityDetectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceActivityDetectorTests.swift; sourceTree = "<group>"; };
 		9FD236C7A543804B27C041D4 /* LocalVoiceCommandCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalVoiceCommandCoordinatorTests.swift; sourceTree = "<group>"; };
+		A0B1C2D3E4F5061728394A5B /* BackgroundRemoteNotificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundRemoteNotificationTests.swift; sourceTree = "<group>"; };
 		A1CB585C4D196C26E5F29DFC /* DemoConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoConfig.swift; sourceTree = "<group>"; };
 		A870B09F37E0388AC4950D5C /* VoiceAgentBridge.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = VoiceAgentBridge.entitlements; sourceTree = "<group>"; };
 		A99A0C0747DF715EF6BCBDAB /* LocalVoiceCommandController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalVoiceCommandController.swift; sourceTree = "<group>"; };
@@ -150,6 +152,7 @@
 		2A70FF0079F783B3E78FA5A2 /* VoiceAgentBridgeTests */ = {
 			isa = PBXGroup;
 			children = (
+				A0B1C2D3E4F5061728394A5B /* BackgroundRemoteNotificationTests.swift */,
 				CFB5EA120329E5E293186C82 /* BackendCommandPresentationTests.swift */,
 				9C1D1AD3C4D5FC05095BE5A6 /* CommandEnvelopeTests.swift */,
 				E961F8A69AB7D6BDE901A076 /* CommandResponseTests.swift */,
@@ -353,6 +356,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B0C1D2E3F405162738495A6B /* BackgroundRemoteNotificationTests.swift in Sources */,
 				B54A196A01253803D329A965 /* BackendCommandPresentationTests.swift in Sources */,
 				49795404D433FEBEB093D31C /* CommandEnvelopeTests.swift in Sources */,
 				25641E57D673CB29E940845B /* CommandResponseTests.swift in Sources */,

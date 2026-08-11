@@ -266,7 +266,11 @@ final class LocalVoiceCommandController: ObservableObject {
                 return
             } catch {
                 guard self?.isCurrent(sessionID) == true else { return }
-                self?.finishWithFailure(error, sessionID: sessionID)
+                if LocalVoiceCommandErrorPolicy.requiresClarification(error) {
+                    self?.finishWithClarification(sessionID: sessionID)
+                } else {
+                    self?.finishWithFailure(error, sessionID: sessionID)
+                }
             }
         }
     }

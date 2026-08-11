@@ -13,7 +13,9 @@ The backend contract is the sole protocol source of truth. This iOS status docum
 
 The current voice completion branch adds strict command canonicalization,
 backend-owned presentation, signed private-model delivery, and crash-safe
-SQLite command reconciliation. Exact test evidence is maintained in the
+SQLite command reconciliation. Foreground-only capture preflight,
+clarification routing, persistent failed offline operations, and silent APNs
+wake-to-REST reconciliation are also implemented. Exact test evidence is maintained in the
 backend release report. Model publication/public-key configuration,
 real-model accuracy, physical-device voice/APNs/two-device evaluation, and
 human release approval remain backend-canonical release gates.
