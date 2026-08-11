@@ -736,6 +736,23 @@ struct PendingCommandConfirmation: Codable, Equatable, Identifiable {
     let reversible: Bool
 
     var id: String { command_id }
+
+    var isStructurallyValid: Bool {
+        let normalizedID = command_id.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedToken = confirmation_token.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalizedID == command_id
+            && !normalizedID.isEmpty
+            && command_id.utf8.count <= 128
+            && normalizedToken == confirmation_token
+            && !normalizedToken.isEmpty
+            && confirmation_token.utf8.count <= 1_024
+            && normalizedTitle == title
+            && !normalizedTitle.isEmpty
+            && title.utf8.count <= 256
+            && ["low", "medium", "high"].contains(risk)
+            && confirm_required
+    }
 }
 
 struct PhoneReplyResponse: Decodable {
@@ -749,6 +766,7 @@ struct CommandResponse: Decodable, Equatable {
     let state: String
     let command: CommandEnvelope?
     let action: CommandActionMetadata?
+    let presentation: CommandPresentation?
     let confirmation_token: String?
     let result: JSONValue?
     let error: CommandResponseError?
@@ -756,6 +774,130 @@ struct CommandResponse: Decodable, Equatable {
     let version: Int?
     let created_at: String?
     let updated_at: String?
+}
+
+struct CommandPresentation: Codable, Equatable {
+    let schema_version: Int
+    let code: String
+    let locale: String
+    let display_text: String
+    let voice_script: String?
+    let terminal: Bool
+
+    /// Only a complete, internally consistent server presentation may be
+    /// shown or spoken. Command state remains the source of terminality; a
+    /// disagreeing presentation is rejected instead of overriding it.
+    func validated(for state: String) -> CommandPresentation? {
+        let normalizedCode = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedLocale = locale.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedDisplayText = display_text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedVoiceScript = voice_script?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard schema_version == 1,
+              !normalizedCode.isEmpty,
+              code.utf8.count <= 128,
+              normalizedCode.rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
+              !normalizedLocale.isEmpty,
+              locale.utf8.count <= 32,
+              !normalizedDisplayText.isEmpty,
+              display_text.utf8.count <= 512,
+              normalizedVoiceScript == nil || !(normalizedVoiceScript?.isEmpty ?? true),
+              (voice_script?.utf8.count ?? 0) <= 512,
+              terminal == CommandLifecycle.isTerminal(state)
+        else { return nil }
+        return CommandPresentation(
+            schema_version: schema_version,
+            code: normalizedCode,
+            locale: normalizedLocale,
+            display_text: normalizedDisplayText,
+            voice_script: normalizedVoiceScript,
+            terminal: terminal
+        )
+    }
+}
+
+enum CommandLifecycle {
+    static let knownStates: Set<String> = [
+        "pending", "validated", "awaiting_confirmation", "queued", "running",
+        "succeeded", "failed", "expired", "cancelled", "retryable", "unknown",
+    ]
+
+    static let terminalStates: Set<String> = [
+        "succeeded", "failed", "expired", "cancelled",
+    ]
+
+    static func isKnown(_ state: String) -> Bool {
+        knownStates.contains(state)
+    }
+
+    static func isTerminal(_ state: String) -> Bool {
+        terminalStates.contains(state)
+    }
+}
+
+/// Crash-safe journal entry for the one voice command whose backend state is
+/// still active or whose terminal presentation has not reached the Home UI.
+/// Audio and transcripts are intentionally absent.
+struct ActiveCommandCheckpoint: Codable, Equatable {
+    enum Phase: String, Codable {
+        case submitting
+        case acknowledged
+        case terminalPendingPresentation
+    }
+
+    var phase: Phase
+    let commandID: String
+    var backendState: String?
+    var backendVersion: Int?
+    var envelope: CommandEnvelope?
+    var validatedPresentation: CommandPresentation?
+    var pendingConfirmation: PendingCommandConfirmation? = nil
+    var lastAnnouncedVersion: Int?
+    let backendOrigin: String
+    let ownerUserID: String
+    let createdAt: Date
+
+    var isStructurallyValid: Bool {
+        let normalizedCommandID = commandID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedOrigin = backendOrigin.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedOwner = ownerUserID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalizedCommandID == commandID,
+              !commandID.isEmpty,
+              commandID.utf8.count <= 128,
+              normalizedOrigin == backendOrigin,
+              !backendOrigin.isEmpty,
+              backendOrigin.utf8.count <= 2_048,
+              normalizedOwner == ownerUserID,
+              !ownerUserID.isEmpty,
+              ownerUserID.utf8.count <= 256,
+              createdAt.timeIntervalSince1970.isFinite
+        else { return false }
+
+        switch phase {
+        case .submitting:
+            return envelope?.commandID == commandID
+                && backendState == nil
+                && backendVersion == nil
+                && validatedPresentation == nil
+                && pendingConfirmation == nil
+                && lastAnnouncedVersion == nil
+        case .acknowledged, .terminalPendingPresentation:
+            guard envelope == nil,
+                  let backendState,
+                  CommandLifecycle.isKnown(backendState),
+                  let backendVersion,
+                  backendVersion >= 0,
+                  lastAnnouncedVersion.map({ $0 >= 0 && $0 <= backendVersion }) ?? true,
+                  validatedPresentation.map({ $0.validated(for: backendState) == $0 }) ?? true,
+                  pendingConfirmation.map({
+                      backendState == "awaiting_confirmation"
+                          && $0.command_id == commandID
+                          && $0.isStructurallyValid
+                  }) ?? true
+            else { return false }
+            let terminal = CommandLifecycle.isTerminal(backendState)
+            return phase == (terminal ? .terminalPendingPresentation : .acknowledged)
+        }
+    }
 }
 
 struct CommandActionMetadata: Decodable, Equatable {

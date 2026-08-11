@@ -9,11 +9,14 @@ The backend contract is the sole protocol source of truth. This iOS status docum
 - [Backend architecture decisions](https://github.com/wchklaus97/knock-knock-backend/blob/main/docs/ARCHITECTURE_DECISIONS.md) — canonical architecture decisions (cross-repo placeholder).
 - [Backend implementation roadmap](https://github.com/wchklaus97/knock-knock-backend/blob/main/docs/IMPLEMENTATION_ROADMAP.md) — canonical implementation sequencing (cross-repo placeholder).
 - [Backend OpenAPI contract](https://github.com/wchklaus97/knock-knock-backend/blob/main/contracts/openapi.yaml) — canonical REST, SSE, error, and `CommandEnvelope v1` contract.
+- [Voice model release runbook](https://github.com/wchklaus97/knock-knock-backend/blob/main/docs/VOICE_MODEL_RELEASE_RUNBOOK.md) — canonical artifact signing, staging, evaluation, and rollback procedure.
 
-The current Phase 4/5 iOS implementation is validated by 36 unit tests and a
-three-test UI suite against a fresh local Rust Worker/D1. Model publication,
-public-key configuration, deployed E2E fixtures, physical-device voice
-evaluation, and human release approval remain backend-canonical release gates.
+The current voice completion branch adds strict command canonicalization,
+backend-owned presentation, signed private-model delivery, and crash-safe
+SQLite command reconciliation. Exact test evidence is maintained in the
+backend release report. Model publication/public-key configuration,
+real-model accuracy, physical-device voice/APNs/two-device evaluation, and
+human release approval remain backend-canonical release gates.
 
 ## ProgressStatus — `update_progress` only / 仅进度
 

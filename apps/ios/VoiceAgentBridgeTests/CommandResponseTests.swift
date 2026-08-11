@@ -25,6 +25,14 @@ final class CommandResponseTests: XCTestCase {
             "confirm_required": false,
             "reversible": false
           },
+          "presentation": {
+            "schema_version": 1,
+            "code": "command.queued",
+            "locale": "zh-Hans-HK",
+            "display_text": "The command is queued.",
+            "voice_script": null,
+            "terminal": false
+          },
           "confirmation_token": null,
           "result": {"kind": "history_search"},
           "error": null,
@@ -41,6 +49,9 @@ final class CommandResponseTests: XCTestCase {
         XCTAssertEqual(response.command?.intent, "search_history")
         XCTAssertEqual(response.action?.title, "Search history")
         XCTAssertFalse(response.action?.confirm_required == true)
+        XCTAssertEqual(response.presentation?.code, "command.queued")
+        XCTAssertEqual(response.presentation?.display_text, "The command is queued.")
+        XCTAssertFalse(response.presentation?.terminal == true)
         guard case let .object(result)? = response.result else {
             return XCTFail("Expected a JSON object result")
         }

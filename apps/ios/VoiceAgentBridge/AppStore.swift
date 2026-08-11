@@ -7,6 +7,7 @@ import UserNotifications
 final class AppStore: ObservableObject {
     private static let settingsSchemaVersion = 3
     private static let settingsSchemaKey = "vab.settingsSchemaVersion"
+    private static let userIDKey = "vab.userID"
 
     @Published var token: String? {
         didSet {
@@ -47,6 +48,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var pendingOperations: [PendingOperation] = []
     @Published var pendingCommandConfirmation: PendingCommandConfirmation? = nil
     @Published private(set) var latestCommandResponse: CommandResponse? = nil
+    @Published private(set) var activeCommandPresentation: BackendCommandPresentation? = nil
     @Published private(set) var undoableCommandID: String? = nil
     @Published private(set) var voiceModelStatus = "Not prepared"
     @Published private(set) var voiceController: LocalVoiceCommandController?
@@ -54,9 +56,11 @@ final class AppStore: ObservableObject {
     @Published var openSessionId: String?
 
     let client = APIClient()
-    private let localStore = SQLiteStore.shared
+    private let localStore: SQLiteStore
+    private let activeCommandCoordinator: ActiveCommandCheckpointCoordinator
     private lazy var eventTransport = client.makeSessionEventTransport()
     private var refreshToken: String?
+    private var currentUserID: String?
     private var eventStreamTask: Task<Void, Never>?
     private var fallbackRefreshTask: Task<Void, Never>?
     private var reconciliationTask: Task<Void, Never>?
@@ -75,6 +79,7 @@ final class AppStore: ObservableObject {
     private weak var appDelegate: AppDelegate?
     private var pendingSessionToOpen: String?
     private var voiceModelManager: LocalVoiceModelManager?
+    private var voiceModelPreparationTask: Task<Void, Never>?
 
     struct KnockAlert: Identifiable, Equatable {
         let id: String
@@ -105,7 +110,15 @@ final class AppStore: ObservableObject {
             !reconciliationExists
     }
 
-    init() {
+    init(
+        localStore: SQLiteStore = .shared,
+        commandSynthesizer: VoiceSynthesizing = SystemVoiceSynthesizer()
+    ) {
+        self.localStore = localStore
+        activeCommandCoordinator = ActiveCommandCheckpointCoordinator(
+            store: localStore,
+            synthesizer: commandSynthesizer
+        )
         #if DEBUG
         // UI tests run repeatedly against isolated local Workers. Keychain
         // entries survive app reinstall, so an old access/refresh token can
@@ -119,11 +132,13 @@ final class AppStore: ObservableObject {
             UserDefaults.standard.removeObject(forKey: "vab.email")
             UserDefaults.standard.removeObject(forKey: "vab.apiBase")
             UserDefaults.standard.removeObject(forKey: "vab.selectedAgentId")
+            UserDefaults.standard.removeObject(forKey: Self.userIDKey)
             localStore.clearUserData()
         }
         #endif
         let storedToken = KeychainStore.read() ?? UserDefaults.standard.string(forKey: "vab.token")
         let storedRefreshToken = KeychainStore.read(account: "refresh-token")
+        currentUserID = UserDefaults.standard.string(forKey: Self.userIDKey)
         token = storedToken
         refreshToken = storedRefreshToken
         client.token = storedToken
@@ -180,6 +195,67 @@ final class AppStore: ObservableObject {
         pendingCommandConfirmation = localStore.loadPendingCommandConfirmation()
         if let url = URL(string: apiBase), url.host != nil {
             client.baseURL = url
+        }
+        restoreActiveCommandCheckpoint()
+    }
+
+    private var activeCommandScope: ActiveCommandScope? {
+        ActiveCommandScope(backendURL: client.baseURL, ownerUserID: currentUserID)
+    }
+
+    private func restoreActiveCommandCheckpoint() {
+        guard token != nil, let activeCommandScope else {
+            if localStore.loadActiveCommandCheckpoint() != nil {
+                do {
+                    try activeCommandCoordinator.clearForScopeChange()
+                } catch {
+                    activeCommandCoordinator.discardInMemory()
+                    errorMessage = error.localizedDescription
+                }
+            }
+            return
+        }
+        do {
+            activeCommandPresentation = try activeCommandCoordinator.restore(scope: activeCommandScope)
+            if let durableConfirmation = activeCommandCoordinator.durablePendingConfirmation {
+                pendingCommandConfirmation = durableConfirmation
+                localStore.savePendingCommandConfirmation(durableConfirmation)
+            }
+            if let spoken = activeCommandCoordinator.lastSpoken {
+                lastSpoken = spoken
+            }
+        } catch {
+            activeCommandCoordinator.discardInMemory()
+            activeCommandPresentation = nil
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func publishActiveCommandState() {
+        activeCommandPresentation = activeCommandCoordinator.presentation
+        if let durableConfirmation = activeCommandCoordinator.durablePendingConfirmation {
+            pendingCommandConfirmation = durableConfirmation
+            localStore.savePendingCommandConfirmation(durableConfirmation)
+        }
+        if let spoken = activeCommandCoordinator.lastSpoken {
+            lastSpoken = spoken
+        }
+    }
+
+    private func clearActiveCommandForScopeChange() throws {
+        try activeCommandCoordinator.clearForScopeChange()
+        activeCommandPresentation = nil
+        latestCommandResponse = nil
+        undoableCommandID = nil
+        pendingCommandConfirmation = nil
+        localStore.clearPendingCommandConfirmation()
+    }
+
+    func markActiveCommandPresented(commandID: String, version: Int) {
+        do {
+            try activeCommandCoordinator.markPresented(commandID: commandID, version: version)
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 
@@ -251,6 +327,16 @@ final class AppStore: ObservableObject {
         else {
             errorMessage = APIClientError.invalidBaseURL.localizedDescription
             return false
+        }
+        let previousOrigin = ActiveCommandScope.origin(for: client.baseURL)
+        let nextOrigin = ActiveCommandScope.origin(for: url)
+        if previousOrigin != nextOrigin {
+            do {
+                try clearActiveCommandForScopeChange()
+            } catch {
+                errorMessage = error.localizedDescription
+                return false
+            }
         }
         apiBase = trimmed
         UserDefaults.standard.set(trimmed, forKey: "vab.apiBase")
@@ -473,7 +559,7 @@ final class AppStore: ObservableObject {
     }
 
     private func finishAuthentication(_ auth: AuthResponse) async throws {
-        applyAuth(auth)
+        try applyAuth(auth)
         // Device registration enables system delivery, but it must not
         // block the in-app decision surface. Simulators can lack a real
         // APNs entitlement, and a temporary registration outage should
@@ -532,7 +618,12 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func applyAuth(_ auth: AuthResponse) {
+    private func applyAuth(_ auth: AuthResponse) throws {
+        if currentUserID != nil, currentUserID != auth.user_id {
+            try clearActiveCommandForScopeChange()
+        }
+        currentUserID = auth.user_id
+        UserDefaults.standard.set(auth.user_id, forKey: Self.userIDKey)
         token = auth.token
         if let nextRefresh = auth.refresh_token {
             refreshToken = nextRefresh
@@ -547,6 +638,20 @@ final class AppStore: ObservableObject {
     /// manifest and bytes; if the release has not configured a model, the UI
     /// reports that explicitly and the voice button remains unavailable.
     func prepareLocalVoiceModel() async {
+        if let voiceModelPreparationTask {
+            await voiceModelPreparationTask.value
+            return
+        }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performLocalVoiceModelPreparation()
+        }
+        voiceModelPreparationTask = task
+        await task.value
+        voiceModelPreparationTask = nil
+    }
+
+    private func performLocalVoiceModelPreparation() async {
         guard token != nil else {
             voiceModelStatus = "Sign in before preparing voice"
             return
@@ -564,9 +669,14 @@ final class AppStore: ObservableObject {
                 let descriptor = try await client.getModelArtifactDescriptor(
                     modelID: LocalVoiceModelManager.defaultModelID
                 )
-                _ = try await manager.install(descriptor)
+                _ = try await manager.install(
+                    descriptor,
+                    authorizationToken: token,
+                    trustedAPIBaseURL: client.baseURL
+                )
             }
-            let generator = try manager.makeCommandGenerator()
+            try Task.checkCancellation()
+            let generator = try manager.makeCommandGenerator(deviceID: client.currentDeviceID)
             voiceController = LocalVoiceCommandController(generator: generator) { [weak self] envelope in
                 guard let self else {
                     throw APIClientError.network("Knock Knock is no longer available")
@@ -579,6 +689,7 @@ final class AppStore: ObservableObject {
                 voiceModelStatus = "Model not installed"
             }
         } catch {
+            if error is CancellationError { return }
             voiceController = nil
             voiceModelStatus = "Unavailable · \(error.localizedDescription)"
             errorMessage = "On-device voice is not ready: \(error.localizedDescription)"
@@ -586,22 +697,63 @@ final class AppStore: ObservableObject {
     }
 
     private func submitLocalCommand(_ envelope: CommandEnvelope) async throws -> CommandResponse {
-        let created = try await client.createCommand(envelope)
-        handleCommandResponse(created)
+        guard let activeCommandScope else { throw APIClientError.noToken }
+        let application = try await activeCommandCoordinator.submit(
+            envelope: envelope,
+            scope: activeCommandScope
+        ) { [client] canonicalEnvelope in
+            try await client.createCommand(canonicalEnvelope)
+        }
+        consumeCommandApplication(application)
 
         // Read back the server-owned state before presenting it. The create
         // response is useful for degraded connectivity, but GET is the
         // canonical source for risk, confirmation, and lifecycle state.
-        guard let canonical = try? await client.getCommand(commandID: created.command_id) else {
-            return created
+        guard let canonical = try? await client.getCommand(commandID: envelope.commandID) else {
+            return application.response
         }
-        handleCommandResponse(canonical)
+        if let canonicalApplication = try activeCommandCoordinator.accept(
+            response: canonical,
+            expectedCommandID: envelope.commandID
+        ) {
+            consumeCommandApplication(canonicalApplication)
+        }
         return canonical
     }
 
-    private func handleCommandResponse(_ response: CommandResponse) {
+    @discardableResult
+    private func handleCommandResponse(
+        _ response: CommandResponse,
+        expectedCommandID: String
+    ) throws -> Bool {
+        guard let application = try activeCommandCoordinator.accept(
+            response: response,
+            expectedCommandID: expectedCommandID
+        ) else { return false }
+        consumeCommandApplication(application)
+        return true
+    }
+
+    private func consumeCommandApplication(_ application: ActiveCommandApplication) {
+        publishActiveCommandState()
+        guard application.outcome == .applied else { return }
+        let response = application.response
         latestCommandResponse = response
-        undoableCommandID = response.state == "succeeded" && response.action?.reversible == true
+        if response.state != "awaiting_confirmation",
+           pendingCommandConfirmation?.command_id == response.command_id
+        {
+            pendingCommandConfirmation = nil
+            localStore.clearPendingCommandConfirmation()
+        }
+        let alreadyUndone: Bool
+        if case let .object(result) = response.result {
+            alreadyUndone = result["undo"] != nil
+        } else {
+            alreadyUndone = false
+        }
+        undoableCommandID = response.state == "succeeded"
+            && response.action?.reversible == true
+            && !alreadyUndone
             ? response.command_id
             : nil
         guard response.state == "awaiting_confirmation" else { return }
@@ -650,8 +802,11 @@ final class AppStore: ObservableObject {
                 confirmationToken: confirmation.confirmation_token
             )
             let canonical = (try? await client.getCommand(commandID: confirmation.command_id)) ?? response
-            handleCommandResponse(canonical)
-            if canonical.state != "awaiting_confirmation" {
+            let accepted = try handleCommandResponse(
+                canonical,
+                expectedCommandID: confirmation.command_id
+            )
+            if accepted, canonical.state != "awaiting_confirmation" {
                 pendingCommandConfirmation = nil
                 localStore.clearPendingCommandConfirmation()
                 await refresh()
@@ -667,10 +822,14 @@ final class AppStore: ObservableObject {
         do {
             let response = try await client.cancelCommand(commandID: confirmation.command_id)
             let canonical = (try? await client.getCommand(commandID: confirmation.command_id)) ?? response
-            latestCommandResponse = canonical
-            pendingCommandConfirmation = nil
-            localStore.clearPendingCommandConfirmation()
-            await refresh()
+            if try handleCommandResponse(
+                canonical,
+                expectedCommandID: confirmation.command_id
+            ) {
+                pendingCommandConfirmation = nil
+                localStore.clearPendingCommandConfirmation()
+                await refresh()
+            }
         } catch {
             errorMessage = "The command was not cancelled. (\(error.localizedDescription))"
         }
@@ -680,9 +839,11 @@ final class AppStore: ObservableObject {
         errorMessage = nil
         do {
             let response = try await client.undoCommand(commandID: commandID)
-            latestCommandResponse = (try? await client.getCommand(commandID: commandID)) ?? response
-            undoableCommandID = nil
-            await refresh()
+            let canonical = (try? await client.getCommand(commandID: commandID)) ?? response
+            if try handleCommandResponse(canonical, expectedCommandID: commandID) {
+                undoableCommandID = nil
+                await refresh()
+            }
         } catch {
             errorMessage = "Undo was not completed. (\(error.localizedDescription))"
         }
@@ -697,8 +858,10 @@ final class AppStore: ObservableObject {
         stopReconciliation()
         token = nil
         refreshToken = nil
+        currentUserID = nil
         client.refreshToken = nil
         KeychainStore.delete(account: "refresh-token")
+        UserDefaults.standard.removeObject(forKey: Self.userIDKey)
         sessions = []
         agents = []
         pushes = []
@@ -715,10 +878,15 @@ final class AppStore: ObservableObject {
         pendingOperations = []
         pendingCommandConfirmation = nil
         latestCommandResponse = nil
+        activeCommandPresentation = nil
         undoableCommandID = nil
         voiceController = nil
+        voiceModelPreparationTask?.cancel()
+        voiceModelPreparationTask = nil
         voiceModelStatus = "Not prepared"
         localStore.clearUserData()
+        activeCommandCoordinator.discardInMemory()
+        lastSpoken = nil
         pendingSessionToOpen = nil
         knownPushIds = []
         hasSeededPushIds = false
@@ -1250,6 +1418,19 @@ final class AppStore: ObservableObject {
     private func loadRemoteState(includeAgents: Bool, generation: Int? = nil) async throws {
         async let s = client.listSessions()
         async let p = client.listPushes()
+        let commandTask: Task<ActiveCommandApplication?, Error>? =
+            activeCommandCoordinator.commandIDForReconciliation == nil
+            ? nil
+            : Task { @MainActor [activeCommandCoordinator, client] in
+                try await activeCommandCoordinator.reconcileCurrent(
+                    get: { commandID in
+                        try await client.getCommand(commandID: commandID)
+                    },
+                    replay: { canonicalEnvelope in
+                        try await client.createCommand(canonicalEnvelope)
+                    }
+                )
+            }
         let agentsTask: Task<[Agent], Error>? = includeAgents
             ? Task { try await client.listAgents() }
             : nil
@@ -1260,6 +1441,10 @@ final class AppStore: ObservableObject {
             remoteAgents = try await agentsTask.value
         } else {
             remoteAgents = nil
+        }
+        var commandApplication: ActiveCommandApplication?
+        if let commandTask {
+            commandApplication = try await commandTask.value
         }
         if let generation,
            (generation != reconciliationGeneration || token == nil || Task.isCancelled)
@@ -1290,6 +1475,9 @@ final class AppStore: ObservableObject {
             lastSpoken = newest.voice_script ?? newest.body
         }
         pushes = newPushes
+        if let commandApplication {
+            consumeCommandApplication(commandApplication)
+        }
         localStore.cacheSessions(mergedSessions)
         localStore.cachePushes(newPushes)
         lastRefreshAt = Date()
@@ -1350,7 +1538,7 @@ final class AppStore: ObservableObject {
         guard let refreshToken else { return false }
         do {
             let auth = try await client.refreshAuth(refreshToken: refreshToken)
-            applyAuth(auth)
+            try applyAuth(auth)
             return true
         } catch {
             return false

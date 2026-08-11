@@ -41,14 +41,35 @@ final class LocalVoiceCommandCoordinator {
                     return
                 }
                 Task { @MainActor in
+                    let data: Data
                     do {
-                        let data = try result.get()
-                        let envelope = try CommandEnvelope.decodeStrict(from: data)
-                        guard envelope.confidence >= 0.5 else {
+                        data = try result.get()
+                    } catch {
+                        if Self.requiresClarification(error) {
                             self.state = .clarificationRequired
                             continuation.resume(returning: nil)
                             return
                         }
+
+                        self.state = .failed
+                        continuation.resume(throwing: error)
+                        return
+                    }
+
+                    let envelope: CommandEnvelope
+                    do {
+                        let decoded = try CommandEnvelope.decodeStrict(from: data)
+                        envelope = try LocalVoiceCommandPolicy.authoritativeEnvelope(from: decoded)
+                    } catch {
+                        // At this point the bytes came from the untrusted model
+                        // boundary. Syntax, confidence, intent, schema, and
+                        // argument errors all ask the user to clarify.
+                        self.state = .clarificationRequired
+                        continuation.resume(returning: nil)
+                        return
+                    }
+
+                    do {
                         let response = try await self.submit(envelope)
                         self.state = .submitted(response.command_id)
                         continuation.resume(returning: response)
@@ -59,5 +80,12 @@ final class LocalVoiceCommandCoordinator {
                 }
             }
         }
+    }
+
+    private static func requiresClarification(_ error: Error) -> Bool {
+        if error is LocalCommandEnvelopeCanonicalizerError {
+            return true
+        }
+        return (error as? LocalVoiceAdapterError) == .invalidModelOutput
     }
 }

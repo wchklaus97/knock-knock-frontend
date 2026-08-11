@@ -587,6 +587,47 @@ final class ModelsDecodingTests: XCTestCase {
         }
     }
 
+    func testSQLiteStoreReopensAndClearsActiveCommandCheckpoint() throws {
+        let url = temporarySQLiteURL("active-command")
+        defer { removeSQLiteArtifacts(at: url) }
+        let envelope = try CommandEnvelope(
+            commandID: "cmd_voice_restart",
+            intent: "search_history",
+            args: ["q": .string("history")],
+            riskLevel: .low,
+            needsConfirmation: false,
+            idempotencyKey: "idem_voice_restart",
+            confidence: 0.97,
+            locale: "en-HK",
+            timezone: "Asia/Hong_Kong"
+        )
+        let checkpoint = ActiveCommandCheckpoint(
+            phase: .submitting,
+            commandID: envelope.commandID,
+            backendState: nil,
+            backendVersion: nil,
+            envelope: envelope,
+            validatedPresentation: nil,
+            lastAnnouncedVersion: nil,
+            backendOrigin: "https://api.example.com:443",
+            ownerUserID: "usr_restart",
+            createdAt: Date(timeIntervalSince1970: 4_100)
+        )
+
+        do {
+            let store = SQLiteStore(databaseURL: url)
+            XCTAssertTrue(store.saveActiveCommandCheckpoint(checkpoint))
+            XCTAssertEqual(store.loadActiveCommandCheckpoint(), checkpoint)
+        }
+
+        do {
+            let reopened = SQLiteStore(databaseURL: url)
+            XCTAssertEqual(reopened.loadActiveCommandCheckpoint(), checkpoint)
+            XCTAssertTrue(reopened.clearActiveCommandCheckpoint())
+            XCTAssertNil(reopened.loadActiveCommandCheckpoint())
+        }
+    }
+
     func testSQLiteStoreDeduplicatesQueuedEventsAndCommitsOnlyConsumedEvents() throws {
         let url = temporarySQLiteURL("events")
         defer { removeSQLiteArtifacts(at: url) }

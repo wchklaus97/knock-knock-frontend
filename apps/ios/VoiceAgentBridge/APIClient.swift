@@ -137,6 +137,12 @@ final class APIClient: @unchecked Sendable {
         return generated
     }
 
+    /// Stable per-installation identifier used for backend multi-device scope
+    /// and command tracing. It is app-generated and never comes from a model.
+    var currentDeviceID: String {
+        Self.stableDeviceID
+    }
+
     func listSessionsPage(
         before: String? = nil,
         limit: Int = 50

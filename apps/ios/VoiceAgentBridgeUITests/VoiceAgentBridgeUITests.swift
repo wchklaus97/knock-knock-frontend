@@ -17,10 +17,20 @@ private final class UITestFixtureClient {
     private let email = "e2e-1785931570@local.test"
     private let password = "password123"
 
+    static func configuredBaseURLString(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String {
+        [environment["KNOCK_UI_TEST_API_BASE_URL"], environment["KNOCK_API_BASE_URL"]]
+            .compactMap { value -> String? in
+                guard let value else { return nil }
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }
+            .first ?? "http://127.0.0.1:8787"
+    }
+
     init() throws {
-        let configuredURL = ProcessInfo.processInfo.environment["KNOCK_UI_TEST_API_BASE_URL"]
-            ?? ProcessInfo.processInfo.environment["KNOCK_API_BASE_URL"]
-            ?? "http://127.0.0.1:8787"
+        let configuredURL = Self.configuredBaseURLString()
         let normalizedURL = configuredURL.hasSuffix("/")
             ? String(configuredURL.dropLast())
             : configuredURL
@@ -215,11 +225,9 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         // Pass the same endpoint explicitly to the application process. This
         // prevents a stale simulator UserDefaults value from winning over
         // the Worker selected by the fixture runner.
-        if let configuredURL = ProcessInfo.processInfo.environment["KNOCK_UI_TEST_API_BASE_URL"]
-            ?? ProcessInfo.processInfo.environment["KNOCK_API_BASE_URL"] {
-            app.launchEnvironment["KNOCK_UI_TEST_API_BASE_URL"] = configuredURL
-            app.launchEnvironment["KNOCK_API_BASE_URL"] = configuredURL
-        }
+        let configuredURL = UITestFixtureClient.configuredBaseURLString()
+        app.launchEnvironment["KNOCK_UI_TEST_API_BASE_URL"] = configuredURL
+        app.launchEnvironment["KNOCK_API_BASE_URL"] = configuredURL
         app.launch()
         return app
     }

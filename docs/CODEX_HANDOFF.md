@@ -21,17 +21,20 @@ The backend contract is the sole protocol source of truth. This iOS handoff is a
 - [Backend architecture decisions](https://github.com/wchklaus97/knock-knock-backend/blob/main/docs/ARCHITECTURE_DECISIONS.md) — canonical architecture decisions (cross-repo placeholder).
 - [Backend implementation roadmap](https://github.com/wchklaus97/knock-knock-backend/blob/main/docs/IMPLEMENTATION_ROADMAP.md) — canonical implementation sequencing (cross-repo placeholder).
 - [Backend OpenAPI contract](https://github.com/wchklaus97/knock-knock-backend/blob/main/contracts/openapi.yaml) — canonical REST, SSE, error, and `CommandEnvelope v1` contract.
+- [Voice model release runbook](https://github.com/wchklaus97/knock-knock-backend/blob/main/docs/VOICE_MODEL_RELEASE_RUNBOOK.md) — operator-owned Gemma license, signing, private-R2 staging, evaluation, and rollback steps.
 
 ## Current Phase 4/5 completion branch
 
-The active follow-up branch adds iOS 15 push-to-talk/VAD, system on-device
-speech recognition, strict `CommandEnvelope v1` submission, signed model
-download/verification/rollback, and the official LiteRT-LM 0.12 C framework
-adapter. `VoiceAgentBridgeTests` passes 36/36, and the three-test UI suite
-passes against a fresh local Rust Worker/D1 with an isolated fixture. Physical
-device, APNs, vendor-model, staging, and release-approval gates remain
-separate. See the backend canonical roadmap above for the cross-repository
-gates and handoff order.
+The current completion branch is based on merged iOS `931c6bf`. It adds iOS 15
+push-to-talk/VAD with Apple on-device speech recognition, strict app-owned
+`CommandEnvelope v1` canonicalization, the LiteRT-LM 0.12 C runtime, signed
+disk-backed model delivery/rollback, a 32-example multilingual fixture,
+backend-owned UI/TTS presentation, and a crash-safe SQLite command checkpoint
+written before POST. Exact test counts and external gates are recorded in the
+backend release matrix/report rather than duplicated here. A licensed signed
+Gemma artifact, exact-current-revision physical voice UAT, real APNs delivery,
+simultaneous two-device convergence, paired PR review, and human rollout
+approval remain separate gates.
 
 **Locked MVP loop:**
 
@@ -57,10 +60,10 @@ Agent (MCP/CLI) → bridge API :8787 → iPhone app
 | iOS | SwiftUI app; Build25 release candidate archive with production onboarding defaulting to account creation; iOS 15.0 deployment floor; warm/cute production visual system with vector mascot; decision-inbox filters (Needs me / Active / All) plus search; offline/connection state with retry; agent/skill/facts/expiry/progress detail; one-time pairing-code generation + copy; iOS 15-compatible navigation and empty states; full-screen knock overlay with direct session review; safe destructive confirmation with alternate-action path; Keychain JWT storage; APNs deep-link handling; notification diagnostics; simulator UI tests |
 | E2E script | `pnpm test:e2e` runs the canonical Rust Worker/D1 contract smoke; `pnpm test:e2e:node` is migration-only |
 | Canonical host | Codex MCP/CLI; `pnpm test:canonical:codex` verifies the configured Codex bridge, and `pnpm test:canonical:codex:multiturn` verifies two replies on one session/chat |
-| iOS tests | Local Xcode simulator passes 36 unit tests and 3/3 UI tests (search/filter, decision confirmation, pairing) against a fresh Rust Worker/D1 fixture; physical-device/APNs evidence remains pending |
+| iOS tests | The completion branch passes 113 tests on the iOS 17.2 simulator and on both physical iPhone 13 Pro and iPhone 17 Pro Max: 112 passed, 0 failed, 1 real signed-model evaluation intentionally skipped. The isolated Worker/D1 UI suite passes 3/3 flows covering Home Today/Week, drawer, Settings/pairing, destructive confirmation, and queued state. |
 | MCP smoke | Direct stdio MCP server loop passes create/progress/needs_user/phone reply/claim/result/retry |
-| Real phone | Target is the iPhone 13 Pro (iOS 26.6 Beta). Build21 was archived and uploaded; Build25 now has a verified offline IPA but still needs owner upload/authentication. Build20 remains installed. Production account creation, pairing, APNs token registration, and the final two-turn manual flow are still pending. |
-| Remaining external step | Unlock the Mac, install Build21 from TestFlight, create the production account with a user-chosen password, pair Codex, and observe two decisions on one `session_id/chat_id`. Pilot users are not a P0 gate. |
+| Real phone | The exact completion revision builds, signs, installs, launches, and passes its full test target on an iPhone 13 Pro and an iPhone 17 Pro Max. This proves compatibility and command/model safety code on both devices, but not the unavailable signed Gemma artifact, microphone-to-TTS UAT, thermal target, real APNs delivery, or simultaneous two-device convergence. |
+| Remaining external step | Approve a licensed `.litertlm` Gemma artifact and pinned public key, publish it privately to staging R2, run the real-model golden/latency/thermal gates, then complete real APNs and simultaneous same-account two-device UAT. Production rollout remains human-approved. |
 | Entitlements | Debug uses `aps-environment=development`; Release switches to `production` |
 | Production device metadata | iOS device rows exist in D1, but current push-token lengths are null; real APNs delivery is not yet verified |
 
@@ -153,7 +156,7 @@ pnpm demo:phone
 pnpm signoff:phone
 pnpm signoff:phone:watch
 pnpm test:e2e
-pnpm test:ios              # checks the Rust Worker and runs 36 unit + 3 per-test UI fixtures
+pnpm test:ios              # checks the Rust Worker and runs the current unit + isolated UI fixtures
 
 cd apps/ios && xcodegen generate
 xcodebuild -scheme VoiceAgentBridge -destination 'generic/platform=iOS' build
@@ -167,14 +170,15 @@ cd apps/api && node ../../scripts/apns-test.mjs
 ## Definition of Done (current release candidate)
 
 - [x] Rust Worker/D1 contract, Paperclip boundary, canonical Codex multi-turn, RC security, installer, and type checks pass.
-- [x] Rust backend has 46 unit tests plus fmt, Clippy, and WASM checks passing.
-- [x] iOS simulator regression passes 36 unit tests and 3 UI tests against a fresh local Worker/D1 fixture.
+- [x] Rust backend has 63 unit tests plus fmt, Clippy, WASM, Worker build, local contract, and release gates passing.
+- [x] iOS simulator regression passes 112/113 tests with only the explicitly unconfigured real-model gate skipped, plus 3/3 UI flows against a fresh local Worker/D1 fixture.
+- [x] The same 112/113 test result passes on physical iPhone 13 Pro and iPhone 17 Pro Max; the Staging app installs and launches on both.
 - [x] Production Worker health, metrics, migrations, secrets presence, and D1 backup evidence are verified.
 - [x] Build21 is officially signed with production APNs entitlement and uploaded to TestFlight.
 - [x] Frontend and backend are published in their independent GitHub repositories and synchronized by the root submodules.
-- [ ] Build21 is confirmed processed and installed on the iPhone 13 Pro.
-- [ ] User creates/signs into the production account and the phone registers a real APNs token.
-- [ ] Codex pairing and the real two-turn `needs_user → phone reply → agent resume` flow are observed on the same `session_id/chat_id`.
+- [ ] An approved signed real model passes the 20–100-example accuracy, safety, and latency gate.
+- [ ] Real microphone → STT → intent → command → backend → TTS UAT and thermal testing pass on both phone classes.
+- [ ] Real APNs delivery, airplane-mode recovery, and simultaneous same-account two-device convergence are observed.
 - [ ] GitHub Actions D1 backup runs once after `CLOUDFLARE_API_TOKEN` is added as an Actions secret.
 
 ---
