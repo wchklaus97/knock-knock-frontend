@@ -484,6 +484,548 @@ final class LiteRTConversationCommandRunnerTests: XCTestCase {
             "delete-conversation",
         ])
     }
+
+    func testCancelDuringStreamingInvokesNativeCancelAndDeletesConversationExactlyOnce() async {
+        let callbackReady = expectation(description: "stream callback installed")
+        let events = LockedEvents()
+        let callbackBox = StreamCallbackBox()
+        let runner = LiteRTStreamingConversationCommandRunner<Int>(
+            makeConversation: {
+                events.append("create")
+                return 7
+            },
+            deleteConversation: { conversation in
+                events.append("delete:\(conversation)")
+            },
+            startStream: { conversation, message, callback in
+                events.append("start:\(conversation):\(message)")
+                callbackBox.callback = callback
+                callbackReady.fulfill()
+                return 0
+            },
+            cancelConversation: { conversation in
+                events.append("cancel:\(conversation)")
+            }
+        )
+
+        let task = Task {
+            try await runner.run(messageJSON: "request")
+        }
+        await fulfillment(of: [callbackReady], timeout: 1)
+        task.cancel()
+        callbackBox.callback?(nil, true, nil).finish()
+
+        do {
+            _ = try await task.value
+            XCTFail("Cancellation should not return a partial model response")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        XCTAssertEqual(events.values, [
+            "create",
+            "start:7:request",
+            "cancel:7",
+            "delete:7",
+        ])
+    }
+
+    func testStreamingConcatenatesChunksAndDeletesConversationAfterFinalCallback() async throws {
+        let events = LockedEvents()
+        let runner = LiteRTStreamingConversationCommandRunner<Int>(
+            makeConversation: {
+                events.append("create")
+                return 11
+            },
+            deleteConversation: { conversation in
+                events.append("delete:\(conversation)")
+            },
+            startStream: { conversation, message, callback in
+                events.append("start:\(conversation):\(message)")
+                callback("{\"intent\":", false, nil).finish()
+                callback("\"search_history\"}", true, nil).finish()
+                return 0
+            },
+            cancelConversation: { _ in
+                XCTFail("A successful stream must not be cancelled")
+            }
+        )
+
+        let response = try await runner.run(messageJSON: "request")
+
+        XCTAssertEqual(response, #"{"intent":"search_history"}"#)
+        XCTAssertEqual(events.values, [
+            "create",
+            "start:11:request",
+            "delete:11",
+        ])
+    }
+
+    func testStreamingStartFailureDeletesConversationWithoutCancelling() async {
+        let events = LockedEvents()
+        let runner = LiteRTStreamingConversationCommandRunner<Int>(
+            makeConversation: {
+                events.append("create")
+                return 13
+            },
+            deleteConversation: { conversation in
+                events.append("delete:\(conversation)")
+            },
+            startStream: { conversation, _, _ in
+                events.append("start:\(conversation)")
+                return 1
+            },
+            cancelConversation: { _ in
+                XCTFail("A stream that never started must not be cancelled")
+            }
+        )
+
+        do {
+            _ = try await runner.run(messageJSON: "request")
+            XCTFail("A nonzero native start status must fail")
+        } catch let error as LocalVoiceAdapterError {
+            XCTAssertEqual(error, .gemmaRuntimeGenerationFailed)
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        XCTAssertEqual(events.values, [
+            "create",
+            "start:13",
+            "delete:13",
+        ])
+    }
+
+    func testCancelFinalRaceDoesNotDeleteWhileNativeCancelIsInFlight() async {
+        let callbackReady = expectation(description: "stream callback installed")
+        let conversationDeleted = expectation(description: "conversation deleted")
+        let callbackExited = DispatchSemaphore(value: 0)
+        let callbackBox = StreamCallbackBox()
+        let events = LockedEvents()
+        let runner = LiteRTStreamingConversationCommandRunner<Int>(
+            makeConversation: {
+                events.append("create")
+                return 17
+            },
+            deleteConversation: { conversation in
+                events.append("delete:\(conversation)")
+                conversationDeleted.fulfill()
+            },
+            startStream: { conversation, _, callback in
+                events.append("start:\(conversation)")
+                callbackBox.callback = callback
+                callbackReady.fulfill()
+                return 0
+            },
+            cancelConversation: { conversation in
+                events.append("cancel-enter:\(conversation)")
+                DispatchQueue.global().async {
+                    events.append("callback-enter")
+                    callbackBox.callback?(nil, true, nil).finish()
+                    events.append("callback-exit")
+                    callbackExited.signal()
+                }
+                _ = callbackExited.wait(timeout: .now() + 0.25)
+                events.append("cancel-exit:\(conversation)")
+            }
+        )
+
+        let task = Task.detached { try await runner.run(messageJSON: "request") }
+        await fulfillment(of: [callbackReady], timeout: 1)
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("Cancellation should win the terminal callback race")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        await fulfillment(of: [conversationDeleted], timeout: 1)
+
+        let values = events.values
+        XCTAssertEqual(values.filter { $0 == "delete:17" }.count, 1)
+        let cancelEnterIndex = values.firstIndex(of: "cancel-enter:17")
+        let callbackEnterIndex = values.firstIndex(of: "callback-enter")
+        let cancelExitIndex = values.firstIndex(of: "cancel-exit:17")
+        let deleteIndex = values.firstIndex(of: "delete:17")
+        XCTAssertNotNil(cancelEnterIndex)
+        XCTAssertNotNil(callbackEnterIndex)
+        XCTAssertNotNil(cancelExitIndex)
+        XCTAssertNotNil(deleteIndex)
+        if let cancelEnterIndex, let callbackEnterIndex, let cancelExitIndex, let deleteIndex {
+            XCTAssertLessThan(cancelEnterIndex, callbackEnterIndex)
+            XCTAssertLessThan(callbackEnterIndex, cancelExitIndex)
+            XCTAssertLessThan(cancelExitIndex, deleteIndex)
+        }
+    }
+
+    func testTerminalCallbackDoesNotDeleteConversationUntilCallbackExit() async throws {
+        let callbackReady = expectation(description: "stream callback installed")
+        let conversationDeleted = expectation(description: "conversation deleted")
+        let callbackBox = StreamCallbackBox()
+        let events = LockedEvents()
+        let runner = LiteRTStreamingConversationCommandRunner<Int>(
+            makeConversation: {
+                events.append("create")
+                return 19
+            },
+            deleteConversation: { conversation in
+                events.append("delete:\(conversation)")
+                conversationDeleted.fulfill()
+            },
+            startStream: { _, _, callback in
+                callbackBox.callback = callback
+                callbackReady.fulfill()
+                return 0
+            },
+            cancelConversation: { _ in
+                XCTFail("A successful stream must not be cancelled")
+            }
+        )
+
+        let task = Task { try await runner.run(messageJSON: "request") }
+        await fulfillment(of: [callbackReady], timeout: 1)
+        let callbackExit = try XCTUnwrap(callbackBox.callback?("complete", true, nil))
+        XCTAssertFalse(events.values.contains("delete:19"))
+
+        callbackExit.finish()
+        let output = try await task.value
+        XCTAssertEqual(output, "complete")
+        await fulfillment(of: [conversationDeleted], timeout: 1)
+        XCTAssertEqual(events.values, ["create", "delete:19"])
+    }
+
+    func testTerminalCleanupRunsOffCallbackAndResumesOnlyAfterDeletion() async throws {
+        let callbackReady = expectation(description: "stream callback installed")
+        let cleanupStarted = expectation(description: "cleanup started")
+        let conversationDeleted = expectation(description: "conversation deleted")
+        let callbackReturned = DispatchSemaphore(value: 0)
+        let cleanupQueue = DispatchQueue(label: "LiteRTConversationCommandRunnerTests.cleanup")
+        let cleanupQueueKey = DispatchSpecificKey<Bool>()
+        cleanupQueue.setSpecific(key: cleanupQueueKey, value: true)
+        let callbackBox = StreamCallbackBox()
+        let events = LockedEvents()
+        let runner = LiteRTStreamingConversationCommandRunner<Int>(
+            makeConversation: {
+                events.append("create")
+                return 21
+            },
+            deleteConversation: { conversation in
+                XCTAssertEqual(DispatchQueue.getSpecific(key: cleanupQueueKey), true)
+                events.append("cleanup-enter")
+                cleanupStarted.fulfill()
+                _ = callbackReturned.wait(timeout: .now() + 2)
+                events.append("delete:\(conversation)")
+                conversationDeleted.fulfill()
+            },
+            startStream: { _, _, callback in
+                callbackBox.callback = callback
+                callbackReady.fulfill()
+                return 0
+            },
+            cancelConversation: { _ in
+                XCTFail("A successful stream must not be cancelled")
+            },
+            scheduleCleanup: { action in
+                cleanupQueue.async(execute: action)
+            }
+        )
+
+        let task = Task {
+            let output = try await runner.run(messageJSON: "request")
+            events.append("runner-complete")
+            return output
+        }
+        await fulfillment(of: [callbackReady], timeout: 1)
+        let callback = try XCTUnwrap(callbackBox.callback)
+        let callbackExit = callback("complete", true, nil)
+
+        finishLiteRTStreamCallback(callbackExit) {
+            events.append("release-context")
+        }
+        events.append("bridge-return")
+        await fulfillment(of: [cleanupStarted], timeout: 1)
+
+        XCTAssertFalse(events.values.contains("delete:21"))
+        XCTAssertFalse(events.values.contains("runner-complete"))
+        events.append("native-callback-returned")
+        callbackReturned.signal()
+
+        let output = try await task.value
+        XCTAssertEqual(output, "complete")
+        await fulfillment(of: [conversationDeleted], timeout: 1)
+        let values = events.values
+        XCTAssertEqual(values.filter { $0 == "delete:21" }.count, 1)
+        XCTAssertLessThan(
+            try XCTUnwrap(values.firstIndex(of: "release-context")),
+            try XCTUnwrap(values.firstIndex(of: "cleanup-enter"))
+        )
+        XCTAssertLessThan(
+            try XCTUnwrap(values.firstIndex(of: "native-callback-returned")),
+            try XCTUnwrap(values.firstIndex(of: "delete:21"))
+        )
+        XCTAssertLessThan(
+            try XCTUnwrap(values.firstIndex(of: "delete:21")),
+            try XCTUnwrap(values.firstIndex(of: "runner-complete"))
+        )
+    }
+
+    func testExclusiveGenerationGateSerializesWaiters() async {
+        let gate = LiteRTExclusiveGenerationGate()
+        let secondAcquired = expectation(description: "second generation acquired permit")
+        let events = LockedEvents()
+
+        await gate.acquire()
+        let waiter = Task {
+            await gate.acquire()
+            events.append("second-acquired")
+            secondAcquired.fulfill()
+            await gate.release()
+        }
+
+        var waitingCount = await gate.waitingCount
+        for _ in 0..<100 where waitingCount == 0 {
+            await Task.yield()
+            waitingCount = await gate.waitingCount
+        }
+        XCTAssertEqual(waitingCount, 1)
+        XCTAssertFalse(events.values.contains("second-acquired"))
+
+        await gate.release()
+        await fulfillment(of: [secondAcquired], timeout: 1)
+        await waiter.value
+        XCTAssertEqual(events.values, ["second-acquired"])
+    }
+
+    func testExclusiveGenerationGateCancelledWaiterHandsPermitToNextWaiter() async {
+        let gate = LiteRTExclusiveGenerationGate()
+        let cancelledWaiterReleased = expectation(description: "cancelled waiter released permit")
+        let nextWaiterAcquired = expectation(description: "next waiter acquired permit")
+        let events = LockedEvents()
+
+        await gate.acquire()
+        let cancelledWaiter = Task {
+            await gate.acquire()
+            events.append(Task.isCancelled ? "cancelled-waiter" : "unexpected-active-waiter")
+            cancelledWaiterReleased.fulfill()
+            await gate.release()
+        }
+
+        var waitingCount = await gate.waitingCount
+        for _ in 0..<100 where waitingCount < 1 {
+            await Task.yield()
+            waitingCount = await gate.waitingCount
+        }
+        XCTAssertEqual(waitingCount, 1)
+        cancelledWaiter.cancel()
+
+        let nextWaiter = Task {
+            await gate.acquire()
+            events.append("next-waiter")
+            nextWaiterAcquired.fulfill()
+            await gate.release()
+        }
+
+        waitingCount = await gate.waitingCount
+        for _ in 0..<100 where waitingCount < 2 {
+            await Task.yield()
+            waitingCount = await gate.waitingCount
+        }
+        XCTAssertEqual(waitingCount, 2)
+
+        await gate.release()
+        await fulfillment(of: [cancelledWaiterReleased, nextWaiterAcquired], timeout: 1)
+        await cancelledWaiter.value
+        await nextWaiter.value
+        XCTAssertEqual(events.values, ["cancelled-waiter", "next-waiter"])
+    }
+
+    func testCancellationWhileStartStreamIsBlockedCancelsExactlyOnceAfterSuccessfulStart() async {
+        let startEntered = expectation(description: "native start entered")
+        let cancelCalled = expectation(description: "native cancel called")
+        let conversationDeleted = expectation(description: "conversation deleted")
+        let allowStartToReturn = DispatchSemaphore(value: 0)
+        let callbackBox = StreamCallbackBox()
+        let events = LockedEvents()
+        let runner = LiteRTStreamingConversationCommandRunner<Int>(
+            makeConversation: { 23 },
+            deleteConversation: { conversation in
+                events.append("delete:\(conversation)")
+                conversationDeleted.fulfill()
+            },
+            startStream: { conversation, _, callback in
+                events.append("start-enter:\(conversation)")
+                callbackBox.callback = callback
+                startEntered.fulfill()
+                _ = allowStartToReturn.wait(timeout: .now() + 2)
+                events.append("start-exit:\(conversation)")
+                return 0
+            },
+            cancelConversation: { conversation in
+                events.append("cancel:\(conversation)")
+                cancelCalled.fulfill()
+            }
+        )
+
+        let task = Task { try await runner.run(messageJSON: "request") }
+        await fulfillment(of: [startEntered], timeout: 1)
+        task.cancel()
+        task.cancel()
+        XCTAssertFalse(events.values.contains("cancel:23"))
+
+        allowStartToReturn.signal()
+        await fulfillment(of: [cancelCalled], timeout: 1)
+        XCTAssertEqual(events.values.filter { $0 == "cancel:23" }.count, 1)
+        callbackBox.callback?(nil, true, nil).finish()
+
+        do {
+            _ = try await task.value
+            XCTFail("A cancelled task must not return model output")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        await fulfillment(of: [conversationDeleted], timeout: 1)
+        XCTAssertEqual(events.values, [
+            "start-enter:23",
+            "start-exit:23",
+            "cancel:23",
+            "delete:23",
+        ])
+    }
+
+    func testCancellationDuringFailedStartNeverCallsNativeCancel() async {
+        let startEntered = expectation(description: "native start entered")
+        let conversationDeleted = expectation(description: "conversation deleted")
+        let allowStartToReturn = DispatchSemaphore(value: 0)
+        let events = LockedEvents()
+        let runner = LiteRTStreamingConversationCommandRunner<Int>(
+            makeConversation: { 29 },
+            deleteConversation: { conversation in
+                events.append("delete:\(conversation)")
+                conversationDeleted.fulfill()
+            },
+            startStream: { conversation, _, _ in
+                events.append("start-enter:\(conversation)")
+                startEntered.fulfill()
+                _ = allowStartToReturn.wait(timeout: .now() + 2)
+                events.append("start-failed:\(conversation)")
+                return 1
+            },
+            cancelConversation: { conversation in
+                events.append("unexpected-cancel:\(conversation)")
+            }
+        )
+
+        let task = Task { try await runner.run(messageJSON: "request") }
+        await fulfillment(of: [startEntered], timeout: 1)
+        task.cancel()
+        task.cancel()
+        allowStartToReturn.signal()
+
+        do {
+            _ = try await task.value
+            XCTFail("A cancelled failed-start task must not return output")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+        await fulfillment(of: [conversationDeleted], timeout: 1)
+        XCTAssertEqual(events.values, [
+            "start-enter:29",
+            "start-failed:29",
+            "delete:29",
+        ])
+    }
+
+    func testStreamingReconstructsLiteRTMessageJSONAndStrictEnvelope() async throws {
+        let envelopeJSON = #"{"schema_version":1,"command_id":"cmd_stream_1","intent":"search_history","args":{"q":"你好 \"Klaus\""},"risk_level":"low","needs_confirmation":false,"idempotency_key":"idem_stream_1","confidence":0.96,"locale":"zh-Hans-HK","timezone":"Asia/Hong_Kong"}"#
+        let split = try XCTUnwrap(envelopeJSON.range(of: #"\"Klaus\""#)?.lowerBound)
+        let firstFragment = String(envelopeJSON[..<split])
+        let secondFragment = String(envelopeJSON[split...])
+        let firstMessage = try liteRTMessageJSON(content: firstFragment, asParts: true)
+        let secondMessage = try liteRTMessageJSON(content: secondFragment, asParts: false)
+        let runner = LiteRTStreamingConversationCommandRunner<Int>(
+            makeConversation: { 31 },
+            deleteConversation: { _ in },
+            startStream: { _, _, callback in
+                callback(
+                    LiteRTModelOutputParser.responseText(from: firstMessage),
+                    false,
+                    nil
+                ).finish()
+                callback(
+                    LiteRTModelOutputParser.responseText(from: secondMessage),
+                    false,
+                    nil
+                ).finish()
+                callback(nil, true, nil).finish()
+                return 0
+            },
+            cancelConversation: { _ in
+                XCTFail("A successful stream must not be cancelled")
+            }
+        )
+
+        let output = try await runner.run(messageJSON: "request")
+        let data = try LiteRTModelOutputParser.extractJSONObject(from: output)
+        let envelope = try CommandEnvelope.decodeStrict(from: data)
+
+        XCTAssertEqual(envelope.commandID, "cmd_stream_1")
+        XCTAssertEqual(envelope.intent, "search_history")
+        XCTAssertEqual(envelope.args["q"], .string("你好 \"Klaus\""))
+    }
+
+    private func liteRTMessageJSON(content: String, asParts: Bool) throws -> String {
+        let object: [String: Any]
+        if asParts {
+            object = ["content": [["type": "text", "text": content]]]
+        } else {
+            object = ["content": content]
+        }
+        let data = try JSONSerialization.data(withJSONObject: object)
+        return try XCTUnwrap(String(data: data, encoding: .utf8))
+    }
+}
+
+private final class LockedEvents: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String] = []
+
+    var values: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func append(_ value: String) {
+        lock.lock()
+        storage.append(value)
+        lock.unlock()
+    }
+}
+
+private final class StreamCallbackBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: LiteRTStreamingConversationCommandRunner<Int>.StreamCallback?
+
+    var callback: LiteRTStreamingConversationCommandRunner<Int>.StreamCallback? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage
+        }
+        set {
+            lock.lock()
+            storage = newValue
+            lock.unlock()
+        }
+    }
 }
 
 private final class StubArtifactVerifier: ModelArtifactVerifying {
