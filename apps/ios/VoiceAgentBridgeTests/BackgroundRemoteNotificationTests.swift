@@ -4,27 +4,18 @@ import XCTest
 
 final class BackgroundRemoteNotificationTests: XCTestCase {
     func testCommandHintSchedulesReconciliationAndCompletesWithNewData() {
-        let center = NotificationCenter()
+        let dispatcher = BackgroundReconciliationDispatcher()
         let delegate = AppDelegate(
-            notificationCenter: center,
+            backgroundReconciliationDispatcher: dispatcher,
             backgroundCompletionTimeout: 60
         )
-        delegate.activateBackgroundReconciliationDelivery()
 
         var receivedHints: [RemoteNotificationWakeHint] = []
-        let observer = center.addObserver(
-            forName: .backgroundReconciliationRequested,
-            object: nil,
-            queue: nil
-        ) { notification in
-            guard let request = notification.object as? BackgroundReconciliationRequest else {
-                return XCTFail("Expected a background reconciliation request")
-            }
+        dispatcher.bind { request in
             receivedHints.append(request.hint)
             XCTAssertTrue(request.claim())
             request.complete(.newData)
         }
-        defer { center.removeObserver(observer) }
 
         var completionResults: [UIBackgroundFetchResult] = []
         delegate.application(
@@ -42,9 +33,9 @@ final class BackgroundRemoteNotificationTests: XCTestCase {
     }
 
     func testSessionHintReceivedBeforeBindingIsReplayedForReconciliation() {
-        let center = NotificationCenter()
+        let dispatcher = BackgroundReconciliationDispatcher()
         let delegate = AppDelegate(
-            notificationCenter: center,
+            backgroundReconciliationDispatcher: dispatcher,
             backgroundCompletionTimeout: 60
         )
 
@@ -61,43 +52,27 @@ final class BackgroundRemoteNotificationTests: XCTestCase {
         XCTAssertTrue(receivedHints.isEmpty)
         XCTAssertTrue(completionResults.isEmpty)
 
-        let observer = center.addObserver(
-            forName: .backgroundReconciliationRequested,
-            object: nil,
-            queue: nil
-        ) { notification in
-            guard let request = notification.object as? BackgroundReconciliationRequest else {
-                return XCTFail("Expected a background reconciliation request")
-            }
+        dispatcher.bind { request in
             receivedHints.append(request.hint)
             XCTAssertTrue(request.claim())
             request.complete(.newData)
         }
-        defer { center.removeObserver(observer) }
-
-        delegate.activateBackgroundReconciliationDelivery()
 
         XCTAssertEqual(receivedHints, [.session])
         XCTAssertEqual(completionResults, [.newData])
     }
 
     func testMalformedPayloadCompletesWithNoDataWithoutSchedulingReconciliation() {
-        let center = NotificationCenter()
+        let dispatcher = BackgroundReconciliationDispatcher()
         let delegate = AppDelegate(
-            notificationCenter: center,
+            backgroundReconciliationDispatcher: dispatcher,
             backgroundCompletionTimeout: 60
         )
-        delegate.activateBackgroundReconciliationDelivery()
 
         var reconciliationCount = 0
-        let observer = center.addObserver(
-            forName: .backgroundReconciliationRequested,
-            object: nil,
-            queue: nil
-        ) { _ in
+        dispatcher.bind { _ in
             reconciliationCount += 1
         }
-        defer { center.removeObserver(observer) }
 
         var completionResults: [UIBackgroundFetchResult] = []
         delegate.handleRemoteNotification(
@@ -135,5 +110,40 @@ final class BackgroundRemoteNotificationTests: XCTestCase {
         timedOutRequest.complete(.failed)
         timedOutRequest.complete(.newData)
         XCTAssertEqual(timeoutResults, [.failed])
+    }
+
+    func testBackgroundFetchResultReflectsAuthRefreshAndCursorChange() {
+        XCTAssertEqual(
+            AppStore.backgroundFetchResult(
+                authenticated: false,
+                refreshCompleted: false,
+                cursorChanged: false
+            ),
+            .noData
+        )
+        XCTAssertEqual(
+            AppStore.backgroundFetchResult(
+                authenticated: true,
+                refreshCompleted: false,
+                cursorChanged: false
+            ),
+            .failed
+        )
+        XCTAssertEqual(
+            AppStore.backgroundFetchResult(
+                authenticated: true,
+                refreshCompleted: true,
+                cursorChanged: false
+            ),
+            .noData
+        )
+        XCTAssertEqual(
+            AppStore.backgroundFetchResult(
+                authenticated: true,
+                refreshCompleted: true,
+                cursorChanged: true
+            ),
+            .newData
+        )
     }
 }

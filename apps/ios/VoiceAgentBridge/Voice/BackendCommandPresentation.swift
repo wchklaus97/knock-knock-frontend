@@ -152,7 +152,7 @@ enum ActiveCommandCheckpointReducer {
             envelope: nil,
             validatedPresentation: response.presentation?.validated(for: response.state),
             pendingConfirmation: response.state == "awaiting_confirmation"
-                ? (confirmation ?? current.pendingConfirmation)
+                ? confirmation
                 : nil,
             lastAnnouncedVersion: current.lastAnnouncedVersion,
             backendOrigin: current.backendOrigin,

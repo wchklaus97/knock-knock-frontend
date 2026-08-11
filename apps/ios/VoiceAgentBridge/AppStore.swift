@@ -2,6 +2,35 @@ import Foundation
 import Combine
 import Security
 import UserNotifications
+import UIKit
+
+struct PendingRetryCoordinator {
+    private(set) var isRunning = false
+    private(set) var rerunRequested = false
+
+    /// Starts a retry pass or records that the active pass must run once more.
+    mutating func beginOrRequestRerun() -> Bool {
+        guard !isRunning else {
+            rerunRequested = true
+            return false
+        }
+        isRunning = true
+        return true
+    }
+
+    /// Consumes one queued pass. Requests arriving during that pass can queue
+    /// the following pass without being overwritten.
+    mutating func consumeRerun() -> Bool {
+        let shouldRerun = rerunRequested
+        rerunRequested = false
+        return shouldRerun
+    }
+
+    mutating func finish() {
+        isRunning = false
+        rerunRequested = false
+    }
+}
 
 @MainActor
 final class AppStore: ObservableObject {
@@ -58,6 +87,7 @@ final class AppStore: ObservableObject {
     let client = APIClient()
     private let localStore: SQLiteStore
     private let activeCommandCoordinator: ActiveCommandCheckpointCoordinator
+    private let backgroundReconciliationDispatcher: BackgroundReconciliationDispatcher
     private lazy var eventTransport = client.makeSessionEventTransport()
     private var refreshToken: String?
     private var currentUserID: String?
@@ -71,7 +101,7 @@ final class AppStore: ObservableObject {
     private var foregroundReconciliationIncludeAgents = true
     private var foregroundNeedsReconciliation = true
     private var pendingFullSync = false
-    private var pendingRetryInProgress = false
+    private var pendingRetryCoordinator = PendingRetryCoordinator()
     private var eventStreamGeneration = 0
     private var appliedCursor: String?
     private var knownPushIds = Set<String>()
@@ -119,9 +149,11 @@ final class AppStore: ObservableObject {
 
     init(
         localStore: SQLiteStore = .shared,
-        commandSynthesizer: VoiceSynthesizing = SystemVoiceSynthesizer()
+        commandSynthesizer: VoiceSynthesizing = SystemVoiceSynthesizer(),
+        backgroundReconciliationDispatcher: BackgroundReconciliationDispatcher = .shared
     ) {
         self.localStore = localStore
+        self.backgroundReconciliationDispatcher = backgroundReconciliationDispatcher
         activeCommandCoordinator = ActiveCommandCheckpointCoordinator(
             store: localStore,
             synthesizer: commandSynthesizer
@@ -204,6 +236,15 @@ final class AppStore: ObservableObject {
             client.baseURL = url
         }
         restoreActiveCommandCheckpoint()
+        backgroundReconciliationDispatcher.bind { [weak self] request in
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    request.complete(.failed)
+                    return
+                }
+                await self.handleBackgroundReconciliation(request)
+            }
+        }
     }
 
     private var activeCommandScope: ActiveCommandScope? {
@@ -319,6 +360,56 @@ final class AppStore: ObservableObject {
         case .ephemeral: return "ephemeral"
         @unknown default: return "unknown"
         }
+    }
+
+    private func handleBackgroundReconciliation(
+        _ request: BackgroundReconciliationRequest
+    ) async {
+        guard request.claim() else { return }
+        guard token != nil else {
+            request.complete(.noData)
+            return
+        }
+
+        let previousCursor = appliedCursor
+        let previousRefreshAt = lastRefreshAt
+        await refresh(includeAgents: false)
+
+        // A wake can arrive while a foreground/manual refresh is already
+        // running. Wait for that owner and any queued reconciliation instead
+        // of reporting success before authenticated REST has completed.
+        var refreshWaitAttempts = 0
+        while isRefreshing && refreshWaitAttempts < 200 {
+            refreshWaitAttempts += 1
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        if let foregroundReconciliationTask {
+            await foregroundReconciliationTask.value
+        }
+        if let reconciliationTask {
+            await reconciliationTask.value
+        }
+
+        guard token != nil else {
+            request.complete(.noData)
+            return
+        }
+        let refreshCompleted = lastRefreshAt != nil && lastRefreshAt != previousRefreshAt
+        request.complete(Self.backgroundFetchResult(
+            authenticated: true,
+            refreshCompleted: refreshCompleted,
+            cursorChanged: appliedCursor != previousCursor
+        ))
+    }
+
+    nonisolated static func backgroundFetchResult(
+        authenticated: Bool,
+        refreshCompleted: Bool,
+        cursorChanged: Bool
+    ) -> UIBackgroundFetchResult {
+        guard authenticated else { return .noData }
+        guard refreshCompleted else { return .failed }
+        return cursorChanged ? .newData : .noData
     }
 
     @discardableResult
@@ -525,12 +616,22 @@ final class AppStore: ObservableObject {
     }
 
     func searchHistory(_ query: String) async -> SearchResponse? {
+        guard let query = Self.normalizedHistorySearchQuery(query) else {
+            errorMessage = "Search must contain between 1 and 200 characters."
+            return nil
+        }
         do {
             return try await client.search(query: query)
         } catch {
             errorMessage = error.localizedDescription
             return nil
         }
+    }
+
+    nonisolated static func normalizedHistorySearchQuery(_ query: String) -> String? {
+        let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty, normalized.count <= 200 else { return nil }
+        return normalized
     }
 
     func exportSession(_ sessionId: String) async -> SessionExportResponse? {
@@ -773,13 +874,15 @@ final class AppStore: ObservableObject {
             errorMessage = "This command needs server confirmation metadata before it can run."
             return
         }
-        let token = response.confirmation_token
-            ?? pendingCommandConfirmation
-                .flatMap { $0.command_id == response.command_id ? $0.confirmation_token : nil }
+        let token = activeCommandCoordinator.durablePendingConfirmation
+            .flatMap { $0.command_id == response.command_id ? $0.confirmation_token : nil }
         guard let token else {
             // GET intentionally does not repeat a one-time token. If the
-            // create response was lost before persistence, fail closed and
-            // require a new command instead of inventing or reusing a token.
+            // backend version advanced because another replay rotated the
+            // authority, discard any older UI copy rather than offering a
+            // token which can no longer confirm this command.
+            pendingCommandConfirmation = nil
+            localStore.clearPendingCommandConfirmation()
             errorMessage = "This command needs a fresh confirmation token before it can run."
             return
         }
@@ -1784,22 +1887,23 @@ final class AppStore: ObservableObject {
     }
 
     private func retryPendingOperations(generation: Int? = nil) async {
-        guard !pendingOperations.isEmpty, !pendingRetryInProgress else { return }
-        pendingRetryInProgress = true
-        defer { pendingRetryInProgress = false }
+        guard !pendingOperations.isEmpty else { return }
+        guard pendingRetryCoordinator.beginOrRequestRerun() else { return }
+        defer { pendingRetryCoordinator.finish() }
         var completedAny = false
-        let operations = pendingOperations
-        for operation in operations {
-            if operation.status == .failed {
-                continue
-            }
-            var next = operation
-            next.status = .inFlight
-            next.lastError = nil
-            next.failureCode = nil
-            upsertPendingOperation(next)
-            do {
-                switch operation.kind {
+        repeat {
+            let operations = pendingOperations
+            for operation in operations {
+                if operation.status == .failed {
+                    continue
+                }
+                var next = operation
+                next.status = .inFlight
+                next.lastError = nil
+                next.failureCode = nil
+                upsertPendingOperation(next)
+                do {
+                    switch operation.kind {
                     case .reply:
                         guard let actionKey = operation.action_key else {
                             next.status = .failed
@@ -1828,44 +1932,45 @@ final class AppStore: ObservableObject {
                             confirm: confirm,
                             idempotencyKey: operation.id
                         )
-                }
-                guard Self.retryContextIsActive(generation: generation, currentGeneration: reconciliationGeneration, tokenAvailable: token != nil) else {
-                    return
-                }
-                removePendingOperation(operation.id)
-                completedAny = true
-            } catch let error as APIClientError {
-                guard Self.retryContextIsActive(generation: generation, currentGeneration: reconciliationGeneration, tokenAvailable: token != nil) else {
-                    return
-                }
-                if Self.shouldRetryPendingOperation(error) {
-                    if case let .badStatus(_, _, metadata) = error,
-                       let requestID = metadata.requestID
-                    {
-                        print("[pending] retryable request=\(requestID) retry_after=\(metadata.retryAfter ?? 0)")
                     }
-                    next.status = .pending
-                    next.lastError = nil
-                    next.failureCode = nil
-                    upsertPendingOperation(next)
-                } else {
+                    guard Self.retryContextIsActive(generation: generation, currentGeneration: reconciliationGeneration, tokenAvailable: token != nil) else {
+                        return
+                    }
+                    removePendingOperation(operation.id)
+                    completedAny = true
+                } catch let error as APIClientError {
+                    guard Self.retryContextIsActive(generation: generation, currentGeneration: reconciliationGeneration, tokenAvailable: token != nil) else {
+                        return
+                    }
+                    if Self.shouldRetryPendingOperation(error) {
+                        if case let .badStatus(_, _, metadata) = error,
+                           let requestID = metadata.requestID
+                        {
+                            print("[pending] retryable request=\(requestID) retry_after=\(metadata.retryAfter ?? 0)")
+                        }
+                        next.status = .pending
+                        next.lastError = nil
+                        next.failureCode = nil
+                        upsertPendingOperation(next)
+                    } else {
+                        upsertPendingOperation(Self.pendingOperationAfterPermanentFailure(
+                            operation,
+                            error: error
+                        ))
+                    }
+                } catch {
+                    // Permanent failures stay visible so the user can retry after
+                    // fixing the cause or explicitly discard the saved intent.
+                    guard Self.retryContextIsActive(generation: generation, currentGeneration: reconciliationGeneration, tokenAvailable: token != nil) else {
+                        return
+                    }
                     upsertPendingOperation(Self.pendingOperationAfterPermanentFailure(
                         operation,
                         error: error
                     ))
                 }
-            } catch {
-                // Permanent failures stay visible so the user can retry after
-                // fixing the cause or explicitly discard the saved intent.
-                guard Self.retryContextIsActive(generation: generation, currentGeneration: reconciliationGeneration, tokenAvailable: token != nil) else {
-                    return
-                }
-                upsertPendingOperation(Self.pendingOperationAfterPermanentFailure(
-                    operation,
-                    error: error
-                ))
             }
-        }
+        } while pendingRetryCoordinator.consumeRerun() && token != nil
         if completedAny {
             try? await loadRemoteState(includeAgents: false, generation: generation)
         }

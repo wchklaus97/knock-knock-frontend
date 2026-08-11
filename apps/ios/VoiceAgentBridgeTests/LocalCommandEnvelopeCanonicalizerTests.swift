@@ -180,7 +180,6 @@ final class LocalCommandEnvelopeCanonicalizerTests: XCTestCase {
             ("send_message", #"{"recipient":"John","to":"John","body":"Hello"}"#),
             ("send_message", #"{"recipient":"John","body":"Hello","execute_now":true}"#),
         ]
-        invalidCases.append(("search_history", #"{"q":"x"}"#))
         invalidCases.append((
             "create_reminder",
             #"{"title":"\#(String(repeating: "t", count: 201))","due_at":"tomorrow"}"#
@@ -201,6 +200,33 @@ final class LocalCommandEnvelopeCanonicalizerTests: XCTestCase {
                 message: "\(intent): \(args)"
             )
         }
+    }
+
+    func testSingleCharacterHistoryQueriesUseTheSameContractForEveryLocale() throws {
+        for query in ["x", "家"] {
+            let envelope = try decodeCanonical(
+                LocalCommandEnvelopeCanonicalizer(makeIdentifier: { "fixed" }).canonicalize(
+                    modelOutput: modelJSON(
+                        intent: "search_history",
+                        args: #"{"q":"\#(query)"}"#
+                    ),
+                    context: trustedContext
+                )
+            )
+            XCTAssertEqual(envelope.args["q"], .string(query))
+        }
+    }
+
+    func testHistoryQueryRejectsMoreThanTwoHundredCharacters() {
+        XCTAssertThrowsError(
+            try LocalCommandEnvelopeCanonicalizer(makeIdentifier: { "fixed" }).canonicalize(
+                modelOutput: modelJSON(
+                    intent: "search_history",
+                    args: #"{"q":"\#(String(repeating: "x", count: 201))"}"#
+                ),
+                context: trustedContext
+            )
+        )
     }
 
     func testUnknownMissingWrongAndExtraTopLevelFieldsAreRejected() {

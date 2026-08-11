@@ -427,6 +427,28 @@ final class ModelsDecodingTests: XCTestCase {
         XCTAssertFalse(failed.isPending)
     }
 
+    func testPendingRetryCoordinatorQueuesManualRetryDuringActivePass() {
+        var coordinator = PendingRetryCoordinator()
+
+        XCTAssertTrue(coordinator.beginOrRequestRerun())
+        XCTAssertTrue(coordinator.isRunning)
+        XCTAssertFalse(coordinator.beginOrRequestRerun())
+        XCTAssertTrue(coordinator.rerunRequested)
+        XCTAssertTrue(coordinator.consumeRerun())
+        XCTAssertFalse(coordinator.consumeRerun())
+
+        coordinator.finish()
+        XCTAssertFalse(coordinator.isRunning)
+        XCTAssertTrue(coordinator.beginOrRequestRerun())
+    }
+
+    func testHistorySearchQueryMatchesOneToTwoHundredCharacterContract() {
+        XCTAssertEqual(AppStore.normalizedHistorySearchQuery(" x "), "x")
+        XCTAssertEqual(AppStore.normalizedHistorySearchQuery(" 家 "), "家")
+        XCTAssertNil(AppStore.normalizedHistorySearchQuery("   "))
+        XCTAssertNil(AppStore.normalizedHistorySearchQuery(String(repeating: "x", count: 201)))
+    }
+
     func testHistoryRetrievalAndPushReadModelsDecode() throws {
         let page = try decoder.decode(
             MessagePage.self,

@@ -66,10 +66,36 @@ final class BackgroundReconciliationRequest {
     }
 }
 
-extension Notification.Name {
-    static let backgroundReconciliationRequested = Notification.Name(
-        "hk.knockknock.backgroundReconciliationRequested"
-    )
+final class BackgroundReconciliationDispatcher {
+    static let shared = BackgroundReconciliationDispatcher()
+
+    typealias Handler = (BackgroundReconciliationRequest) -> Void
+
+    private let lock = NSLock()
+    private var handler: Handler?
+    private var pending: [BackgroundReconciliationRequest] = []
+
+    func submit(_ request: BackgroundReconciliationRequest) {
+        lock.lock()
+        if let handler {
+            lock.unlock()
+            handler(request)
+        } else {
+            pending.append(request)
+            lock.unlock()
+        }
+    }
+
+    /// Installs the process-level consumer and drains requests received during
+    /// a pure background launch before any SwiftUI view appears.
+    func bind(_ handler: @escaping Handler) {
+        lock.lock()
+        self.handler = handler
+        let queued = pending
+        pending.removeAll()
+        lock.unlock()
+        queued.forEach(handler)
+    }
 }
 
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
@@ -78,22 +104,20 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     var onNotificationDiagnostics: ((NotificationDiagnostics) -> Void)?
     private var onNotificationTap: ((String) -> Void)?
     private var pendingNotificationSessionId: String?
-    private let notificationCenter: NotificationCenter
+    private let backgroundReconciliationDispatcher: BackgroundReconciliationDispatcher
     private let backgroundCompletionTimeout: TimeInterval
-    private var backgroundReconciliationDeliveryIsActive = false
-    private var pendingBackgroundReconciliations: [BackgroundReconciliationRequest] = []
 
     override init() {
-        notificationCenter = .default
+        backgroundReconciliationDispatcher = .shared
         backgroundCompletionTimeout = 25
         super.init()
     }
 
     init(
-        notificationCenter: NotificationCenter,
+        backgroundReconciliationDispatcher: BackgroundReconciliationDispatcher,
         backgroundCompletionTimeout: TimeInterval = 25
     ) {
-        self.notificationCenter = notificationCenter
+        self.backgroundReconciliationDispatcher = backgroundReconciliationDispatcher
         self.backgroundCompletionTimeout = backgroundCompletionTimeout
         super.init()
     }
@@ -156,24 +180,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    /// Enables delivery after RootView has installed its NotificationCenter observer.
-    /// Requests received during a background launch remain queued until this point.
-    func activateBackgroundReconciliationDelivery() {
-        let activate = { [self] in
-            backgroundReconciliationDeliveryIsActive = true
-            let pending = pendingBackgroundReconciliations
-            pendingBackgroundReconciliations.removeAll()
-            for request in pending {
-                postBackgroundReconciliation(request)
-            }
-        }
-        if Thread.isMainThread {
-            activate()
-        } else {
-            DispatchQueue.main.async(execute: activate)
-        }
-    }
-
     func handleRemoteNotification(
         _ userInfo: [AnyHashable: Any],
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
@@ -191,25 +197,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             request.complete(.failed)
         }
 
-        let route = { [self] in
-            if backgroundReconciliationDeliveryIsActive {
-                postBackgroundReconciliation(request)
-            } else {
-                pendingBackgroundReconciliations.append(request)
-            }
-        }
-        if Thread.isMainThread {
-            route()
-        } else {
-            DispatchQueue.main.async(execute: route)
-        }
-    }
-
-    private func postBackgroundReconciliation(_ request: BackgroundReconciliationRequest) {
-        notificationCenter.post(
-            name: .backgroundReconciliationRequested,
-            object: request
-        )
+        backgroundReconciliationDispatcher.submit(request)
     }
 
     private func routeNotificationTap(_ notification: UNNotification) {
