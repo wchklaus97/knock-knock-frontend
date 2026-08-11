@@ -260,8 +260,8 @@ final class ModelsDecodingTests: XCTestCase {
 
     func testSQLiteStorePersistsCursorAndPendingQueue() throws {
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("knock-knock-(UUID().uuidString).sqlite")
-        defer { try? FileManager.default.removeItem(at: url) }
+            .appendingPathComponent("knock-knock-\(UUID().uuidString).sqlite")
+        defer { removeSQLiteArtifacts(at: url) }
 
         let store = SQLiteStore(databaseURL: url)
         XCTAssertTrue(store.isAvailable)
@@ -287,8 +287,8 @@ final class ModelsDecodingTests: XCTestCase {
 
     func testSQLiteStorePersistsCommandConfirmationAndClearsItWithUserData() throws {
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("knock-knock-confirmation-(UUID().uuidString).sqlite")
-        defer { try? FileManager.default.removeItem(at: url) }
+            .appendingPathComponent("knock-knock-confirmation-\(UUID().uuidString).sqlite")
+        defer { removeSQLiteArtifacts(at: url) }
 
         let store = SQLiteStore(databaseURL: url)
         let confirmation = PendingCommandConfirmation(
@@ -408,8 +408,8 @@ final class ModelsDecodingTests: XCTestCase {
 
     func testSQLiteStoreCachesMessagesAndRetrievals() throws {
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("knock-knock-history-(UUID().uuidString).sqlite")
-        defer { try? FileManager.default.removeItem(at: url) }
+            .appendingPathComponent("knock-knock-history-\(UUID().uuidString).sqlite")
+        defer { removeSQLiteArtifacts(at: url) }
 
         let store = SQLiteStore(databaseURL: url)
         let message = SessionMessage(
@@ -442,5 +442,255 @@ final class ModelsDecodingTests: XCTestCase {
         store.removeRetrieval(retrieval.retrieval_id)
         XCTAssertTrue(store.loadMessages(for: "ses_sqlite").isEmpty)
         XCTAssertTrue(store.loadRetrievals(for: "ses_sqlite").isEmpty)
+    }
+
+    func testPendingOperationUsesStableIdempotencyKeyAndExplicitTransitions() throws {
+        let operation = PendingOperation(
+            idempotencyKey: "idem_stable",
+            kind: .reply,
+            session_id: "ses_transition",
+            action_key: "ack",
+            action_id: nil,
+            confirm: nil,
+            created_at: Date(timeIntervalSince1970: 3_000),
+            status: .inFlight
+        )
+        XCTAssertEqual(operation.id, "idem_stable")
+        XCTAssertTrue(operation.isPending)
+        XCTAssertEqual(PendingOperation.Status.allCases.map(\.rawValue), ["pending", "in_flight", "failed"])
+
+        let legacy = try decoder.decode(
+            PendingOperation.self,
+            from: Data(
+                #"{"id":"legacy_idem","kind":"reply","session_id":"ses_legacy","action_key":"ack","created_at":"2026-08-09T00:00:00Z"}"#.utf8
+            )
+        )
+        XCTAssertEqual(legacy.idempotency_key, "legacy_idem")
+        XCTAssertEqual(legacy.status, .pending)
+    }
+
+    func testPendingOperationCoalescesOnlyAnUnfinishedSemanticIntent() {
+        let pending = PendingOperation(
+            idempotencyKey: "idem_pending",
+            kind: .reply,
+            session_id: "ses_coalesce",
+            action_key: "ack",
+            action_id: nil,
+            confirm: nil,
+            created_at: Date(timeIntervalSince1970: 3_100)
+        )
+        let duplicate = PendingOperation(
+            idempotencyKey: "idem_new",
+            kind: .reply,
+            session_id: pending.session_id,
+            action_key: pending.action_key,
+            action_id: nil,
+            confirm: nil,
+            created_at: Date(timeIntervalSince1970: 3_101)
+        )
+        var failed = pending
+        failed.status = .failed
+
+        XCTAssertTrue(AppStore.coalescesPendingIntent(pending, duplicate))
+        XCTAssertFalse(AppStore.coalescesPendingIntent(failed, duplicate))
+        XCTAssertNotEqual(pending.id, duplicate.id)
+    }
+
+    func testSQLiteStoreReopensCachesCursorAndRecoversInFlightIntent() throws {
+        let url = temporarySQLiteURL("restart")
+        defer { removeSQLiteArtifacts(at: url) }
+        let session = try decoder.decode(
+            Session.self,
+            from: Data(
+                #"{"session_id":"ses_restart","agent_id":"agt_1","skill_id":"research","state":"needs_user","facts":{"offline":true},"created_at":"2026-08-09T00:00:00Z","updated_at":"2026-08-09T00:00:00Z"}"#.utf8
+            )
+        )
+        let push = try decoder.decode(
+            DevPush.self,
+            from: Data(
+                #"{"push_id":"push_restart","session_id":"ses_restart","title":"Offline","body":"queued","created_at":"2026-08-09T00:00:00Z"}"#.utf8
+            )
+        )
+        let operation = PendingOperation(
+            idempotencyKey: "idem_restart",
+            kind: .confirm,
+            session_id: "ses_restart",
+            action_key: nil,
+            action_id: "act_restart",
+            confirm: true,
+            created_at: Date(timeIntervalSince1970: 4_000),
+            status: .inFlight
+        )
+
+        do {
+            let store = SQLiteStore(databaseURL: url)
+            XCTAssertTrue(store.isAvailable)
+            store.cacheSessions([session])
+            store.cachePushes([push])
+            store.saveCursor("received-1")
+            store.saveAppliedCursor("applied-1")
+            XCTAssertTrue(store.savePendingOperations([operation]))
+        }
+
+        do {
+            let reopened = SQLiteStore(databaseURL: url)
+            XCTAssertEqual(reopened.loadSessions().map(\.session_id), ["ses_restart"])
+            XCTAssertEqual(reopened.loadPushes().map(\.push_id), ["push_restart"])
+            XCTAssertEqual(reopened.loadCursor(), "received-1")
+            XCTAssertEqual(reopened.loadAppliedCursor(), "applied-1")
+            let recovered = try XCTUnwrap(reopened.loadPendingOperations().first)
+            XCTAssertEqual(recovered.idempotency_key, "idem_restart")
+            XCTAssertEqual(recovered.status, .pending)
+            XCTAssertTrue(recovered.isPending)
+        }
+    }
+
+    func testSQLiteStoreDeduplicatesQueuedEventsAndCommitsOnlyConsumedEvents() throws {
+        let url = temporarySQLiteURL("events")
+        defer { removeSQLiteArtifacts(at: url) }
+        let store = SQLiteStore(databaseURL: url)
+        XCTAssertTrue(store.recordPendingSyncEvent(
+            eventID: "event-1",
+            eventName: "session.updated",
+            receivedAt: Date(timeIntervalSince1970: 1)
+        ))
+        XCTAssertTrue(store.recordPendingSyncEvent(
+            eventID: "event-1",
+            eventName: "session.updated",
+            receivedAt: Date(timeIntervalSince1970: 2)
+        ))
+        XCTAssertTrue(store.recordPendingSyncEvent(
+            eventID: "event-2",
+            eventName: "message.created",
+            receivedAt: Date(timeIntervalSince1970: 3)
+        ))
+        XCTAssertEqual(store.loadPendingSyncEvents().map(\.event_id), ["event-1", "event-2"])
+        XCTAssertNil(store.loadAppliedCursor())
+
+        // event-2 represents an invalidation received while the first REST
+        // pass was in flight; consuming event-1 must not drop it.
+        XCTAssertTrue(store.commitReconciliation(
+            cursor: "cursor-1",
+            resetCursor: false,
+            consumedEventIDs: ["event-1"]
+        ))
+        XCTAssertEqual(store.loadPendingSyncEvents().map(\.event_id), ["event-2"])
+        XCTAssertEqual(store.loadAppliedCursor(), "cursor-1")
+        XCTAssertEqual(store.loadCursor(), "event-2")
+
+        XCTAssertTrue(store.commitReconciliation(
+            cursor: "cursor-2",
+            resetCursor: false,
+            consumedEventIDs: ["event-2"]
+        ))
+        XCTAssertTrue(store.loadPendingSyncEvents().isEmpty)
+        XCTAssertEqual(store.loadAppliedCursor(), "cursor-2")
+
+        XCTAssertTrue(store.commitReconciliation(
+            cursor: nil,
+            resetCursor: true,
+            consumedEventIDs: []
+        ))
+        XCTAssertNil(store.loadCursor())
+        XCTAssertNil(store.loadAppliedCursor())
+    }
+
+    func testLegacyUserDefaultsPendingFixtureMigratesToSQLiteOnce() throws {
+        let url = temporarySQLiteURL("legacy")
+        defer { removeSQLiteArtifacts(at: url) }
+        let pendingKey = "vab.test.pending.\(UUID().uuidString)"
+        let cursorKey = "vab.test.cursor.\(UUID().uuidString)"
+        defer {
+            UserDefaults.standard.removeObject(forKey: pendingKey)
+            UserDefaults.standard.removeObject(forKey: cursorKey)
+        }
+        let legacy = Data(
+            #"[{"id":"legacy-op","kind":"confirm","session_id":"ses_legacy","action_id":"act_legacy","confirm":true,"created_at":"2026-08-09T00:00:00Z"}]"#.utf8
+        )
+        UserDefaults.standard.set(legacy, forKey: pendingKey)
+        UserDefaults.standard.set("legacy-cursor", forKey: cursorKey)
+
+        let store = SQLiteStore(databaseURL: url)
+        store.migrateLegacyState(pendingKey: pendingKey, cursorKey: cursorKey)
+        XCTAssertEqual(store.loadPendingOperations().map(\.idempotency_key), ["legacy-op"])
+        XCTAssertEqual(store.loadAppliedCursor(), "legacy-cursor")
+        XCTAssertNil(UserDefaults.standard.data(forKey: pendingKey))
+        XCTAssertNil(UserDefaults.standard.string(forKey: cursorKey))
+    }
+
+    func testSyncGapPayloadRequestsFullSyncWithCursorResume() throws {
+        let response = try decoder.decode(
+            SyncResponse.self,
+            from: Data(
+                #"{"cursor":"cursor-9","next_cursor":"cursor-10","changes":[],"has_more":false,"gap":true}"#.utf8
+            )
+        )
+        XCTAssertTrue(response.requiresFullSync)
+        XCTAssertEqual(response.effectiveNextCursor, "cursor-10")
+    }
+
+    func testSSEParserCoalescesDataLinesAndPreservesEventID() throws {
+        var parser = ServerSentEventParser()
+        XCTAssertNil(parser.consume(": heartbeat"))
+        XCTAssertNil(parser.consume("id: event-42"))
+        XCTAssertNil(parser.consume("event: sync.required"))
+        XCTAssertNil(parser.consume("data: {"))
+        XCTAssertNil(parser.consume("data: \"reason\":\"gap\"}"))
+        let event = try XCTUnwrap(parser.consume(""))
+        XCTAssertEqual(event.id, "event-42")
+        XCTAssertEqual(event.name, "sync.required")
+        XCTAssertEqual(event.data, "{\n\"reason\":\"gap\"}")
+    }
+
+    func testSSEResumeHeadersAndForegroundLifecycleGate() {
+        let headers = APIClient.eventStreamResumeHeaders(since: "cursor resume")
+        XCTAssertEqual(headers["Accept"], "text/event-stream")
+        XCTAssertEqual(headers["Last-Event-ID"], "cursor resume")
+        XCTAssertNil(APIClient.eventStreamResumeHeaders(since: nil)["Last-Event-ID"])
+
+        XCTAssertTrue(
+            AppStore.shouldOpenEventStream(
+                tokenAvailable: true,
+                needsForegroundReconciliation: false,
+                streamExists: false,
+                reconciliationExists: false
+            )
+        )
+        XCTAssertFalse(
+            AppStore.shouldOpenEventStream(
+                tokenAvailable: true,
+                needsForegroundReconciliation: true,
+                streamExists: false,
+                reconciliationExists: false
+            )
+        )
+        XCTAssertFalse(
+            AppStore.shouldOpenEventStream(
+                tokenAvailable: true,
+                needsForegroundReconciliation: false,
+                streamExists: true,
+                reconciliationExists: false
+            )
+        )
+        XCTAssertFalse(
+            AppStore.shouldOpenEventStream(
+                tokenAvailable: true,
+                needsForegroundReconciliation: false,
+                streamExists: false,
+                reconciliationExists: true
+            )
+        )
+    }
+
+    private func temporarySQLiteURL(_ label: String) -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("knock-knock-\(label)-\(UUID().uuidString).sqlite")
+    }
+
+    private func removeSQLiteArtifacts(at url: URL) {
+        let fileManager = FileManager.default
+        for suffix in ["", "-wal", "-shm"] {
+            try? fileManager.removeItem(atPath: url.path + suffix)
+        }
     }
 }
