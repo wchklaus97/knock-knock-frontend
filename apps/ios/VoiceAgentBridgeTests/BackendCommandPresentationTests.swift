@@ -430,6 +430,46 @@ final class BackendCommandPresentationTests: XCTestCase {
         )
     }
 
+    func testNewerAwaitingConfirmationWithoutTokenInvalidatesOlderAuthority() throws {
+        let oldConfirmation = PendingCommandConfirmation(
+            command_id: "cmd_confirmation_race",
+            confirmation_token: "stale-one-time-token",
+            title: "Send message",
+            risk: "high",
+            confirm_required: true,
+            reversible: false
+        )
+        let current = ActiveCommandCheckpoint(
+            phase: .acknowledged,
+            commandID: "cmd_confirmation_race",
+            backendState: "awaiting_confirmation",
+            backendVersion: 8,
+            envelope: nil,
+            validatedPresentation: nil,
+            pendingConfirmation: oldConfirmation,
+            lastAnnouncedVersion: nil,
+            backendOrigin: "https://api.example.com:443",
+            ownerUserID: "usr_stable",
+            createdAt: Date(timeIntervalSince1970: 100)
+        )
+        let newerWithoutToken = try Self.response(
+            commandID: "cmd_confirmation_race",
+            state: "awaiting_confirmation",
+            result: nil,
+            version: 9
+        )
+
+        guard case let .replace(next) = ActiveCommandCheckpointReducer.apply(
+            response: newerWithoutToken,
+            expectedCommandID: "cmd_confirmation_race",
+            current: current
+        ) else {
+            return XCTFail("Expected the newer backend version to replace the checkpoint")
+        }
+        XCTAssertNil(next.pendingConfirmation)
+        XCTAssertEqual(next.backendVersion, 9)
+    }
+
     func testColdStartTerminalPresentationAndBackendTTSAreExactlyOncePerVersion() throws {
         let url = Self.temporarySQLiteURL("terminal")
         defer { Self.removeSQLiteArtifacts(at: url) }

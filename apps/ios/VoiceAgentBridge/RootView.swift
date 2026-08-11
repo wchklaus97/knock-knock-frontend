@@ -37,22 +37,6 @@ struct RootView: View {
             ProductionCommandConfirmationSheet(confirmation: confirmation)
                 .environmentObject(store)
         }
-        .onReceive(NotificationCenter.default.publisher(for: .backgroundReconciliationRequested)) { notification in
-            guard let request = notification.object as? BackgroundReconciliationRequest,
-                  request.claim()
-            else { return }
-            guard store.token != nil else {
-                request.complete(.noData)
-                return
-            }
-
-            // APNs carries only a wake hint. REST remains authoritative for
-            // every command, session, and presentation field.
-            Task { @MainActor in
-                defer { request.complete(.newData) }
-                await store.refresh(includeAgents: false)
-            }
-        }
         .onChange(of: scenePhase) { phase in
             switch phase {
             case .active:

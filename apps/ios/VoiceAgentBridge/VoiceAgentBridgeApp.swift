@@ -10,7 +10,6 @@ struct VoiceAgentBridgeApp: App {
             RootView()
                 .environmentObject(store)
                 .onAppear {
-                    appDelegate.activateBackgroundReconciliationDelivery()
                     store.bindPush(appDelegate)
                     appDelegate.requestPushAuthorization()
                     store.bootstrapIfLoggedIn()

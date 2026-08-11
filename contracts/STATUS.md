@@ -15,7 +15,13 @@ The current voice completion branch adds strict command canonicalization,
 backend-owned presentation, signed private-model delivery, and crash-safe
 SQLite command reconciliation. Foreground-only capture preflight,
 clarification routing, persistent failed offline operations, and silent APNs
-wake-to-REST reconciliation are also implemented. Exact test evidence is maintained in the
+wake-to-REST reconciliation are also implemented. A process-level dispatcher
+now handles wakes received before SwiftUI views appear, reports an accurate
+background fetch result, and pending-operation Retry requests are queued when
+an automatic pass is already active. Command wakes contain no resource or
+business identifier. A newer awaiting-confirmation version invalidates any
+older local token, and History search is uniformly trimmed and bounded to
+1–200 characters. Exact test evidence is maintained in the
 backend release report. Model publication/public-key configuration,
 real-model accuracy, physical-device voice/APNs/two-device evaluation, and
 human release approval remain backend-canonical release gates.

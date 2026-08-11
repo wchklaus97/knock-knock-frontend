@@ -176,8 +176,7 @@ enum LocalVoiceCommandPolicy {
             let query = try requiredString(
                 in: args,
                 aliases: ["q", "query", "text"],
-                minimumUTF8Length: 2,
-                maximumCharacters: 4_096
+                maximumCharacters: 200
             )
             semantics = LocalVoiceCommandSemantics(
                 intent: supportedIntent.rawValue,
