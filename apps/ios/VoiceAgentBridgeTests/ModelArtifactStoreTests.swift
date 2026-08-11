@@ -10,6 +10,16 @@ final class ModelArtifactStoreTests: XCTestCase {
             "A trusted voice model has not been configured for this build."
         )
         XCTAssertEqual(
+            AppStore.voicePreparationErrorMessage(for: bridgedPublicKeyError),
+            "A trusted voice model has not been configured for this build."
+        )
+        XCTAssertEqual(
+            AppStore.voicePreparationErrorMessage(
+                for: NSError(domain: "InternalModelRuntime", code: 99)
+            ),
+            "The signed voice model could not be prepared. Please try again later."
+        )
+        XCTAssertEqual(
             LocalVoiceModelManagerError.publicKeyNotConfigured.errorDescription,
             "A trusted voice model has not been configured for this build."
         )
