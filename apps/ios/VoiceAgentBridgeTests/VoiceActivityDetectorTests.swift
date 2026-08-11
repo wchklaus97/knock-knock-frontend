@@ -3,6 +3,21 @@ import XCTest
 @testable import VoiceAgentBridge
 
 final class VoiceActivityDetectorTests: XCTestCase {
+    @MainActor
+    func testCaptureRefusesToStartWhenApplicationIsAlreadyInactive() {
+        let capture = PushToTalkVoiceCapture(applicationIsActive: { false })
+
+        XCTAssertThrowsError(try capture.start(
+            onTranscript: { _ in XCTFail("Inactive capture must not emit a transcript") },
+            onStop: { _ in XCTFail("Inactive capture must not stop normally") },
+            onAbort: { _ in XCTFail("Inactive capture must not reach an active lifecycle") },
+            onError: { _ in XCTFail("Inactive capture must fail synchronously") }
+        )) { error in
+            XCTAssertEqual(error as? PushToTalkVoiceCapture.CaptureError, .applicationNotActive)
+        }
+        XCTAssertEqual(capture.state, .idle)
+    }
+
     func testSilenceBeforeSpeechDoesNotStopCapture() {
         var vad = makeVAD()
 

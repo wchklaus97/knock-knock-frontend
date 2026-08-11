@@ -401,6 +401,32 @@ final class ModelsDecodingTests: XCTestCase {
         )
     }
 
+    func testPermanentPendingFailureRemainsVisibleForRetryOrDiscard() {
+        let operation = PendingOperation(
+            idempotencyKey: "idem-visible-failure",
+            kind: .reply,
+            session_id: "ses_visible_failure",
+            action_key: "approve",
+            action_id: nil,
+            confirm: nil,
+            created_at: Date(),
+            status: .inFlight
+        )
+        let error = APIClientError.badStatus(
+            422,
+            "Invalid action",
+            APIErrorMetadata(retryable: false, retryAfter: nil, requestID: "req_visible")
+        )
+
+        let failed = AppStore.pendingOperationAfterPermanentFailure(operation, error: error)
+
+        XCTAssertEqual(failed.id, operation.id)
+        XCTAssertEqual(failed.status, .failed)
+        XCTAssertEqual(failed.failureCode, "http_422")
+        XCTAssertEqual(failed.lastError, error.localizedDescription)
+        XCTAssertFalse(failed.isPending)
+    }
+
     func testHistoryRetrievalAndPushReadModelsDecode() throws {
         let page = try decoder.decode(
             MessagePage.self,

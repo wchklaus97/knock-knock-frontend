@@ -51,6 +51,18 @@ enum LocalCommandEnvelopeCanonicalizerError: Error, Equatable {
     case clarificationRequired(ClarificationReason)
 }
 
+/// Shared classifier for errors crossing the untrusted local-model boundary.
+/// Semantic uncertainty asks the user to clarify; runtime or transport errors
+/// remain failures and must never be disguised as an ambiguous utterance.
+enum LocalVoiceCommandErrorPolicy {
+    static func requiresClarification(_ error: Error) -> Bool {
+        if error is LocalCommandEnvelopeCanonicalizerError {
+            return true
+        }
+        return (error as? LocalVoiceAdapterError) == .invalidModelOutput
+    }
+}
+
 /// The model-facing DTO. It intentionally mirrors the currently deployed
 /// prompt, but none of its transport or policy claims are authoritative.
 private struct LocalModelCommandDraft: Decodable {

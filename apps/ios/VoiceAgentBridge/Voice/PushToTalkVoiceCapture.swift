@@ -32,6 +32,7 @@ final class PushToTalkVoiceCapture {
 
     enum CaptureError: Error, Equatable {
         case mustBeCalledOnMainThread
+        case applicationNotActive
         case microphonePermissionDenied
         case speechPermissionDenied
         case recognizerUnavailable
@@ -60,6 +61,7 @@ final class PushToTalkVoiceCapture {
     private let vadConfiguration: VoiceActivityDetector.Configuration
     private let finalTranscriptWaitDuration: TimeInterval
     private let notificationCenter: NotificationCenter
+    private let applicationIsActive: () -> Bool
     private let vadQueue = DispatchQueue(
         label: "com.knockknock.voice.capture-vad",
         qos: .userInitiated
@@ -90,7 +92,10 @@ final class PushToTalkVoiceCapture {
         finalTranscriptWaitDuration: TimeInterval = 0.8,
         audioEngine: AVAudioEngine = AVAudioEngine(),
         audioSession: AVAudioSession = .sharedInstance(),
-        notificationCenter: NotificationCenter = .default
+        notificationCenter: NotificationCenter = .default,
+        applicationIsActive: @escaping () -> Bool = {
+            UIApplication.shared.applicationState == .active
+        }
     ) {
         self.audioEngine = audioEngine
         self.audioSession = audioSession
@@ -98,6 +103,7 @@ final class PushToTalkVoiceCapture {
         self.vadConfiguration = vadConfiguration
         self.finalTranscriptWaitDuration = max(0, finalTranscriptWaitDuration)
         self.notificationCenter = notificationCenter
+        self.applicationIsActive = applicationIsActive
         vad = VoiceActivityDetector(configuration: vadConfiguration)
     }
 
@@ -142,6 +148,10 @@ final class PushToTalkVoiceCapture {
     ) throws {
         guard Thread.isMainThread else { throw CaptureError.mustBeCalledOnMainThread }
         guard state == .idle else { throw CaptureError.alreadyCapturing }
+        // Lifecycle notifications only protect a capture that started while
+        // the app was active. Refuse a late start after the app is already
+        // inactive so no audio session can begin in the background gap.
+        guard applicationIsActive() else { throw CaptureError.applicationNotActive }
         guard audioSession.recordPermission == .granted else { throw CaptureError.microphonePermissionDenied }
         guard SFSpeechRecognizer.authorizationStatus() == .authorized else { throw CaptureError.speechPermissionDenied }
         guard let recognizer, recognizer.isAvailable else { throw CaptureError.recognizerUnavailable }

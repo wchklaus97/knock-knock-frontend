@@ -406,6 +406,34 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
         XCTAssertEqual(synthesizer.spoken, ["Could you clarify that?"])
     }
 
+    func testGeneratorClarificationFailureUsesProductionControllerPath() async {
+        let capture = ControlledVoiceCapture()
+        let generator = ControlledCommandGenerator()
+        let synthesizer = RecordingVoiceSynthesizer()
+        let submitted = VoiceTestBox(false)
+        let controller = makeController(
+            generator: generator,
+            capture: capture,
+            synthesizer: synthesizer
+        ) { _ in
+            submitted.value = true
+            return try Self.response()
+        }
+
+        controller.start()
+        capture.emitTranscript("remind me sometime", isFinal: true)
+        capture.emitStop(.finalTranscript)
+        await drainTasks()
+        generator.completeNext(with: .failure(
+            LocalCommandEnvelopeCanonicalizerError.clarificationRequired(.lowConfidence)
+        ))
+        await drainTasks()
+
+        XCTAssertFalse(submitted.value)
+        XCTAssertEqual(controller.state, .clarificationRequired)
+        XCTAssertEqual(synthesizer.spoken, ["Could you clarify that?"])
+    }
+
     private func makeController(
         generator: ControlledCommandGenerator,
         capture: ControlledVoiceCapture,

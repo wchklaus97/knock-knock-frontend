@@ -45,7 +45,7 @@ final class LocalVoiceCommandCoordinator {
                     do {
                         data = try result.get()
                     } catch {
-                        if Self.requiresClarification(error) {
+                        if LocalVoiceCommandErrorPolicy.requiresClarification(error) {
                             self.state = .clarificationRequired
                             continuation.resume(returning: nil)
                             return
@@ -82,10 +82,4 @@ final class LocalVoiceCommandCoordinator {
         }
     }
 
-    private static func requiresClarification(_ error: Error) -> Bool {
-        if error is LocalCommandEnvelopeCanonicalizerError {
-            return true
-        }
-        return (error as? LocalVoiceAdapterError) == .invalidModelOutput
-    }
 }
