@@ -52,11 +52,14 @@ private final class ControlledVoiceCapture: PushToTalkVoiceCapturing {
 
 private final class ControlledCommandGenerator: LocalCommandGenerating {
     private(set) var transcripts: [String] = []
+    private(set) var cancelCount = 0
+    var onGenerate: (() -> Void)?
     private var completions: [(Result<Data, Error>) -> Void] = []
 
     func generateCommand(for transcript: String, completion: @escaping (Result<Data, Error>) -> Void) {
         transcripts.append(transcript)
         completions.append(completion)
+        onGenerate?()
     }
 
     func completeNext(with result: Result<Data, Error>) {
@@ -65,6 +68,11 @@ private final class ControlledCommandGenerator: LocalCommandGenerating {
             return
         }
         completions.removeFirst()(result)
+    }
+
+    func cancelGeneration() {
+        guard !completions.isEmpty else { return }
+        cancelCount += 1
     }
 }
 
@@ -231,6 +239,7 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
         XCTAssertEqual(controller.state, .processing)
 
         controller.cancel()
+        XCTAssertEqual(generator.cancelCount, 1)
         generator.completeNext(with: .success(Self.envelopeData(query: "search history")))
         await drainTasks()
 
@@ -238,9 +247,46 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
         XCTAssertFalse(submitted.value)
     }
 
+    func testCancelBetweenWaiterCommitAndGeneratorStartLeavesNoActiveGeneration() async {
+        let startCommitted = expectation(description: "waiter committed generation start")
+        let operationStarted = expectation(description: "generation operation started")
+        operationStarted.assertForOverFulfill = true
+        let cancellationInvoked = expectation(description: "generation cancellation invoked")
+        cancellationInvoked.assertForOverFulfill = true
+        let allowOperationToStart = DispatchSemaphore(value: 0)
+        let waiter = VoiceGenerationWaiter {
+            startCommitted.fulfill()
+            _ = allowOperationToStart.wait(timeout: .now() + 2)
+        }
+
+        let task = Task.detached {
+            try await waiter.value { _ in
+                operationStarted.fulfill()
+            } onCancel: {
+                cancellationInvoked.fulfill()
+            }
+        }
+
+        await fulfillment(of: [startCommitted], timeout: 1)
+        waiter.cancel()
+        allowOperationToStart.signal()
+        await fulfillment(of: [operationStarted, cancellationInvoked], timeout: 1)
+
+        do {
+            _ = try await task.value
+            XCTFail("A cancelled waiter must not return generation output")
+        } catch is CancellationError {
+            // Expected. The operation that raced with cancellation was cancelled.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
     func testCancelDuringAPICancelsTaskAndIgnoresLateResponse() async throws {
         let capture = ControlledVoiceCapture()
         let generator = ControlledCommandGenerator()
+        let generationStarted = expectation(description: "generation started")
+        generator.onGenerate = { generationStarted.fulfill() }
         let apiStarted = expectation(description: "API started")
         let apiCancelled = expectation(description: "API cancelled")
         let gate = SubmissionGate(
@@ -254,7 +300,7 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
         controller.start()
         capture.emitTranscript("search history", isFinal: true)
         capture.emitStop(.finalTranscript)
-        await drainTasks()
+        await fulfillment(of: [generationStarted], timeout: 1)
         generator.completeNext(with: .success(Self.envelopeData(query: "search history")))
         await fulfillment(of: [apiStarted], timeout: 1)
 

@@ -20,6 +20,11 @@ protocol LocalSpeechTranscribing: AnyObject {
 /// return JSON bytes and callers must pass them through CommandEnvelope.decodeStrict.
 protocol LocalCommandGenerating {
     func generateCommand(for transcript: String, completion: @escaping (Result<Data, Error>) -> Void)
+    func cancelGeneration()
+}
+
+extension LocalCommandGenerating {
+    func cancelGeneration() {}
 }
 
 protocol VoiceSynthesizing {
@@ -61,6 +66,392 @@ struct LiteRTConversationCommandRunner<Conversation, Response> {
             throw LocalVoiceAdapterError.gemmaRuntimeGenerationFailed
         }
         return result
+    }
+}
+
+/// Holds one callback-entry lease until the native callback bridge has finished
+/// all of its Swift-side work. Finishing more than once is harmless.
+final class LiteRTStreamCallbackExit: @unchecked Sendable {
+    private let lock = NSLock()
+    private var action: (() -> Void)?
+
+    init(_ action: @escaping () -> Void) {
+        self.action = action
+    }
+
+    func finish() {
+        let action = lock.withLock {
+            defer { self.action = nil }
+            return self.action
+        }
+        action?()
+    }
+
+    deinit {
+        finish()
+    }
+}
+
+/// Completes the Swift bridge in the same order as LiteRT-LM's official Swift
+/// wrapper: release terminal callback context first, then release the callback
+/// lease that makes off-thread conversation cleanup eligible.
+func finishLiteRTStreamCallback(
+    _ callbackExit: LiteRTStreamCallbackExit,
+    releasingContext: (() -> Void)? = nil
+) {
+    defer { callbackExit.finish() }
+    releasingContext?()
+}
+
+private let liteRTConversationCleanupQueue = DispatchQueue(
+    label: "hk.knockknock.litertlm.conversation-cleanup",
+    qos: .userInitiated
+)
+
+private func scheduleLiteRTConversationCleanup(
+    _ action: @escaping @Sendable () -> Void
+) {
+    liteRTConversationCleanupQueue.async(execute: action)
+}
+
+/// LiteRT-LM's engine is not used by overlapping command generations. A
+/// cancelled waiter remains in FIFO order, then immediately hands the permit
+/// to the next waiter after observing cancellation.
+actor LiteRTExclusiveGenerationGate {
+    private var isHeld = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    var waitingCount: Int { waiters.count }
+
+    func acquire() async {
+        if !isHeld {
+            isHeld = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        if waiters.isEmpty {
+            isHeld = false
+        } else {
+            waiters.removeFirst().resume()
+        }
+    }
+}
+
+/// Testable ownership and cancellation seam around LiteRT-LM's asynchronous
+/// conversation API. The state owns the conversation and only deletes it after
+/// a terminal result and after start, cancel, and callback native leases have
+/// all exited. Deletion runs on a non-LiteRT cleanup executor and completion is
+/// resumed only after deletion joins the native worker. Cancellation requested
+/// while start is blocked is deferred until start succeeds, and native
+/// cancellation is issued at most once.
+struct LiteRTStreamingConversationCommandRunner<Conversation> {
+    typealias StreamCallback = (String?, Bool, Error?) -> LiteRTStreamCallbackExit
+    typealias CleanupScheduler = (@escaping @Sendable () -> Void) -> Void
+
+    let makeConversation: () -> Conversation?
+    let deleteConversation: (Conversation) -> Void
+    let startStream: (Conversation, String, @escaping StreamCallback) -> Int
+    let cancelConversation: (Conversation) -> Void
+    let scheduleCleanup: CleanupScheduler
+
+    init(
+        makeConversation: @escaping () -> Conversation?,
+        deleteConversation: @escaping (Conversation) -> Void,
+        startStream: @escaping (Conversation, String, @escaping StreamCallback) -> Int,
+        cancelConversation: @escaping (Conversation) -> Void
+    ) {
+        self.init(
+            makeConversation: makeConversation,
+            deleteConversation: deleteConversation,
+            startStream: startStream,
+            cancelConversation: cancelConversation,
+            scheduleCleanup: scheduleLiteRTConversationCleanup
+        )
+    }
+
+    init(
+        makeConversation: @escaping () -> Conversation?,
+        deleteConversation: @escaping (Conversation) -> Void,
+        startStream: @escaping (Conversation, String, @escaping StreamCallback) -> Int,
+        cancelConversation: @escaping (Conversation) -> Void,
+        scheduleCleanup: @escaping CleanupScheduler
+    ) {
+        self.makeConversation = makeConversation
+        self.deleteConversation = deleteConversation
+        self.startStream = startStream
+        self.cancelConversation = cancelConversation
+        self.scheduleCleanup = scheduleCleanup
+    }
+
+    func run(messageJSON: String) async throws -> String {
+        let state = LiteRTStreamingConversationState(
+            cancelConversation: cancelConversation,
+            deleteConversation: deleteConversation,
+            scheduleCleanup: scheduleCleanup
+        )
+
+        return try await withTaskCancellationHandler(operation: {
+            guard let conversation = makeConversation() else {
+                throw LocalVoiceAdapterError.gemmaRuntimeInitializationFailed
+            }
+            state.install(conversation: conversation)
+            if Task.isCancelled {
+                state.cancel()
+            }
+
+            do {
+                let output = try await withCheckedThrowingContinuation {
+                    (continuation: CheckedContinuation<String, Error>) in
+                    state.install(continuation: continuation)
+
+                    guard state.prepareToStart() else { return }
+
+                    let status = startStream(conversation, messageJSON) { chunk, isFinal, error in
+                        state.receive(chunk: chunk, isFinal: isFinal, error: error)
+                    }
+                    state.finishStart(status: status)
+                }
+                try Task.checkCancellation()
+                return output
+            } catch {
+                if Task.isCancelled || state.isCancellationRequested {
+                    throw CancellationError()
+                }
+                throw error
+            }
+        }, onCancel: {
+            state.cancel()
+        })
+    }
+}
+
+private struct LiteRTConversationCleanup<Conversation> {
+    let conversation: Conversation
+    let result: Result<String, Error>
+}
+
+private final class LiteRTStreamingConversationState<Conversation>: @unchecked Sendable {
+    private let lock = NSLock()
+    private let cancelConversation: (Conversation) -> Void
+    private let deleteConversation: (Conversation) -> Void
+    private let scheduleCleanup: LiteRTStreamingConversationCommandRunner<Conversation>.CleanupScheduler
+
+    private var conversation: Conversation?
+    private var continuation: CheckedContinuation<String, Error>?
+    private var pendingResult: Result<String, Error>?
+    private var terminalResult: Result<String, Error>?
+    private var response = ""
+    private var cancellationRequested = false
+    private var startResolved = false
+    private var streamStarted = false
+    private var cancelIssued = false
+    private var isTerminal = false
+    private var activeNativeLeases = 0
+    private var cleanupScheduled = false
+
+    init(
+        cancelConversation: @escaping (Conversation) -> Void,
+        deleteConversation: @escaping (Conversation) -> Void,
+        scheduleCleanup: @escaping LiteRTStreamingConversationCommandRunner<Conversation>.CleanupScheduler
+    ) {
+        self.cancelConversation = cancelConversation
+        self.deleteConversation = deleteConversation
+        self.scheduleCleanup = scheduleCleanup
+    }
+
+    var isCancellationRequested: Bool {
+        lock.withLock { cancellationRequested }
+    }
+
+    func install(conversation: Conversation) {
+        lock.withLock {
+            self.conversation = conversation
+        }
+    }
+
+    func install(continuation: CheckedContinuation<String, Error>) {
+        let immediateResult: Result<String, Error>? = lock.withLock {
+            if let pendingResult {
+                self.pendingResult = nil
+                return pendingResult
+            }
+            self.continuation = continuation
+            return nil
+        }
+        immediateResult.map { continuation.resume(with: $0) }
+    }
+
+    func prepareToStart() -> Bool {
+        var cleanup: LiteRTConversationCleanup<Conversation>?
+
+        lock.lock()
+        let shouldStart: Bool
+        if isTerminal {
+            shouldStart = false
+        } else if cancellationRequested {
+            completeLocked(.failure(CancellationError()))
+            cleanup = takeCleanupLocked()
+            shouldStart = false
+        } else {
+            activeNativeLeases += 1
+            shouldStart = true
+        }
+        lock.unlock()
+
+        schedule(cleanup)
+        return shouldStart
+    }
+
+    func finishStart(status: Int) {
+        var conversationToCancel: Conversation?
+        var cleanup: LiteRTConversationCleanup<Conversation>?
+
+        lock.lock()
+        precondition(activeNativeLeases > 0)
+        activeNativeLeases -= 1
+        startResolved = true
+
+        if status == 0 {
+            streamStarted = true
+            if cancellationRequested,
+               !isTerminal,
+               !cancelIssued,
+               let conversation {
+                cancelIssued = true
+                activeNativeLeases += 1
+                conversationToCancel = conversation
+            }
+        } else {
+            completeLocked(.failure(LocalVoiceAdapterError.gemmaRuntimeGenerationFailed))
+        }
+        cleanup = takeCleanupLocked()
+        lock.unlock()
+
+        schedule(cleanup)
+        conversationToCancel.map(invokeNativeCancel)
+    }
+
+    func receive(chunk: String?, isFinal: Bool, error: Error?) -> LiteRTStreamCallbackExit {
+        lock.lock()
+        activeNativeLeases += 1
+        if !isTerminal {
+            if let error {
+                completeLocked(.failure(error))
+            } else {
+                if let chunk {
+                    response += chunk
+                }
+                if isFinal {
+                    completeLocked(.success(response))
+                }
+            }
+        }
+        lock.unlock()
+
+        return LiteRTStreamCallbackExit { [self] in
+            finishCallback()
+        }
+    }
+
+    func cancel() {
+        var conversationToCancel: Conversation?
+
+        lock.lock()
+        cancellationRequested = true
+        if startResolved,
+           streamStarted,
+           !isTerminal,
+           !cancelIssued,
+           let conversation {
+            cancelIssued = true
+            activeNativeLeases += 1
+            conversationToCancel = conversation
+        }
+        lock.unlock()
+
+        conversationToCancel.map(invokeNativeCancel)
+    }
+
+    private func invokeNativeCancel(_ conversation: Conversation) {
+        cancelConversation(conversation)
+        finishNativeCancel()
+    }
+
+    private func finishNativeCancel() {
+        finishNativeLease()
+    }
+
+    private func finishCallback() {
+        finishNativeLease()
+    }
+
+    private func finishNativeLease() {
+        var cleanup: LiteRTConversationCleanup<Conversation>?
+
+        lock.lock()
+        precondition(activeNativeLeases > 0)
+        activeNativeLeases -= 1
+        cleanup = takeCleanupLocked()
+        lock.unlock()
+
+        schedule(cleanup)
+    }
+
+    private func completeLocked(_ result: Result<String, Error>) {
+        guard !isTerminal else { return }
+        isTerminal = true
+        terminalResult = result
+    }
+
+    private func takeCleanupLocked() -> LiteRTConversationCleanup<Conversation>? {
+        guard isTerminal,
+              activeNativeLeases == 0,
+              !cleanupScheduled,
+              let conversation,
+              let terminalResult
+        else {
+            return nil
+        }
+        cleanupScheduled = true
+        self.conversation = nil
+        self.terminalResult = nil
+        return LiteRTConversationCleanup(
+            conversation: conversation,
+            result: terminalResult
+        )
+    }
+
+    private func schedule(_ cleanup: LiteRTConversationCleanup<Conversation>?) {
+        guard let cleanup else { return }
+        scheduleCleanup { [self] in
+            deleteConversation(cleanup.conversation)
+            finishCleanup(with: cleanup.result)
+        }
+    }
+
+    private func finishCleanup(with result: Result<String, Error>) {
+        let continuationToResume: CheckedContinuation<String, Error>? = lock.withLock {
+            if let continuation {
+                self.continuation = nil
+                return continuation
+            }
+            pendingResult = result
+            return nil
+        }
+        continuationToResume?.resume(with: result)
+    }
+}
+
+private extension NSLock {
+    func withLock<Value>(_ operation: () -> Value) -> Value {
+        lock()
+        defer { unlock() }
+        return operation()
     }
 }
 
@@ -170,6 +561,9 @@ final class GemmaCommandGenerator: LocalCommandGenerating {
     private let runtime: LiteRTLMCommandRuntime
     private let envelopeContext: LocalCommandEnvelopeContext
     private let canonicalizer: LocalCommandEnvelopeCanonicalizer
+    private let generationLock = NSLock()
+    private var activeGenerationID: UUID?
+    private var activeGenerationTask: Task<Void, Never>?
 
     init(
         modelURL: URL,
@@ -207,21 +601,63 @@ final class GemmaCommandGenerator: LocalCommandGenerating {
             return
         }
 
-        Task {
+        cancelGeneration()
+        let generationID = UUID()
+        generationLock.withLock {
+            activeGenerationID = generationID
+            activeGenerationTask = nil
+        }
+
+        let task = Task { [weak self, runtime, envelopeContext, canonicalizer] in
+            let result: Result<Data, Error>
             do {
                 let modelOutput = try await runtime.generate(
                     transcript: trimmed,
                     locale: envelopeContext.locale,
                     timezone: envelopeContext.timezone
                 )
-                completion(.success(try canonicalizer.canonicalize(
+                try Task.checkCancellation()
+                result = .success(try canonicalizer.canonicalize(
                     modelOutput: modelOutput,
                     context: envelopeContext
-                )))
+                ))
             } catch {
-                completion(.failure(error))
+                result = .failure(error)
             }
+            self?.finishGeneration(id: generationID)
+            completion(result)
         }
+
+        let shouldKeepTask = generationLock.withLock {
+            guard activeGenerationID == generationID else { return false }
+            activeGenerationTask = task
+            return true
+        }
+        if !shouldKeepTask {
+            task.cancel()
+        }
+    }
+
+    func cancelGeneration() {
+        let task: Task<Void, Never>? = generationLock.withLock {
+            activeGenerationID = nil
+            let task = activeGenerationTask
+            activeGenerationTask = nil
+            return task
+        }
+        task?.cancel()
+    }
+
+    private func finishGeneration(id: UUID) {
+        generationLock.withLock {
+            guard activeGenerationID == id else { return }
+            activeGenerationID = nil
+            activeGenerationTask = nil
+        }
+    }
+
+    deinit {
+        cancelGeneration()
     }
 }
 
@@ -256,6 +692,7 @@ private actor LiteRTLMCommandRuntime {
     private let modelPath: String
     private let cacheDirectory: String?
     private let useGPU: Bool
+    private let generationGate = LiteRTExclusiveGenerationGate()
     private var engine: OpaquePointer?
 
     init(modelURL: URL, cacheDirectory: URL?, useGPU: Bool) throws {
@@ -264,7 +701,28 @@ private actor LiteRTLMCommandRuntime {
         self.useGPU = useGPU
     }
 
-    func generate(transcript: String, locale: String, timezone: String) throws -> Data {
+    func generate(transcript: String, locale: String, timezone: String) async throws -> Data {
+        await generationGate.acquire()
+        do {
+            let result = try await generateExclusively(
+                transcript: transcript,
+                locale: locale,
+                timezone: timezone
+            )
+            await generationGate.release()
+            return result
+        } catch {
+            await generationGate.release()
+            throw error
+        }
+    }
+
+    private func generateExclusively(
+        transcript: String,
+        locale: String,
+        timezone: String
+    ) async throws -> Data {
+        try Task.checkCancellation()
         if engine == nil {
             engine = makeEngine()
             guard engine != nil else {
@@ -275,28 +733,47 @@ private actor LiteRTLMCommandRuntime {
         let messageJSON = try Self.messageJSON(
             text: "Locale: \(locale)\nTimezone: \(timezone)\nUtterance: \(transcript)"
         )
-        let commandRunner = LiteRTConversationCommandRunner<OpaquePointer, OpaquePointer>(
+        let commandRunner = LiteRTStreamingConversationCommandRunner<OpaquePointer>(
             makeConversation: { self.makeConversation(engine: self.engine!) },
             deleteConversation: { litert_lm_conversation_delete($0) },
-            sendMessage: { conversation, message in
-                litert_lm_conversation_send_message(conversation, message, nil, nil)
+            startStream: { conversation, message, callback in
+                Self.startStream(
+                    conversation: conversation,
+                    messageJSON: message,
+                    callback: callback
+                )
             },
-            responseString: { response in
-                guard let characters = litert_lm_json_response_get_string(response) else {
-                    return nil
-                }
-                return String(cString: characters)
-            },
-            deleteResponse: { litert_lm_json_response_delete($0) }
+            cancelConversation: { litert_lm_conversation_cancel_process($0) }
         )
-        // v0.12's conversation send call is synchronous. Its C cancellation
-        // function is documented for asynchronous inference, so Swift task
-        // cancellation cannot interrupt this blocking call; handle deletion is
-        // guaranteed immediately after the call returns on every result path.
-        let responseString = try commandRunner.run(messageJSON: messageJSON)
-        return try LiteRTModelOutputParser.extractJSONObject(
-            from: Self.responseText(from: responseString)
+        let responseText = try await commandRunner.run(messageJSON: messageJSON)
+        return try LiteRTModelOutputParser.extractJSONObject(from: responseText)
+    }
+
+    private static func startStream(
+        conversation: OpaquePointer,
+        messageJSON: String,
+        callback: @escaping LiteRTStreamingConversationCommandRunner<OpaquePointer>.StreamCallback
+    ) -> Int {
+        let context = LiteRTCommandStreamContext { responseJSON, isFinal, error in
+            callback(
+                responseJSON.map(LiteRTModelOutputParser.responseText(from:)),
+                isFinal,
+                error
+            )
+        }
+        let contextPointer = Unmanaged.passRetained(context).toOpaque()
+        let status = litert_lm_conversation_send_message_stream(
+            conversation,
+            messageJSON,
+            nil,
+            nil,
+            liteRTCommandStreamCallback,
+            contextPointer
         )
+        if status != 0 {
+            Unmanaged<LiteRTCommandStreamContext>.fromOpaque(contextPointer).release()
+        }
+        return Int(status)
     }
 
     private func makeEngine() -> OpaquePointer? {
@@ -354,34 +831,46 @@ private actor LiteRTLMCommandRuntime {
         return string
     }
 
-    private static func responseText(from response: String) -> String {
-        guard let data = response.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
-            return response
-        }
-
-        if let content = object["content"] as? String {
-            return content
-        }
-        if let content = object["content"] as? [[String: Any]] {
-            let text = content.compactMap { item -> String? in
-                guard item["type"] as? String == "text" else { return nil }
-                return item["text"] as? String
-            }.joined()
-            if !text.isEmpty {
-                return text
-            }
-        }
-        return response
-    }
-
     deinit {
         if let engine {
             litert_lm_engine_delete(engine)
         }
     }
 
+}
+
+private final class LiteRTCommandStreamContext {
+    let callback: LiteRTStreamingConversationCommandRunner<OpaquePointer>.StreamCallback
+
+    init(callback: @escaping LiteRTStreamingConversationCommandRunner<OpaquePointer>.StreamCallback) {
+        self.callback = callback
+    }
+}
+
+private func liteRTCommandStreamCallback(
+    callbackData: UnsafeMutableRawPointer?,
+    chunk: UnsafePointer<CChar>?,
+    isFinal: Bool,
+    errorMessage: UnsafePointer<CChar>?
+) {
+    guard let callbackData else { return }
+    let unmanaged = Unmanaged<LiteRTCommandStreamContext>.fromOpaque(callbackData)
+    let context = unmanaged.takeUnretainedValue()
+    let error: Error? = errorMessage == nil
+        ? nil
+        : LocalVoiceAdapterError.gemmaRuntimeGenerationFailed
+
+    // LiteRT-LM v0.12's official Swift wrapper releases its retained
+    // StreamContext inside this same terminal/error callback. Its native
+    // conversation implementation completes history/cancellation bookkeeping
+    // before invoking the user callback, so mirror that supported ownership
+    // contract instead of pretending an async dispatch proves that a C callback
+    // has returned. The lease still covers every Swift-side callback operation.
+    let callbackExit = context.callback(chunk.map(String.init(cString:)), isFinal, error)
+    finishLiteRTStreamCallback(
+        callbackExit,
+        releasingContext: isFinal || error != nil ? { unmanaged.release() } : nil
+    )
 }
 
 #else
@@ -414,6 +903,31 @@ struct GemmaCommandGenerator: LocalCommandGenerating {
 /// prose, Markdown fences and concatenated objects are rejected instead of
 /// being sliced into something that merely looks executable.
 enum LiteRTModelOutputParser {
+    /// LiteRT-LM stream chunks are Message JSON values. Extract only their text
+    /// content before concatenating model output; preserve the raw chunk for
+    /// forward compatibility when a runtime already returns plain text.
+    static func responseText(from response: String) -> String {
+        guard let data = response.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return response
+        }
+
+        if let content = object["content"] as? String {
+            return content
+        }
+        if let content = object["content"] as? [[String: Any]] {
+            let text = content.compactMap { item -> String? in
+                guard item["type"] as? String == "text" else { return nil }
+                return item["text"] as? String
+            }.joined()
+            if !text.isEmpty {
+                return text
+            }
+        }
+        return response
+    }
+
     static func extractJSONObject(from text: String) throws -> Data {
         let candidate = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard candidate.first == "{",

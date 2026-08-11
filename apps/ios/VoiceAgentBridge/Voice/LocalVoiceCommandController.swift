@@ -3,14 +3,31 @@ import Combine
 import Foundation
 import Speech
 
-private final class VoiceGenerationWaiter: @unchecked Sendable {
+final class VoiceGenerationWaiter: @unchecked Sendable {
+    private enum OperationPhase {
+        case idle
+        case starting
+        case started
+        case finished
+    }
+
     private let lock = NSLock()
+    private let beforeStartingOperation: () -> Void
     private var continuation: CheckedContinuation<Data, Error>?
     private var pendingResult: Result<Data, Error>?
     private var isResolved = false
+    private var operationPhase = OperationPhase.idle
+    private var cancellationRequested = false
+    private var cancellationAction: (() -> Void)?
+    private var cancellationActionInvoked = false
+
+    init(beforeStartingOperation: @escaping () -> Void = {}) {
+        self.beforeStartingOperation = beforeStartingOperation
+    }
 
     func value(
-        starting operation: (@escaping (Result<Data, Error>) -> Void) -> Void
+        starting operation: (@escaping (Result<Data, Error>) -> Void) -> Void,
+        onCancel cancellationAction: @escaping () -> Void
     ) async throws -> Data {
         try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { continuation in
@@ -23,6 +40,8 @@ private final class VoiceGenerationWaiter: @unchecked Sendable {
                     pendingResult = nil
                 } else {
                     self.continuation = continuation
+                    self.cancellationAction = cancellationAction
+                    operationPhase = .starting
                     shouldStart = true
                 }
                 lock.unlock()
@@ -30,9 +49,11 @@ private final class VoiceGenerationWaiter: @unchecked Sendable {
                 if let immediateResult {
                     continuation.resume(with: immediateResult)
                 } else if shouldStart {
+                    beforeStartingOperation()
                     operation { [weak self] result in
-                        self?.resolve(result)
+                        self?.resolveFromOperation(result)
                     }
+                    finishStartingOperation()
                 }
             }
         }, onCancel: { [weak self] in
@@ -41,27 +62,74 @@ private final class VoiceGenerationWaiter: @unchecked Sendable {
     }
 
     func cancel() {
-        resolve(.failure(CancellationError()))
-    }
-
-    private func resolve(_ result: Result<Data, Error>) {
+        var actionToInvoke: (() -> Void)?
         var continuationToResume: CheckedContinuation<Data, Error>?
 
         lock.lock()
-        guard !isResolved else {
-            lock.unlock()
-            return
+        cancellationRequested = true
+        switch operationPhase {
+        case .idle:
+            operationPhase = .finished
+            cancellationAction = nil
+        case .starting:
+            break
+        case .started:
+            actionToInvoke = takeCancellationActionLocked()
+        case .finished:
+            break
         }
-        isResolved = true
-        if let continuation {
-            continuationToResume = continuation
-            self.continuation = nil
-        } else {
-            pendingResult = result
+        continuationToResume = resolveLocked(.failure(CancellationError()))
+        lock.unlock()
+
+        actionToInvoke?()
+        continuationToResume?.resume(throwing: CancellationError())
+    }
+
+    private func finishStartingOperation() {
+        var actionToInvoke: (() -> Void)?
+
+        lock.lock()
+        if operationPhase == .starting {
+            operationPhase = .started
+            if cancellationRequested {
+                actionToInvoke = takeCancellationActionLocked()
+            }
         }
         lock.unlock()
 
+        actionToInvoke?()
+    }
+
+    private func resolveFromOperation(_ result: Result<Data, Error>) {
+        let continuationToResume: CheckedContinuation<Data, Error>?
+
+        lock.lock()
+        operationPhase = .finished
+        cancellationAction = nil
+        continuationToResume = resolveLocked(result)
+        lock.unlock()
+
         continuationToResume?.resume(with: result)
+    }
+
+    private func takeCancellationActionLocked() -> (() -> Void)? {
+        guard !cancellationActionInvoked else { return nil }
+        cancellationActionInvoked = true
+        defer { cancellationAction = nil }
+        return cancellationAction
+    }
+
+    private func resolveLocked(
+        _ result: Result<Data, Error>
+    ) -> CheckedContinuation<Data, Error>? {
+        guard !isResolved else { return nil }
+        isResolved = true
+        if let continuation {
+            self.continuation = nil
+            return continuation
+        }
+        pendingResult = result
+        return nil
     }
 }
 
@@ -243,7 +311,10 @@ final class LocalVoiceCommandController: ObservableObject {
             do {
                 let data = try await waiter.value { completion in
                     generator.generateCommand(for: text, completion: completion)
+                } onCancel: {
+                    generator.cancelGeneration()
                 }
+                self?.generationWaiter = nil
                 try Task.checkCancellation()
                 guard self?.isCurrent(sessionID) == true else { return }
 
