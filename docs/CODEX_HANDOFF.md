@@ -36,6 +36,11 @@ Gemma artifact, exact-current-revision physical voice UAT, real APNs delivery,
 simultaneous two-device convergence, paired PR review, and human rollout
 approval remain separate gates.
 
+Paired review is tracked in
+[frontend draft PR #16](https://github.com/wchklaus97/knock-knock-frontend/pull/16)
+and
+[backend draft PR #28](https://github.com/wchklaus97/knock-knock-backend/pull/28).
+
 **Locked MVP loop:**
 
 ```text
