@@ -294,7 +294,9 @@ private actor LiteRTLMCommandRuntime {
         // cancellation cannot interrupt this blocking call; handle deletion is
         // guaranteed immediately after the call returns on every result path.
         let responseString = try commandRunner.run(messageJSON: messageJSON)
-        return try Self.extractJSONObject(from: Self.responseText(from: responseString))
+        return try LiteRTModelOutputParser.extractJSONObject(
+            from: Self.responseText(from: responseString)
+        )
     }
 
     private func makeEngine() -> OpaquePointer? {
@@ -380,22 +382,6 @@ private actor LiteRTLMCommandRuntime {
         }
     }
 
-    private static func extractJSONObject(from text: String) throws -> Data {
-        guard let start = text.firstIndex(of: "{"),
-              let end = text.lastIndex(of: "}"),
-              start <= end
-        else {
-            throw LocalVoiceAdapterError.invalidModelOutput
-        }
-        let candidate = String(text[start...end])
-        guard let data = candidate.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data),
-              object is [String: Any]
-        else {
-            throw LocalVoiceAdapterError.invalidModelOutput
-        }
-        return data
-    }
 }
 
 #else
@@ -423,6 +409,32 @@ struct GemmaCommandGenerator: LocalCommandGenerating {
 }
 
 #endif
+
+/// The model contract is one JSON object and nothing else. In particular,
+/// prose, Markdown fences and concatenated objects are rejected instead of
+/// being sliced into something that merely looks executable.
+enum LiteRTModelOutputParser {
+    static func extractJSONObject(from text: String) throws -> Data {
+        let candidate = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard candidate.first == "{",
+              candidate.last == "}",
+              let data = candidate.data(using: .utf8)
+        else {
+            throw LocalVoiceAdapterError.invalidModelOutput
+        }
+
+        do {
+            try StrictJSON.validate(data)
+            let object = try JSONSerialization.jsonObject(with: data)
+            guard object is [String: Any] else {
+                throw LocalVoiceAdapterError.invalidModelOutput
+            }
+        } catch {
+            throw LocalVoiceAdapterError.invalidModelOutput
+        }
+        return data
+    }
+}
 
 /// Kept as a source-compatible name for existing injection tests. New code
 /// should construct GemmaCommandGenerator with a verified model artifact.

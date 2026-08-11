@@ -41,15 +41,16 @@ struct RootView: View {
             switch phase {
             case .active:
                 guard store.token != nil else { return }
+                store.resumeDeferredCommandAnnouncement()
                 store.startEventStream()
                 Task { await store.refresh() }
             case .inactive:
-                store.voiceController?.abort()
+                store.suspendVoiceForSceneTransition()
             case .background:
-                store.voiceController?.abort()
+                store.suspendVoiceForSceneTransition()
                 store.stopEventStream()
             @unknown default:
-                store.voiceController?.abort()
+                store.suspendVoiceForSceneTransition()
             }
         }
     }

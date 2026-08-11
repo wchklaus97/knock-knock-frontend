@@ -851,6 +851,10 @@ struct ActiveCommandCheckpoint: Codable, Equatable {
     var envelope: CommandEnvelope?
     var validatedPresentation: CommandPresentation?
     var pendingConfirmation: PendingCommandConfirmation? = nil
+    /// The exact backend version mounted by the Home UI. This is independent
+    /// from speech because a terminal update can arrive while speech is
+    /// intentionally deferred in the background.
+    var lastPresentedVersion: Int? = nil
     var lastAnnouncedVersion: Int?
     let backendOrigin: String
     let ownerUserID: String
@@ -879,6 +883,7 @@ struct ActiveCommandCheckpoint: Codable, Equatable {
                 && backendVersion == nil
                 && validatedPresentation == nil
                 && pendingConfirmation == nil
+                && lastPresentedVersion == nil
                 && lastAnnouncedVersion == nil
         case .acknowledged, .terminalPendingPresentation:
             guard envelope == nil,
@@ -886,6 +891,7 @@ struct ActiveCommandCheckpoint: Codable, Equatable {
                   CommandLifecycle.isKnown(backendState),
                   let backendVersion,
                   backendVersion >= 0,
+                  lastPresentedVersion.map({ $0 >= 0 && $0 <= backendVersion }) ?? true,
                   lastAnnouncedVersion.map({ $0 >= 0 && $0 <= backendVersion }) ?? true,
                   validatedPresentation.map({ $0.validated(for: backendState) == $0 }) ?? true,
                   pendingConfirmation.map({

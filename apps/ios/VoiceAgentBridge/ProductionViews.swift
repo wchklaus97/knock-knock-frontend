@@ -3318,7 +3318,7 @@ struct ProductionSettingsView: View {
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(store.voiceController == nil ? KnockDesign.muted : KnockDesign.mint)
                                 Button {
-                                    Task { await store.prepareLocalVoiceModel() }
+                                    Task { await store.prepareLocalVoiceModel(forceRefresh: true) }
                                 } label: {
                                     HStack {
                                         if store.voiceModelStatus.hasPrefix("Preparing") { ProgressView() }
@@ -3725,7 +3725,7 @@ struct SettingsPanelView: View {
             }
         }
         Button {
-            Task { await store.prepareLocalVoiceModel() }
+            Task { await store.prepareLocalVoiceModel(forceRefresh: true) }
         } label: {
             HStack {
                 if store.voiceModelStatus.hasPrefix("Preparing") { ProgressView() }

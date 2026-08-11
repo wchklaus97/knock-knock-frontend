@@ -4,6 +4,22 @@ struct APIErrorMetadata: Equatable, Sendable {
     let retryable: Bool
     let retryAfter: Int?
     let requestID: String?
+    /// Canonical backend error code, when the response carried a structured
+    /// error envelope. HTTP status alone is not specific enough to prove that
+    /// a command was rejected before persistence.
+    let errorCode: String?
+
+    init(
+        retryable: Bool,
+        retryAfter: Int?,
+        requestID: String?,
+        errorCode: String? = nil
+    ) {
+        self.retryable = retryable
+        self.retryAfter = retryAfter
+        self.requestID = requestID
+        self.errorCode = errorCode
+    }
 }
 
 enum APIClientError: LocalizedError {
@@ -63,6 +79,11 @@ final class APIClient: @unchecked Sendable {
     }
     var token: String?
     var refreshToken: String?
+    private let session: URLSession
+
+    init(session: URLSession = .shared) {
+        self.session = session
+    }
 
     func register(email: String, password: String) async throws -> AuthResponse {
         try await post("/v1/auth/register", body: ["email": email, "password": password], auth: false)
@@ -301,7 +322,7 @@ final class APIClient: @unchecked Sendable {
         let bytes: URLSession.AsyncBytes
         let response: URLResponse
         do {
-            (bytes, response) = try await URLSession.shared.bytes(for: request)
+            (bytes, response) = try await session.bytes(for: request)
         } catch let error as URLError {
             throw APIClientError.network(error.localizedDescription)
         } catch {
@@ -507,7 +528,7 @@ final class APIClient: @unchecked Sendable {
         let data: Data
         let resp: URLResponse
         do {
-            (data, resp) = try await URLSession.shared.data(for: request)
+            (data, resp) = try await session.data(for: request)
         } catch let error as URLError {
             throw APIClientError.network(error.localizedDescription)
         } catch {
@@ -519,13 +540,13 @@ final class APIClient: @unchecked Sendable {
         let code = http.statusCode
         guard (200 ..< 300).contains(code) else {
             let fallback = String(data: data, encoding: .utf8) ?? "Request failed"
-            let message = (try? JSONDecoder().decode(APIErrorBody.self, from: data))?.message
-                ?? fallback
             let decoded = try? JSONDecoder().decode(APIErrorBody.self, from: data)
+            let message = decoded?.message ?? fallback
             let metadata = APIErrorMetadata(
                 retryable: decoded?.retryable ?? (code == 408 || code == 425 || code == 429 || code >= 500),
                 retryAfter: decoded?.retry_after ?? Int(http.value(forHTTPHeaderField: "Retry-After") ?? ""),
-                requestID: decoded?.request_id ?? http.value(forHTTPHeaderField: "X-Request-ID")
+                requestID: decoded?.request_id ?? http.value(forHTTPHeaderField: "X-Request-ID"),
+                errorCode: decoded?.error
             )
             throw APIClientError.badStatus(code, message, metadata)
         }

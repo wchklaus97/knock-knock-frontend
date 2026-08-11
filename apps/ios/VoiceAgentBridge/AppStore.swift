@@ -86,6 +86,11 @@ final class AppStore: ObservableObject {
 
     let client = APIClient()
     private let localStore: SQLiteStore
+    /// One shared speaker owns both backend result announcements and local
+    /// clarification prompts. Push-to-talk can therefore stop any in-flight
+    /// speech before opening the microphone, and scope changes cannot leave a
+    /// previous account's announcement playing.
+    private let commandSynthesizer: VoiceSynthesizing
     private let activeCommandCoordinator: ActiveCommandCheckpointCoordinator
     private let backgroundReconciliationDispatcher: BackgroundReconciliationDispatcher
     private lazy var eventTransport = client.makeSessionEventTransport()
@@ -147,16 +152,52 @@ final class AppStore: ObservableObject {
         return "The signed voice model could not be prepared. Please try again later."
     }
 
+    nonisolated static func shouldFetchVoiceModel(
+        forceRefresh: Bool,
+        activeModelAvailable: Bool
+    ) -> Bool {
+        forceRefresh || !activeModelAvailable
+    }
+
+    /// Only failures proving the POST was rejected before persistence may
+    /// release the durable submission fence. Status alone is insufficient:
+    /// unknown 4xx responses, timeouts, decoding failures, and conflicts keep
+    /// the exact idempotent envelope for recovery.
+    nonisolated static func commandSubmissionDefinitelyRejected(_ error: Error) -> Bool {
+        guard let apiError = error as? APIClientError else { return false }
+        switch apiError {
+        case .noToken, .invalidBaseURL:
+            return true
+        case let .badStatus(status, _, metadata):
+            guard !metadata.retryable else { return false }
+            switch (status, metadata.errorCode) {
+            case (400, "validation_error"),
+                 (401, "unauthorized"),
+                 (404, "not_found"),
+                 (422, "unsupported_intent"):
+                return true
+            default:
+                return false
+            }
+        case .network, .decoding:
+            return false
+        }
+    }
+
     init(
         localStore: SQLiteStore = .shared,
         commandSynthesizer: VoiceSynthesizing = SystemVoiceSynthesizer(),
         backgroundReconciliationDispatcher: BackgroundReconciliationDispatcher = .shared
     ) {
         self.localStore = localStore
+        self.commandSynthesizer = commandSynthesizer
         self.backgroundReconciliationDispatcher = backgroundReconciliationDispatcher
         activeCommandCoordinator = ActiveCommandCheckpointCoordinator(
             store: localStore,
-            synthesizer: commandSynthesizer
+            synthesizer: commandSynthesizer,
+            isSpeechAllowed: {
+                UIApplication.shared.applicationState == .active
+            }
         )
         #if DEBUG
         // UI tests run repeatedly against isolated local Workers. Keychain
@@ -305,6 +346,26 @@ final class AppStore: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// Delivers a canonical backend announcement that was intentionally kept
+    /// silent while the app was inactive or running background reconciliation.
+    func resumeDeferredCommandAnnouncement() {
+        do {
+            try activeCommandCoordinator.announceDeferredIfNeeded()
+            publishActiveCommandState()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Stops both push-to-talk work and the shared backend/local speaker when
+    /// the scene leaves the foreground. The direct stop is intentional: the
+    /// shared synthesizer may be speaking even before a voice controller has
+    /// been prepared.
+    func suspendVoiceForSceneTransition() {
+        voiceController?.abort()
+        commandSynthesizer.stop()
     }
 
     func bindPush(_ appDelegate: AppDelegate) {
@@ -745,26 +806,28 @@ final class AppStore: ObservableObject {
     /// model is never activated until the app's pinned public key verifies its
     /// manifest and bytes; if the release has not configured a model, the UI
     /// reports that explicitly and the voice button remains unavailable.
-    func prepareLocalVoiceModel() async {
+    func prepareLocalVoiceModel(forceRefresh: Bool = false) async {
         if let voiceModelPreparationTask {
             await voiceModelPreparationTask.value
             return
         }
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.performLocalVoiceModelPreparation()
+            await self.performLocalVoiceModelPreparation(forceRefresh: forceRefresh)
         }
         voiceModelPreparationTask = task
         await task.value
         voiceModelPreparationTask = nil
     }
 
-    private func performLocalVoiceModelPreparation() async {
+    private func performLocalVoiceModelPreparation(forceRefresh: Bool) async {
         guard token != nil else {
             voiceModelStatus = "Sign in before preparing voice"
             return
         }
         voiceModelStatus = "Preparing on-device voice model…"
+        let previousController = voiceController
+        var modelBeforeAttempt: InstalledModel?
         do {
             let manager: LocalVoiceModelManager
             if let existing = voiceModelManager {
@@ -773,7 +836,12 @@ final class AppStore: ObservableObject {
                 manager = try LocalVoiceModelManager()
             }
             voiceModelManager = manager
-            if manager.activeModel == nil {
+            let previousModel = manager.activeModel
+            modelBeforeAttempt = previousModel
+            if Self.shouldFetchVoiceModel(
+                forceRefresh: forceRefresh,
+                activeModelAvailable: previousModel != nil
+            ) {
                 let descriptor = try await client.getModelArtifactDescriptor(
                     modelID: LocalVoiceModelManager.defaultModelID
                 )
@@ -784,13 +852,9 @@ final class AppStore: ObservableObject {
                 )
             }
             try Task.checkCancellation()
-            let generator = try manager.makeCommandGenerator(deviceID: client.currentDeviceID)
-            voiceController = LocalVoiceCommandController(generator: generator) { [weak self] envelope in
-                guard let self else {
-                    throw APIClientError.network("Knock Knock is no longer available")
-                }
-                return try await self.submitLocalCommand(envelope)
-            }
+            let replacement = try makeVoiceController(using: manager)
+            previousController?.abort()
+            voiceController = replacement
             if let model = manager.activeModel {
                 voiceModelStatus = "Ready · Gemma \(model.manifest.modelVersion)"
             } else {
@@ -798,20 +862,76 @@ final class AppStore: ObservableObject {
             }
         } catch {
             if error is CancellationError { return }
-            voiceController = nil
             let message = Self.voicePreparationErrorMessage(for: error)
-            voiceModelStatus = "Unavailable · \(message)"
-            errorMessage = "On-device voice is not ready: \(message)"
+            if let manager = voiceModelManager,
+               let previousController,
+               let previousModel = modelBeforeAttempt
+            {
+                // A download/descriptor failure must not disable the last
+                // verified runtime. If a newly activated artifact cannot open,
+                // roll back to the persisted predecessor before retaining the
+                // old controller.
+                var previousSelectionRestored = manager.activeModel == previousModel
+                if !previousSelectionRestored,
+                   manager.rollbackModel == previousModel,
+                   (try? manager.rollback()) != nil
+                {
+                    previousSelectionRestored = manager.activeModel == previousModel
+                }
+                if previousSelectionRestored {
+                    voiceController = previousController
+                    voiceModelStatus = "Ready · Gemma \(previousModel.manifest.modelVersion) · Update failed"
+                    errorMessage = "Voice model update failed; the previous verified model is still active. \(message)"
+                } else {
+                    voiceController = nil
+                    voiceModelStatus = "Unavailable · Update and rollback failed"
+                    errorMessage = "The voice model update failed and the previous verified model could not be restored. \(message)"
+                }
+            } else {
+                voiceController = nil
+                voiceModelStatus = "Unavailable · \(message)"
+                errorMessage = "On-device voice is not ready: \(message)"
+            }
         }
+    }
+
+    private func makeVoiceController(
+        using manager: LocalVoiceModelManager
+    ) throws -> LocalVoiceCommandController {
+        let generator = try manager.makeCommandGenerator(deviceID: client.currentDeviceID)
+        return LocalVoiceCommandController(
+            generator: generator,
+            submit: { [weak self] envelope in
+                guard let self else {
+                    throw APIClientError.network("Knock Knock is no longer available")
+                }
+                return try await self.submitLocalCommand(envelope)
+            },
+            synthesizer: commandSynthesizer
+        )
     }
 
     private func submitLocalCommand(_ envelope: CommandEnvelope) async throws -> CommandResponse {
         guard let activeCommandScope else { throw APIClientError.noToken }
-        let application = try await activeCommandCoordinator.submit(
-            envelope: envelope,
-            scope: activeCommandScope
-        ) { [client] canonicalEnvelope in
-            try await client.createCommand(canonicalEnvelope)
+        let application: ActiveCommandApplication
+        do {
+            application = try await activeCommandCoordinator.submit(
+                envelope: envelope,
+                scope: activeCommandScope,
+                onBegan: { [weak self] in
+                    self?.publishActiveCommandState()
+                }
+            ) { [client] canonicalEnvelope in
+                try await client.createCommand(canonicalEnvelope)
+            }
+        } catch {
+            if Self.commandSubmissionDefinitelyRejected(error) {
+                try activeCommandCoordinator.abandonUnacknowledgedSubmission(
+                    expectedCommandID: envelope.commandID
+                )
+                publishActiveCommandState()
+            }
+            throw error
         }
         consumeCommandApplication(application)
 
@@ -1539,6 +1659,9 @@ final class AppStore: ObservableObject {
                     },
                     replay: { canonicalEnvelope in
                         try await client.createCommand(canonicalEnvelope)
+                    },
+                    definitelyRejected: { error in
+                        Self.commandSubmissionDefinitelyRejected(error)
                     }
                 )
             }
@@ -1588,6 +1711,11 @@ final class AppStore: ObservableObject {
         pushes = newPushes
         if let commandApplication {
             consumeCommandApplication(commandApplication)
+        } else if commandTask != nil {
+            // A definitive replay rejection clears the coordinator's generic
+            // submitting presentation. Reflect that release in the UI so a
+            // later local command is not visually stuck behind the old fence.
+            publishActiveCommandState()
         }
         localStore.cacheSessions(mergedSessions)
         localStore.cachePushes(newPushes)

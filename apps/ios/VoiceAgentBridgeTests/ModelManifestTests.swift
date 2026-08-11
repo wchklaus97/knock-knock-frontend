@@ -3,6 +3,45 @@ import XCTest
 @testable import VoiceAgentBridge
 
 final class ModelManifestTests: XCTestCase {
+    func testLiteRTModelOutputParserAcceptsOnlyOneCompleteJSONObject() throws {
+        let accepted = try LiteRTModelOutputParser.extractJSONObject(
+            from: "  \n{\"intent\":\"search_history\",\"args\":{}}\t "
+        )
+        XCTAssertEqual(
+            String(data: accepted, encoding: .utf8),
+            "{\"intent\":\"search_history\",\"args\":{}}"
+        )
+
+        let rejected = [
+            "Here is the command: {\"intent\":\"search_history\"}",
+            "```json\n{\"intent\":\"search_history\"}\n```",
+            "[{\"intent\":\"search_history\"}]",
+            "{\"intent\":\"search_history\"} trailing",
+            "{\"intent\":\"search_history\"}{\"intent\":\"create_reminder\"}",
+            "{\"intent\":\"search_history\",\"intent\":\"create_reminder\"}",
+        ]
+        for output in rejected {
+            XCTAssertThrowsError(try LiteRTModelOutputParser.extractJSONObject(from: output)) {
+                XCTAssertEqual($0 as? LocalVoiceAdapterError, .invalidModelOutput)
+            }
+        }
+    }
+
+    func testVoiceModelRefreshAlwaysFetchesWhileOrdinaryPrepareUsesInstalledModel() {
+        XCTAssertTrue(AppStore.shouldFetchVoiceModel(
+            forceRefresh: false,
+            activeModelAvailable: false
+        ))
+        XCTAssertFalse(AppStore.shouldFetchVoiceModel(
+            forceRefresh: false,
+            activeModelAvailable: true
+        ))
+        XCTAssertTrue(AppStore.shouldFetchVoiceModel(
+            forceRefresh: true,
+            activeModelAvailable: true
+        ))
+    }
+
     func testStrictManifestAndEd25519ArtifactVerification() throws {
         let artifact = Data("small-placeholder-model".utf8)
         let artifactURL = try writeTemporaryArtifact(artifact)

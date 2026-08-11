@@ -14,6 +14,28 @@ private final class RecordingVoiceSynthesizer: VoiceSynthesizing {
     }
 }
 
+private final class APIErrorURLProtocol: URLProtocol {
+    static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        do {
+            let handler = try XCTUnwrap(Self.handler)
+            let (response, data) = try handler(request)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
+}
+
 @MainActor
 final class BackendCommandPresentationTests: XCTestCase {
     func testCanonicalServerPresentationIsUsed() throws {
@@ -256,6 +278,189 @@ final class BackendCommandPresentationTests: XCTestCase {
         XCTAssertNil(acknowledged.envelope)
     }
 
+    func testUncertainSubmitFailureKeepsGenericPendingCheckpointForRecovery() async throws {
+        let url = Self.temporarySQLiteURL("uncertain-submit")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let store = SQLiteStore(databaseURL: url)
+        let coordinator = ActiveCommandCheckpointCoordinator(
+            store: store,
+            synthesizer: RecordingVoiceSynthesizer()
+        )
+        let envelope = try Self.envelope(commandID: "cmd_uncertain")
+        var beganPresentation: BackendCommandPresentation?
+
+        do {
+            _ = try await coordinator.submit(
+                envelope: envelope,
+                scope: try XCTUnwrap(ActiveCommandScope(
+                    backendURL: URL(string: "https://api.example.com"),
+                    ownerUserID: "usr_stable"
+                )),
+                onBegan: { beganPresentation = coordinator.presentation }
+            ) { _ in
+                throw APIClientError.network("connection lost after upload")
+            }
+            XCTFail("Expected the uncertain POST to fail")
+        } catch let error as APIClientError {
+            guard case .network = error else {
+                return XCTFail("Expected a network error")
+            }
+        }
+
+        XCTAssertEqual(beganPresentation?.state, "submitting")
+        XCTAssertEqual(
+            beganPresentation?.message,
+            "Sending command. Waiting for the backend to confirm receipt."
+        )
+        XCTAssertNil(beganPresentation?.voiceScript)
+        XCTAssertEqual(store.loadActiveCommandCheckpoint()?.envelope, envelope)
+        XCTAssertEqual(coordinator.commandIDForReconciliation, envelope.commandID)
+    }
+
+    func testDefinitelyRejectedSubmitCanReleaseFenceWithoutClearingAcknowledgedCommand() throws {
+        let url = Self.temporarySQLiteURL("rejected-submit")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let store = SQLiteStore(databaseURL: url)
+        let coordinator = ActiveCommandCheckpointCoordinator(
+            store: store,
+            synthesizer: RecordingVoiceSynthesizer()
+        )
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+
+        try coordinator.begin(
+            envelope: Self.envelope(commandID: "cmd_rejected"),
+            scope: scope
+        )
+        try coordinator.abandonUnacknowledgedSubmission(expectedCommandID: "cmd_rejected")
+        XCTAssertNil(coordinator.checkpoint)
+        XCTAssertNil(coordinator.presentation)
+        XCTAssertNil(store.loadActiveCommandCheckpoint())
+
+        try coordinator.begin(
+            envelope: Self.envelope(commandID: "cmd_next"),
+            scope: scope
+        )
+        _ = try coordinator.accept(
+            response: Self.response(
+                commandID: "cmd_next",
+                state: "queued",
+                result: nil,
+                version: 1
+            ),
+            expectedCommandID: "cmd_next"
+        )
+        try coordinator.abandonUnacknowledgedSubmission(expectedCommandID: "cmd_next")
+        XCTAssertEqual(coordinator.checkpoint?.commandID, "cmd_next")
+        XCTAssertEqual(coordinator.checkpoint?.phase, .acknowledged)
+    }
+
+    func testAllowlistedPrePersistenceErrorsAreDefinitelyRejected() {
+        XCTAssertTrue(AppStore.commandSubmissionDefinitelyRejected(APIClientError.noToken))
+        XCTAssertTrue(AppStore.commandSubmissionDefinitelyRejected(APIClientError.invalidBaseURL))
+
+        for (status, errorCode) in [
+            (400, "validation_error"),
+            (401, "unauthorized"),
+            (404, "not_found"),
+            (422, "unsupported_intent"),
+        ] {
+            XCTAssertTrue(AppStore.commandSubmissionDefinitelyRejected(APIClientError.badStatus(
+                status,
+                "rejected before persistence",
+                APIErrorMetadata(
+                    retryable: false,
+                    retryAfter: nil,
+                    requestID: nil,
+                    errorCode: errorCode
+                )
+            )))
+        }
+    }
+
+    func testUnknownNonRetryable4xxIsAmbiguous() {
+        XCTAssertFalse(AppStore.commandSubmissionDefinitelyRejected(APIClientError.badStatus(
+            422,
+            "unknown client error",
+            APIErrorMetadata(
+                retryable: false,
+                retryAfter: nil,
+                requestID: nil,
+                errorCode: "future_contract_error"
+            )
+        )))
+        XCTAssertFalse(AppStore.commandSubmissionDefinitelyRejected(APIClientError.badStatus(
+            422,
+            "missing structured code",
+            APIErrorMetadata(retryable: false, retryAfter: nil, requestID: nil)
+        )))
+        XCTAssertFalse(AppStore.commandSubmissionDefinitelyRejected(APIClientError.badStatus(
+            422,
+            "status and code do not match",
+            APIErrorMetadata(
+                retryable: false,
+                retryAfter: nil,
+                requestID: nil,
+                errorCode: "validation_error"
+            )
+        )))
+
+        XCTAssertFalse(AppStore.commandSubmissionDefinitelyRejected(APIClientError.network("timeout")))
+        XCTAssertFalse(AppStore.commandSubmissionDefinitelyRejected(APIClientError.decoding))
+        for code in [408, 409, 425, 429, 500] {
+            XCTAssertFalse(AppStore.commandSubmissionDefinitelyRejected(APIClientError.badStatus(
+                code,
+                "ambiguous",
+                APIErrorMetadata(retryable: code >= 500, retryAfter: nil, requestID: nil)
+            )))
+        }
+    }
+
+    func testAPIClientPreservesBackendErrorCodeInMetadata() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [APIErrorURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer {
+            APIErrorURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+        APIErrorURLProtocol.handler = { request in
+            let response = try XCTUnwrap(HTTPURLResponse(
+                url: request.url ?? URL(string: "https://api.example.com")!,
+                statusCode: 422,
+                httpVersion: nil,
+                headerFields: nil
+            ))
+            let body = Data(#"{"error":{"code":"unsupported_intent","message":"unsupported","retryable":false,"request_id":"req_code"}}"#.utf8)
+            return (response, body)
+        }
+        let previousBaseURL = UserDefaults.standard.string(forKey: "vab.apiBase")
+        defer {
+            if let previousBaseURL {
+                UserDefaults.standard.set(previousBaseURL, forKey: "vab.apiBase")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "vab.apiBase")
+            }
+        }
+        let client = APIClient(session: session)
+        client.baseURL = URL(string: "https://api.example.com")
+        client.token = "test-token"
+
+        do {
+            _ = try await client.createCommand(Self.envelope(commandID: "cmd_error_code"))
+            XCTFail("Expected the backend rejection")
+        } catch let APIClientError.badStatus(status, _, metadata) {
+            XCTAssertEqual(status, 422)
+            XCTAssertEqual(metadata.errorCode, "unsupported_intent")
+            XCTAssertEqual(metadata.requestID, "req_code")
+            XCTAssertFalse(metadata.retryable)
+        } catch {
+            XCTFail("Expected structured API status error, got \(error)")
+        }
+    }
+
     func testPersistenceFailurePreventsPost() async throws {
         let parentFile = FileManager.default.temporaryDirectory
             .appendingPathComponent("knock-knock-parent-file-\(UUID().uuidString)")
@@ -310,7 +515,9 @@ final class BackendCommandPresentationTests: XCTestCase {
             store: SQLiteStore(databaseURL: url),
             synthesizer: RecordingVoiceSynthesizer()
         )
-        XCTAssertNil(try reopened.restore(scope: scope))
+        let restoredPending = try XCTUnwrap(reopened.restore(scope: scope))
+        XCTAssertEqual(restoredPending.state, "submitting")
+        XCTAssertNil(restoredPending.voiceScript)
         var replayedEnvelope: CommandEnvelope?
         let application = try await reopened.reconcileCurrent(
             get: { _ in
@@ -337,6 +544,135 @@ final class BackendCommandPresentationTests: XCTestCase {
         XCTAssertNil(reopened.checkpoint?.envelope)
     }
 
+    func testColdStartReplayDefiniteRejectionClearsSubmittingFenceAndAllowsNextCommand() async throws {
+        let url = Self.temporarySQLiteURL("replay-definite-rejection")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        let first = ActiveCommandCheckpointCoordinator(
+            store: SQLiteStore(databaseURL: url),
+            synthesizer: RecordingVoiceSynthesizer()
+        )
+        try first.begin(
+            envelope: Self.envelope(commandID: "cmd_replay_rejected"),
+            scope: scope
+        )
+
+        let reopenedStore = SQLiteStore(databaseURL: url)
+        let reopened = ActiveCommandCheckpointCoordinator(
+            store: reopenedStore,
+            synthesizer: RecordingVoiceSynthesizer()
+        )
+        _ = try XCTUnwrap(reopened.restore(scope: scope))
+        let application = try await reopened.reconcileCurrent(
+            get: { _ in
+                throw APIClientError.badStatus(
+                    404,
+                    "missing",
+                    APIErrorMetadata(
+                        retryable: false,
+                        retryAfter: nil,
+                        requestID: nil,
+                        errorCode: "not_found"
+                    )
+                )
+            },
+            replay: { _ in
+                throw APIClientError.badStatus(
+                    400,
+                    "invalid envelope",
+                    APIErrorMetadata(
+                        retryable: false,
+                        retryAfter: nil,
+                        requestID: nil,
+                        errorCode: "validation_error"
+                    )
+                )
+            },
+            definitelyRejected: { AppStore.commandSubmissionDefinitelyRejected($0) }
+        )
+
+        XCTAssertNil(application)
+        XCTAssertNil(reopened.checkpoint)
+        XCTAssertNil(reopened.presentation)
+        XCTAssertNil(reopenedStore.loadActiveCommandCheckpoint())
+
+        try reopened.begin(
+            envelope: Self.envelope(commandID: "cmd_after_rejection"),
+            scope: scope
+        )
+        XCTAssertEqual(reopened.checkpoint?.commandID, "cmd_after_rejection")
+    }
+
+    func testColdStartReplayAmbiguousConflictRetainsSubmittingFence() async throws {
+        let url = Self.temporarySQLiteURL("replay-ambiguous-conflict")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        let envelope = try Self.envelope(commandID: "cmd_replay_ambiguous")
+        let first = ActiveCommandCheckpointCoordinator(
+            store: SQLiteStore(databaseURL: url),
+            synthesizer: RecordingVoiceSynthesizer()
+        )
+        try first.begin(envelope: envelope, scope: scope)
+
+        let reopenedStore = SQLiteStore(databaseURL: url)
+        let reopened = ActiveCommandCheckpointCoordinator(
+            store: reopenedStore,
+            synthesizer: RecordingVoiceSynthesizer()
+        )
+        _ = try XCTUnwrap(reopened.restore(scope: scope))
+
+        do {
+            _ = try await reopened.reconcileCurrent(
+                get: { _ in
+                    throw APIClientError.badStatus(
+                        404,
+                        "missing",
+                        APIErrorMetadata(
+                            retryable: false,
+                            retryAfter: nil,
+                            requestID: nil,
+                            errorCode: "not_found"
+                        )
+                    )
+                },
+                replay: { _ in
+                    throw APIClientError.badStatus(
+                        409,
+                        "conflict",
+                        APIErrorMetadata(
+                            retryable: false,
+                            retryAfter: nil,
+                            requestID: nil,
+                            errorCode: "conflict"
+                        )
+                    )
+                },
+                definitelyRejected: { AppStore.commandSubmissionDefinitelyRejected($0) }
+            )
+            XCTFail("Expected the ambiguous replay error")
+        } catch let APIClientError.badStatus(status, _, _) {
+            XCTAssertEqual(status, 409)
+        }
+
+        XCTAssertEqual(reopened.checkpoint?.envelope, envelope)
+        XCTAssertEqual(reopenedStore.loadActiveCommandCheckpoint()?.envelope, envelope)
+        XCTAssertThrowsError(try reopened.begin(
+            envelope: Self.envelope(commandID: "cmd_blocked_by_ambiguity"),
+            scope: scope
+        )) { error in
+            XCTAssertEqual(
+                error as? ActiveCommandCheckpointError,
+                .commandInProgress("cmd_replay_ambiguous")
+            )
+        }
+    }
+
     func testColdStartAwaitingConfirmationRotatesAndDurablyStoresFreshToken() async throws {
         let url = Self.temporarySQLiteURL("confirmation-replay")
         defer { Self.removeSQLiteArtifacts(at: url) }
@@ -358,7 +694,9 @@ final class BackendCommandPresentationTests: XCTestCase {
             store: SQLiteStore(databaseURL: url),
             synthesizer: RecordingVoiceSynthesizer()
         )
-        XCTAssertNil(try reopened.restore(scope: scope))
+        let restoredPending = try XCTUnwrap(reopened.restore(scope: scope))
+        XCTAssertEqual(restoredPending.state, "submitting")
+        XCTAssertNil(restoredPending.voiceScript)
         var replayedEnvelope: CommandEnvelope?
         let application = try await reopened.reconcileCurrent(
             get: { commandID in
@@ -537,6 +875,148 @@ final class BackendCommandPresentationTests: XCTestCase {
         XCTAssertNil(store.loadActiveCommandCheckpoint())
     }
 
+    func testBackgroundPresentationDefersSpeechUntilForegroundExactlyOnce() throws {
+        let url = Self.temporarySQLiteURL("deferred-speech")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let store = SQLiteStore(databaseURL: url)
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        XCTAssertTrue(store.saveActiveCommandCheckpoint(Self.checkpoint(
+            phase: .terminalPendingPresentation,
+            commandID: "cmd_deferred_voice",
+            state: "succeeded",
+            version: 4,
+            presentation: Self.presentation(
+                displayText: "The command completed in the background.",
+                voiceScript: "Background command complete.",
+                terminal: true
+            )
+        )))
+
+        var isForeground = false
+        let synthesizer = RecordingVoiceSynthesizer()
+        let coordinator = ActiveCommandCheckpointCoordinator(
+            store: store,
+            synthesizer: synthesizer,
+            isSpeechAllowed: { isForeground }
+        )
+
+        let restored = try XCTUnwrap(coordinator.restore(scope: scope))
+        XCTAssertEqual(restored.message, "The command completed in the background.")
+        XCTAssertTrue(synthesizer.spoken.isEmpty)
+        XCTAssertEqual(synthesizer.stopCount, 0)
+        XCTAssertNil(store.loadActiveCommandCheckpoint()?.lastAnnouncedVersion)
+
+        isForeground = true
+        try coordinator.announceDeferredIfNeeded()
+        try coordinator.announceDeferredIfNeeded()
+
+        XCTAssertEqual(synthesizer.spoken, ["Background command complete."])
+        XCTAssertEqual(synthesizer.stopCount, 1)
+        XCTAssertEqual(store.loadActiveCommandCheckpoint()?.lastAnnouncedVersion, 4)
+    }
+
+    func testMarkPresentedWhileSpeechDeferredSurvivesRelaunchAndDoesNotResurrectAfterAnnouncement() throws {
+        let url = Self.temporarySQLiteURL("presented-before-deferred-speech")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let store = SQLiteStore(databaseURL: url)
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        XCTAssertTrue(store.saveActiveCommandCheckpoint(Self.checkpoint(
+            phase: .terminalPendingPresentation,
+            commandID: "cmd_presented_before_speech",
+            state: "succeeded",
+            version: 6,
+            presentation: Self.presentation(
+                displayText: "The command completed while backgrounded.",
+                voiceScript: "Deferred command complete.",
+                terminal: true
+            )
+        )))
+
+        var isForeground = false
+        let firstSynthesizer = RecordingVoiceSynthesizer()
+        let first = ActiveCommandCheckpointCoordinator(
+            store: store,
+            synthesizer: firstSynthesizer,
+            isSpeechAllowed: { isForeground }
+        )
+        _ = try XCTUnwrap(first.restore(scope: scope))
+        try first.markPresented(commandID: "cmd_presented_before_speech", version: 6)
+
+        XCTAssertTrue(firstSynthesizer.spoken.isEmpty)
+        XCTAssertEqual(store.loadActiveCommandCheckpoint()?.lastPresentedVersion, 6)
+        XCTAssertNil(store.loadActiveCommandCheckpoint()?.lastAnnouncedVersion)
+
+        let reopenedStore = SQLiteStore(databaseURL: url)
+        let reopenedSynthesizer = RecordingVoiceSynthesizer()
+        let reopened = ActiveCommandCheckpointCoordinator(
+            store: reopenedStore,
+            synthesizer: reopenedSynthesizer,
+            isSpeechAllowed: { isForeground }
+        )
+        _ = try XCTUnwrap(reopened.restore(scope: scope))
+        XCTAssertTrue(reopenedSynthesizer.spoken.isEmpty)
+
+        isForeground = true
+        try reopened.announceDeferredIfNeeded()
+        try reopened.announceDeferredIfNeeded()
+        try reopened.markPresented(commandID: "cmd_presented_before_speech", version: 6)
+
+        XCTAssertEqual(reopenedSynthesizer.spoken, ["Deferred command complete."])
+        XCTAssertEqual(reopenedSynthesizer.stopCount, 1)
+        XCTAssertNil(reopenedStore.loadActiveCommandCheckpoint())
+
+        let finalSynthesizer = RecordingVoiceSynthesizer()
+        let finalReopen = ActiveCommandCheckpointCoordinator(
+            store: SQLiteStore(databaseURL: url),
+            synthesizer: finalSynthesizer
+        )
+        XCTAssertNil(try finalReopen.restore(scope: scope))
+        XCTAssertTrue(finalSynthesizer.spoken.isEmpty)
+    }
+
+    func testDiscardInMemoryStopsActiveBackendSpeech() throws {
+        let url = Self.temporarySQLiteURL("discard-speech")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let store = SQLiteStore(databaseURL: url)
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        XCTAssertTrue(store.saveActiveCommandCheckpoint(Self.checkpoint(
+            phase: .terminalPendingPresentation,
+            commandID: "cmd_private_voice",
+            state: "succeeded",
+            version: 3,
+            presentation: Self.presentation(
+                displayText: "The server completed the command.",
+                voiceScript: "Private backend-owned result.",
+                terminal: true
+            )
+        )))
+
+        let synthesizer = RecordingVoiceSynthesizer()
+        let coordinator = ActiveCommandCheckpointCoordinator(
+            store: store,
+            synthesizer: synthesizer
+        )
+        _ = try coordinator.restore(scope: scope)
+        XCTAssertEqual(synthesizer.spoken, ["Private backend-owned result."])
+        XCTAssertEqual(synthesizer.stopCount, 1)
+
+        coordinator.discardInMemory()
+
+        XCTAssertEqual(synthesizer.stopCount, 2)
+        XCTAssertNil(coordinator.checkpoint)
+        XCTAssertNil(coordinator.presentation)
+        XCTAssertNil(coordinator.lastSpoken)
+    }
+
     private nonisolated static func response(
         commandID: String = "cmd_server_1",
         state: String,
@@ -631,5 +1111,30 @@ final class BackendCommandPresentationTests: XCTestCase {
         for suffix in ["", "-wal", "-shm"] {
             try? FileManager.default.removeItem(atPath: url.path + suffix)
         }
+    }
+}
+
+@MainActor
+final class AppStoreVoiceLifecycleTests: XCTestCase {
+    func testInactiveStopsBackendSpeechWhenVoiceControllerIsNil() {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knock-knock-lifecycle-\(UUID().uuidString).sqlite")
+        defer {
+            for suffix in ["", "-wal", "-shm"] {
+                try? FileManager.default.removeItem(atPath: url.path + suffix)
+            }
+        }
+        let synthesizer = RecordingVoiceSynthesizer()
+        let store = AppStore(
+            localStore: SQLiteStore(databaseURL: url),
+            commandSynthesizer: synthesizer,
+            backgroundReconciliationDispatcher: BackgroundReconciliationDispatcher()
+        )
+        XCTAssertNil(store.voiceController)
+        let stopsBeforeTransition = synthesizer.stopCount
+
+        store.suspendVoiceForSceneTransition()
+
+        XCTAssertEqual(synthesizer.stopCount, stopsBeforeTransition + 1)
     }
 }
