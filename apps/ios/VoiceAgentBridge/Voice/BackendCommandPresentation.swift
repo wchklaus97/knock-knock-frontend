@@ -99,6 +99,7 @@ enum ActiveCommandCheckpointReducer {
             envelope: envelope,
             validatedPresentation: nil,
             pendingConfirmation: nil,
+            lastPresentedVersion: nil,
             lastAnnouncedVersion: nil,
             backendOrigin: scope.backendOrigin,
             ownerUserID: scope.ownerUserID,
@@ -154,6 +155,7 @@ enum ActiveCommandCheckpointReducer {
             pendingConfirmation: response.state == "awaiting_confirmation"
                 ? confirmation
                 : nil,
+            lastPresentedVersion: current.lastPresentedVersion,
             lastAnnouncedVersion: current.lastAnnouncedVersion,
             backendOrigin: current.backendOrigin,
             ownerUserID: current.ownerUserID,
@@ -233,6 +235,18 @@ struct BackendCommandPresentation: Equatable {
     }
 
     init?(checkpoint: ActiveCommandCheckpoint) {
+        if checkpoint.phase == .submitting,
+           checkpoint.backendState == nil,
+           checkpoint.backendVersion == nil
+        {
+            self.init(
+                commandID: checkpoint.commandID,
+                version: -1,
+                state: "submitting",
+                serverPresentation: nil
+            )
+            return
+        }
         guard let state = checkpoint.backendState,
               let version = checkpoint.backendVersion
         else { return nil }
@@ -268,6 +282,7 @@ struct BackendCommandPresentation: Equatable {
 
     private static func genericMessage(for state: String) -> String {
         switch state {
+        case "submitting": return "Sending command. Waiting for the backend to confirm receipt."
         case "pending", "validated", "queued": return "Command status: queued."
         case "awaiting_confirmation": return "Command status: awaiting confirmation."
         case "running": return "Command status: running."
@@ -298,14 +313,20 @@ struct ActiveCommandApplication {
 final class ActiveCommandCheckpointCoordinator {
     private let store: SQLiteStore
     private let synthesizer: VoiceSynthesizing
+    private let isSpeechAllowed: () -> Bool
 
     private(set) var checkpoint: ActiveCommandCheckpoint?
     private(set) var presentation: BackendCommandPresentation?
     private(set) var lastSpoken: String?
 
-    init(store: SQLiteStore, synthesizer: VoiceSynthesizing) {
+    init(
+        store: SQLiteStore,
+        synthesizer: VoiceSynthesizing,
+        isSpeechAllowed: @escaping () -> Bool = { true }
+    ) {
         self.store = store
         self.synthesizer = synthesizer
+        self.isSpeechAllowed = isSpeechAllowed
     }
 
     var commandIDForReconciliation: String? {
@@ -336,6 +357,14 @@ final class ActiveCommandCheckpointCoordinator {
             presentation = nil
             return nil
         }
+        if deliveryObligationsAreSatisfied(for: stored) {
+            guard store.clearActiveCommandCheckpoint() else {
+                throw ActiveCommandCheckpointError.persistenceFailed
+            }
+            checkpoint = nil
+            presentation = nil
+            return nil
+        }
         checkpoint = stored
         presentation = BackendCommandPresentation(checkpoint: stored)
         try announceIfNeeded()
@@ -357,16 +386,18 @@ final class ActiveCommandCheckpointCoordinator {
             throw ActiveCommandCheckpointError.persistenceFailed
         }
         checkpoint = next
-        presentation = nil
+        presentation = BackendCommandPresentation(checkpoint: next)
     }
 
     func submit(
         envelope: CommandEnvelope,
         scope: ActiveCommandScope,
         createdAt: Date = Date(),
+        onBegan: () -> Void = {},
         post: (CommandEnvelope) async throws -> CommandResponse
     ) async throws -> ActiveCommandApplication {
         try begin(envelope: envelope, scope: scope, createdAt: createdAt)
+        onBegan()
         let response = try await post(envelope)
         guard let application = try accept(
             response: response,
@@ -377,9 +408,27 @@ final class ActiveCommandCheckpointCoordinator {
         return application
     }
 
+    /// Clears only a request that is known not to have reached backend
+    /// acceptance. Ambiguous network/decoding failures must keep the envelope
+    /// so reconciliation can safely GET or replay the same idempotent command.
+    func abandonUnacknowledgedSubmission(expectedCommandID: String) throws {
+        guard let checkpoint,
+              checkpoint.commandID == expectedCommandID,
+              checkpoint.phase == .submitting,
+              checkpoint.backendState == nil,
+              checkpoint.backendVersion == nil,
+              checkpoint.envelope != nil
+        else { return }
+        guard store.clearActiveCommandCheckpoint() else {
+            throw ActiveCommandCheckpointError.persistenceFailed
+        }
+        discardInMemory()
+    }
+
     func reconcileCurrent(
         get: (String) async throws -> CommandResponse,
-        replay: (CommandEnvelope) async throws -> CommandResponse
+        replay: (CommandEnvelope) async throws -> CommandResponse,
+        definitelyRejected: (Error) -> Bool = { _ in false }
     ) async throws -> ActiveCommandApplication? {
         guard let expectedCommandID = commandIDForReconciliation else { return nil }
         do {
@@ -408,7 +457,14 @@ final class ActiveCommandCheckpointCoordinator {
                 current: checkpoint
             ) {
             case let .replay(envelope):
-                let response = try await replay(envelope)
+                let response: CommandResponse
+                do {
+                    response = try await replay(envelope)
+                } catch {
+                    guard definitelyRejected(error) else { throw error }
+                    try abandonUnacknowledgedSubmission(expectedCommandID: expectedCommandID)
+                    return nil
+                }
                 return try acceptForReconciliation(
                     response: response,
                     expectedCommandID: expectedCommandID
@@ -449,18 +505,29 @@ final class ActiveCommandCheckpointCoordinator {
         }
     }
 
-    /// A terminal checkpoint is no longer needed on disk once the Home view
-    /// has mounted that exact version. Its in-memory value remains available
-    /// for Undo and is replaced atomically by an explicit new command.
+    /// Records the UI obligation independently from speech. A background
+    /// terminal result remains durable until any deferred voice script has
+    /// also been announced.
     func markPresented(commandID: String, version: Int) throws {
-        guard let checkpoint,
+        guard var checkpoint,
               checkpoint.commandID == commandID,
               checkpoint.backendVersion == version,
               checkpoint.phase == .terminalPendingPresentation
         else { return }
-        guard store.clearActiveCommandCheckpoint() else {
+        if checkpoint.lastPresentedVersion == version {
+            // The durable row may already have been cleared after speech. Do
+            // not recreate it when SwiftUI mounts the same presentation again.
+            try clearDurableCheckpointIfDelivered()
+            return
+        }
+        checkpoint.lastPresentedVersion = version
+        guard checkpoint.isStructurallyValid,
+              store.saveActiveCommandCheckpoint(checkpoint)
+        else {
             throw ActiveCommandCheckpointError.persistenceFailed
         }
+        self.checkpoint = checkpoint
+        try clearDurableCheckpointIfDelivered()
     }
 
     func clearForScopeChange() throws {
@@ -471,9 +538,22 @@ final class ActiveCommandCheckpointCoordinator {
     }
 
     func discardInMemory() {
+        // Backend voice output may still be in progress when the user logs out,
+        // changes API/account scope, refreshes the model, or starts a new voice
+        // capture. Stop it before dropping the ownership checkpoint so private
+        // text cannot continue across that boundary.
+        synthesizer.stop()
         checkpoint = nil
         presentation = nil
         lastSpoken = nil
+    }
+
+    /// A silent background reconciliation may persist a newer canonical
+    /// presentation without speaking it. The foreground lifecycle calls this
+    /// method so that exact durable version is announced once, after the app
+    /// becomes active.
+    func announceDeferredIfNeeded() throws {
+        try announceIfNeeded()
     }
 
     private func acceptForReconciliation(
@@ -496,7 +576,8 @@ final class ActiveCommandCheckpointCoordinator {
         guard var checkpoint,
               let presentation,
               let voiceScript = presentation.voiceScript,
-              checkpoint.lastAnnouncedVersion != presentation.version
+              checkpoint.lastAnnouncedVersion != presentation.version,
+              isSpeechAllowed()
         else { return }
         checkpoint.lastAnnouncedVersion = presentation.version
         guard checkpoint.isStructurallyValid,
@@ -508,5 +589,26 @@ final class ActiveCommandCheckpointCoordinator {
         synthesizer.stop()
         synthesizer.speak(voiceScript)
         lastSpoken = voiceScript
+        try clearDurableCheckpointIfDelivered()
+    }
+
+    private func clearDurableCheckpointIfDelivered() throws {
+        guard let checkpoint,
+              deliveryObligationsAreSatisfied(for: checkpoint)
+        else { return }
+        guard store.clearActiveCommandCheckpoint() else {
+            throw ActiveCommandCheckpointError.persistenceFailed
+        }
+    }
+
+    private func deliveryObligationsAreSatisfied(
+        for checkpoint: ActiveCommandCheckpoint
+    ) -> Bool {
+        guard checkpoint.phase == .terminalPendingPresentation,
+              let version = checkpoint.backendVersion,
+              checkpoint.lastPresentedVersion == version
+        else { return false }
+        return checkpoint.validatedPresentation?.voice_script == nil
+            || checkpoint.lastAnnouncedVersion == version
     }
 }
