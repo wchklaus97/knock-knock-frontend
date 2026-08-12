@@ -106,7 +106,7 @@ final class PushToTalkVoiceCapture {
     ) {
         self.audioEngine = audioEngine
         self.audioSession = audioSession
-        recognizer = SFSpeechRecognizer(locale: locale)
+        recognizer = OnDeviceSpeechRecognizerFactory.make(locale: locale)
         self.vadConfiguration = vadConfiguration
         self.finalTranscriptWaitDuration = max(0, finalTranscriptWaitDuration)
         self.notificationCenter = notificationCenter

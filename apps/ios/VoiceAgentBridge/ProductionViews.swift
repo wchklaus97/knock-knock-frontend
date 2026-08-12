@@ -489,7 +489,7 @@ struct LocalVoiceCommandCard: View {
 
     private var stateDescription: String {
         switch controller.state {
-        case .idle: return "Gemma intent parsing is ready."
+        case .idle: return "On-device intent parsing is ready."
         case .requestingPermissions: return "Waiting for microphone permission…"
         case .listening: return "Listening with voice activity detection…"
         case .processing: return "Understanding locally, then validating with the backend…"
@@ -3311,7 +3311,9 @@ struct ProductionSettingsView: View {
                                     Text("On-device voice")
                                         .font(.headline.weight(.bold))
                                 }
-                                Text("Download the signed Gemma command model once. Push-to-talk then keeps audio local and sends only a validated CommandEnvelope.")
+                                Text(LocalVoiceRuntimePolicy.strategy() == .deterministicParser
+                                    ? "This device uses the fail-closed local command parser. Push-to-talk keeps audio local and sends only a validated CommandEnvelope."
+                                    : "Download the signed Gemma command model once. Push-to-talk then keeps audio local and sends only a validated CommandEnvelope.")
                                     .font(.subheadline)
                                     .foregroundStyle(KnockDesign.muted)
                                     .fixedSize(horizontal: false, vertical: true)
@@ -3323,7 +3325,7 @@ struct ProductionSettingsView: View {
                                 } label: {
                                     HStack {
                                         if store.voiceModelStatus.hasPrefix("Preparing") { ProgressView() }
-                                        Text(store.voiceController == nil ? "Prepare voice model" : "Refresh voice model")
+                                        Text(store.voiceController == nil ? "Prepare on-device voice" : "Refresh on-device voice")
                                         Spacer()
                                         Image(systemName: "arrow.down.circle")
                                     }
@@ -3708,7 +3710,7 @@ struct SettingsPanelView: View {
 
     @ViewBuilder
     private var voiceContent: some View {
-        Text("Push-to-talk keeps microphone capture in the foreground. The local model only produces a CommandEnvelope; the backend remains the execution authority.")
+        Text("Push-to-talk keeps microphone capture in the foreground. Local intent parsing only produces a CommandEnvelope; the backend remains the execution authority.")
             .font(.subheadline)
             .foregroundStyle(KnockDesign.muted)
         KnockCard(padding: 14) {
@@ -3716,7 +3718,7 @@ struct SettingsPanelView: View {
                 Image(systemName: "waveform.and.mic")
                     .foregroundStyle(KnockDesign.lavender)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(store.voiceController == nil ? "Voice model not prepared" : "Voice model ready")
+                    Text(store.voiceController == nil ? "On-device voice not prepared" : "On-device voice ready")
                         .font(.headline)
                     Text(store.voiceModelStatus)
                         .font(.caption)
@@ -3730,7 +3732,7 @@ struct SettingsPanelView: View {
         } label: {
             HStack {
                 if store.voiceModelStatus.hasPrefix("Preparing") { ProgressView() }
-                Text(store.voiceController == nil ? "Prepare voice model" : "Refresh voice model")
+                Text(store.voiceController == nil ? "Prepare on-device voice" : "Refresh on-device voice")
                 Spacer()
                 Image(systemName: "arrow.down.circle")
             }

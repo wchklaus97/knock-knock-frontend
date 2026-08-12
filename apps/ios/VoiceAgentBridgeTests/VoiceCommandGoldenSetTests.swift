@@ -42,13 +42,13 @@ private struct VoiceCommandGoldenExample: Decodable {
     }
 }
 
-private struct VoiceModelUATInputs {
+struct VoiceModelUATInputs {
     let artifactURL: URL
     let manifestURL: URL
     let publicKey: Data
 }
 
-private enum VoiceModelUATInputError: Error, Equatable, LocalizedError {
+enum VoiceModelUATInputError: Error, Equatable, LocalizedError {
     case partialEnvironment(missingKeys: [String])
     case invalidEnvironmentInput(key: String)
     case requiredStagedInputsInvalid
@@ -65,7 +65,7 @@ private enum VoiceModelUATInputError: Error, Equatable, LocalizedError {
     }
 }
 
-private struct VoiceModelUATInputResolver {
+struct VoiceModelUATInputResolver {
     static let modelEnvironmentKey = "KNOCK_VOICE_MODEL_PATH"
     static let manifestEnvironmentKey = "KNOCK_VOICE_MODEL_MANIFEST_PATH"
     static let publicKeyEnvironmentKey = "KNOCK_MODEL_PUBLIC_KEY_BASE64"

@@ -185,6 +185,106 @@ The test's success oracle is the final backend message, not a local queued or op
 state. Raw microphone buffers stay in memory and are appended only to the on-device speech
 request; the app has no audio upload API and does not write an audio recording.
 
+## Voice Dataset v2 deterministic UAT
+
+Keep the dataset and all generated audio outside Git. A configured package is rejected
+unless it contains 48 examples, 144 manifest rows, 144 unique paths, 144 unique content
+hashes, valid PCM signed 16-bit 16 kHz mono WAV data, matching hashes/durations, no hard
+clipping, and the frozen safety gates.
+
+The received 2026-08-12 package had only 114 unique hashes because every English clean
+file shared one recording and every English fast-phone file shared another. Its manifest
+also declared only one voice ID for every locale. Regenerate a normalized external copy
+without changing the original package:
+
+```bash
+scripts/regenerate-voice-dataset-v2-local.sh \
+  /absolute/path/to/normalized-input \
+  /absolute/path/to/new-repaired-output
+```
+
+The local generator uses two native voices for English and Mandarin. It calibrates each
+pink-noise profile from measured clean/noise RMS energy and rejects any generated WAV
+outside the 14-16 dB SNR window; the Swift integrity test independently measures the PCM
+difference against the clean reference. macOS currently
+exposes only `Sinji` as a native Hong Kong Cantonese voice, so every Cantonese manifest
+row records that explicit provider-limitation exception. The exact macOS/FFmpeg provenance
+and transforms are recorded in the manifest. Validate the external package on Simulator:
+
+```bash
+cd apps/ios
+xcodegen generate
+KNOCK_VOICE_AUDIO_DATASET_ROOT=/absolute/path/to/repaired-output \
+xcodebuild -project VoiceAgentBridge.xcodeproj -scheme VoiceAgentBridge \
+  -destination 'platform=iOS Simulator,name=iPhone 17' \
+  -only-testing:VoiceAgentBridgeTests/VoiceAudioDatasetV2Tests \
+  test
+```
+
+Stage only the validated JSON, manifest, and WAV files to the app's test Documents
+directory on an unlocked iPhone:
+
+```bash
+scripts/ios-voice-audio-uat.sh \
+  --device "$KNOCK_DEVICE_UDID" \
+  --dataset-root /absolute/path/to/repaired-output
+```
+
+The opt-in STT gate feeds each WAV through `SystemOnDeviceSpeechTranscriber` by default;
+on iOS 26, `KNOCK_VOICE_STT_BACKEND=speech_analyzer` selects the file-only
+`SpeechAnalyzer` qualification adapter. The full
+Layer A gate then selects the same command runtime as production and applies the strict
+envelope policy. iPhone 13 Pro/Pro Max use the deterministic parser and do not require a
+staged model; newer Gemma devices require the staged signed artifact. The machine report
+records the selected runtime and version. Start with one clean sample, then the 12-ID human
+subset, then all profiles. Speech Recognition permission remains human-controlled and an
+unauthorized device fails closed.
+
+```bash
+cd apps/ios
+xcodebuild -project VoiceAgentBridge.xcodeproj -scheme VoiceAgentBridge \
+  -destination "platform=iOS,id=$KNOCK_DEVICE_UDID" \
+  -only-testing:VoiceAgentBridgeTests/VoiceAudioSTTEvaluationTests \
+  KNOCK_RUN_VOICE_AUDIO_STT_UAT=1 \
+  KNOCK_VOICE_AUDIO_LIMIT=1 \
+  KNOCK_VOICE_AUDIO_PROFILES=clean_normal \
+  KNOCK_VOICE_STT_BACKEND=speech_analyzer \
+  KNOCK_VOICE_RESULT_DEVICE=iphone13-pro \
+  test
+
+xcodebuild -project VoiceAgentBridge.xcodeproj -scheme VoiceAgentBridge \
+  -destination "platform=iOS,id=$KNOCK_DEVICE_UDID" \
+  -only-testing:VoiceAgentBridgeTests/VoiceAudioPipelineEvaluationTests \
+  KNOCK_RUN_VOICE_AUDIO_PIPELINE_UAT=1 \
+  KNOCK_VOICE_AUDIO_CORE_SUBSET=1 \
+  KNOCK_VOICE_AUDIO_PROFILES=clean_normal,fast_phone,noise_snr15 \
+  KNOCK_VOICE_STT_BACKEND=speech_analyzer \
+  KNOCK_VOICE_RESULT_DEVICE=iphone13-pro \
+  test
+```
+
+Use `speech_analyzer_dictation` only for a diagnostic A/B comparison. It is not an
+approved production backend. SpeechAnalyzer selection is strict and does not silently
+fall back to legacy Speech, so a report cannot mislabel the backend that produced it.
+
+Machine-readable STT and pipeline results are written below the staged package's
+`voice-golden-v2-generated/results/` directory. No test creates an API client or uploads
+audio. Backend idempotency and confirmation remain a separate Layer B gate.
+
+### iPhone 13 runtime policy
+
+`iPhone14,2` (iPhone 13 Pro) and `iPhone14,3` (iPhone 13 Pro Max) use the
+fail-closed `DeterministicCommandGenerator`. The rejected 270M model is never loaded on
+these devices. The parser recognizes only the four allowlisted command shapes, grounds
+arguments in the transcript, and emits the same strict `CommandEnvelope` used by the
+signed Gemma path. Unsupported, incomplete, negated, compound, or policy-override
+utterances require clarification. Newer supported devices continue to use the signed,
+runtime-probed Gemma artifact.
+
+The transcript-level Dataset v2 gate validates all 48 commands against this iPhone 13
+policy. Physical WAV UAT remains separate because it also measures Apple's local STT,
+latency, device temperature, memory pressure, and the complete push-to-talk lifecycle.
+
 `pnpm test:canonical:codex:multiturn` creates two idempotent events, resumes the
 same session between them, and verifies two distinct action results with one
 `chat_id`. `pnpm test:ios` uses `scripts/ios-test-fixture.sh`; the fixture creates a

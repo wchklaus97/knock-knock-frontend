@@ -41,15 +41,17 @@ same trimmed 1–200-character contract as Rust/OpenAPI. Exact test
 counts and external gates are recorded in the
 backend release matrix/report rather than duplicated here. A licensed Gemma 3
 1B int4 artifact has now passed the signed UAT semantic/safety gate on simulator
-and iPhone 17 Pro Max. Production trust-key approval, iPhone 13 latency
-optimization, real microphone/device voice UAT, real APNs delivery,
+and iPhone 17 Pro Max. iPhone 13 Pro now uses the approved fail-closed
+deterministic parser instead of the latency-failing Gemma/270M paths; its 48-case
+transcript policy gate passes, but real WAV/microphone evidence is still pending.
+Production trust-key approval, real microphone/device voice UAT, real APNs delivery,
 simultaneous two-device convergence, paired PR review, and human rollout
 approval remain separate gates.
 
-Paired review is tracked in
-[frontend draft PR #16](https://github.com/wchklaus97/knock-knock-frontend/pull/16)
-and
-[backend draft PR #28](https://github.com/wchklaus97/knock-knock-backend/pull/28).
+Current iPhone 13 voice implementation and review are tracked in
+[frontend Draft PR #20](https://github.com/wchklaus97/knock-knock-frontend/pull/20).
+There is no paired backend code change for this slice; backend command safety was
+re-verified independently.
 
 **Locked MVP loop:**
 
@@ -75,10 +77,10 @@ Agent (MCP/CLI) → bridge API :8787 → iPhone app
 | iOS | SwiftUI app; Build25 release candidate archive with production onboarding defaulting to account creation; iOS 15.0 deployment floor; warm/cute production visual system with vector mascot; decision-inbox filters (Needs me / Active / All) plus search; offline/connection state with retry; agent/skill/facts/expiry/progress detail; one-time pairing-code generation + copy; iOS 15-compatible navigation and empty states; full-screen knock overlay with direct session review; safe destructive confirmation with alternate-action path; Keychain JWT storage; APNs deep-link handling; notification diagnostics; simulator UI tests |
 | E2E script | `pnpm test:e2e` runs the canonical Rust Worker/D1 contract smoke; `pnpm test:e2e:node` is migration-only |
 | Canonical host | Codex MCP/CLI; `pnpm test:canonical:codex` verifies the configured Codex bridge, and `pnpm test:canonical:codex:multiturn` verifies two replies on one session/chat |
-| iOS tests | The current implementation head passes 175 simulator unit/integration tests with 0 failures and 2 optional official LiteRT lifecycle-model tests skipped. The isolated Worker/D1 UI suite passes 3/3 flows covering Home Today/Week, drawer, Settings/pairing, destructive confirmation, and queued state. |
+| iOS tests | The current voice implementation head passes 192 simulator unit/integration tests: 187 passed, 0 failed, and 5 opt-in physical/model tests skipped. The isolated Worker/D1 UI suite remains a separate fixture-backed gate. |
 | MCP smoke | Direct stdio MCP server loop passes create/progress/needs_user/phone reply/claim/result/retry |
 | Real phone | The UAT-signed Gemma 3 1B int4 artifact passes the complete 32-example gate on iPhone 17 Pro Max: semantic accuracy 1.000, high-risk false executions 0, command p95 1.546 seconds. On iPhone 13 Pro the semantic/safety checks pass, but command p95 is 4.844 seconds and therefore fails the 2-second latency gate. This does not prove microphone-to-TTS UAT, thermal targets, real APNs delivery, airplane-mode recovery, or simultaneous two-device UI convergence. |
-| Remaining external step | Pin the approved production model-signing public key and publish the artifact privately to staging R2; keep Gemma disabled or use an approved fallback on iPhone 13 until its latency gate passes; then complete real microphone/thermal, APNs, and simultaneous same-account two-device UAT. Production rollout remains human-approved. |
+| Remaining external step | Unlock and authorize the connected iPhone 13 Pro, then run one WAV, the 12-ID subset, all 144 profiles, and live microphone/thermal UAT using the deterministic parser. Separately pin the production model key for newer-device Gemma, and complete APNs plus simultaneous same-account two-device UAT. Production rollout remains human-approved. |
 | Entitlements | Debug uses `aps-environment=development`; Release switches to `production` |
 | Staging device metadata | A read-only aggregate confirms two valid physical APNs registrations under one user; no token/identity was printed. Registration is proven, but real APNs delivery and two-device UI convergence are not. |
 
@@ -193,6 +195,16 @@ staged again or the app data is deliberately reset by the operator.
   destructive confirmation, Today/Week, drawer, Settings, and pairing flows
   passed against one isolated local Rust Worker/D1 fixture.
 
+### 2026-08-12 iPhone 13 deterministic voice path
+
+The iPhone 13 Pro/Pro Max production path now selects the fail-closed
+`DeterministicCommandGenerator`; the rejected 270M candidate is never loaded. The
+48-example transcript policy gate passes 36/36 commands and 12/12 clarifications,
+with 1.000 command accuracy for all three locales and zero high-risk false
+executions. This is not physical STT evidence. The complete physical plan,
+evidence levels, privacy boundary, and remaining gates are recorded in
+[`IPHONE13_VOICE_UAT.md`](IPHONE13_VOICE_UAT.md).
+
 ---
 
 ## Your mandate (end-to-end)
@@ -279,12 +291,12 @@ cd apps/api && node ../../scripts/apns-test.mjs
 
 - [x] Rust Worker/D1 contract, Paperclip boundary, canonical Codex multi-turn, RC security, installer, and type checks pass.
 - [x] Rust backend has 76 unit tests plus fmt, Clippy, WASM, Worker build, local contract, and release gates passing.
-- [x] Current iOS simulator regression passes 175 tests with 0 failures and 2 optional lifecycle-model skips, plus 3/3 UI flows against a fresh local Worker/D1 fixture.
-- [x] The current build installs and launches on both physical phones. The signed-model semantic/safety gate runs on both; iPhone 17 Pro Max passes the full latency gate, while iPhone 13 Pro latency remains explicitly open below.
+- [x] Current iOS voice regression passes 192 tests: 187 passed, 0 failed, and 5 opt-in physical/model tests skipped. Earlier fixture-backed UI flows remain separately evidenced.
+- [x] The signed-model semantic/safety gate runs on both phones; iPhone 17 Pro Max passes the full model latency gate. iPhone 13 now selects the deterministic parser because both Gemma candidates failed its release requirements.
 - [x] Production Worker health, metrics, migrations, secrets presence, and D1 backup evidence are verified.
 - [x] Build21 is officially signed with production APNs entitlement and uploaded to TestFlight.
 - [x] Frontend and backend are published in their independent GitHub repositories and synchronized by the root submodules.
-- [ ] The UAT-signed real model passes accuracy and safety on both phones and the 2-second latency gate on iPhone 17 Pro Max; iPhone 13 Pro latency and the production trust key remain open.
+- [ ] The iPhone 17 Pro Max signed model and iPhone 13 Pro deterministic parser each pass their physical audio accuracy, safety, and latency gates; the production model trust key remains open for Gemma devices.
 - [ ] Real microphone → STT → intent → command → backend → TTS UAT and thermal testing pass on both phone classes.
 - [ ] Real APNs delivery, airplane-mode recovery, and simultaneous same-account two-device convergence are observed.
 - [ ] GitHub Actions D1 backup runs once after `CLOUDFLARE_API_TOKEN` is added as an Actions secret.

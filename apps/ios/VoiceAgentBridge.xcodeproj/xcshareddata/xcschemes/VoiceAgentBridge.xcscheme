@@ -76,8 +76,58 @@
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
+            key = "KNOCK_RUN_VOICE_AUDIO_PIPELINE_UAT"
+            value = "$(KNOCK_RUN_VOICE_AUDIO_PIPELINE_UAT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_RUN_VOICE_AUDIO_STT_UAT"
+            value = "$(KNOCK_RUN_VOICE_AUDIO_STT_UAT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
             key = "KNOCK_UI_TEST_API_BASE_URL"
             value = "$(KNOCK_API_BASE_URL)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_AUDIO_DATASET_ROOT"
+            value = "$(KNOCK_VOICE_AUDIO_DATASET_ROOT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_AUDIO_HUMAN_SUBSET_ONLY"
+            value = "$(KNOCK_VOICE_AUDIO_HUMAN_SUBSET_ONLY)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_AUDIO_IDS"
+            value = "$(KNOCK_VOICE_AUDIO_IDS)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_AUDIO_LIMIT"
+            value = "$(KNOCK_VOICE_AUDIO_LIMIT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_AUDIO_PROFILES"
+            value = "$(KNOCK_VOICE_AUDIO_PROFILES)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_RESULT_DEVICE"
+            value = "$(KNOCK_VOICE_RESULT_DEVICE)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_STT_BACKEND"
+            value = "$(KNOCK_VOICE_STT_BACKEND)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_USE_GPU"
+            value = "$(KNOCK_VOICE_USE_GPU)"
             isEnabled = "YES">
          </EnvironmentVariable>
       </EnvironmentVariables>
@@ -116,8 +166,58 @@
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
+            key = "KNOCK_RUN_VOICE_AUDIO_PIPELINE_UAT"
+            value = "$(KNOCK_RUN_VOICE_AUDIO_PIPELINE_UAT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_RUN_VOICE_AUDIO_STT_UAT"
+            value = "$(KNOCK_RUN_VOICE_AUDIO_STT_UAT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
             key = "KNOCK_UI_TEST_API_BASE_URL"
             value = "$(KNOCK_API_BASE_URL)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_AUDIO_DATASET_ROOT"
+            value = "$(KNOCK_VOICE_AUDIO_DATASET_ROOT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_AUDIO_HUMAN_SUBSET_ONLY"
+            value = "$(KNOCK_VOICE_AUDIO_HUMAN_SUBSET_ONLY)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_AUDIO_IDS"
+            value = "$(KNOCK_VOICE_AUDIO_IDS)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_AUDIO_LIMIT"
+            value = "$(KNOCK_VOICE_AUDIO_LIMIT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_AUDIO_PROFILES"
+            value = "$(KNOCK_VOICE_AUDIO_PROFILES)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_RESULT_DEVICE"
+            value = "$(KNOCK_VOICE_RESULT_DEVICE)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_STT_BACKEND"
+            value = "$(KNOCK_VOICE_STT_BACKEND)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_USE_GPU"
+            value = "$(KNOCK_VOICE_USE_GPU)"
             isEnabled = "YES">
          </EnvironmentVariable>
       </EnvironmentVariables>
@@ -152,8 +252,58 @@
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
+            key = "KNOCK_RUN_VOICE_AUDIO_PIPELINE_UAT"
+            value = "$(KNOCK_RUN_VOICE_AUDIO_PIPELINE_UAT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_RUN_VOICE_AUDIO_STT_UAT"
+            value = "$(KNOCK_RUN_VOICE_AUDIO_STT_UAT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
             key = "KNOCK_UI_TEST_API_BASE_URL"
             value = "$(KNOCK_API_BASE_URL)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_AUDIO_DATASET_ROOT"
+            value = "$(KNOCK_VOICE_AUDIO_DATASET_ROOT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_AUDIO_HUMAN_SUBSET_ONLY"
+            value = "$(KNOCK_VOICE_AUDIO_HUMAN_SUBSET_ONLY)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_AUDIO_IDS"
+            value = "$(KNOCK_VOICE_AUDIO_IDS)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_AUDIO_LIMIT"
+            value = "$(KNOCK_VOICE_AUDIO_LIMIT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_AUDIO_PROFILES"
+            value = "$(KNOCK_VOICE_AUDIO_PROFILES)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_RESULT_DEVICE"
+            value = "$(KNOCK_VOICE_RESULT_DEVICE)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_STT_BACKEND"
+            value = "$(KNOCK_VOICE_STT_BACKEND)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_USE_GPU"
+            value = "$(KNOCK_VOICE_USE_GPU)"
             isEnabled = "YES">
          </EnvironmentVariable>
       </EnvironmentVariables>

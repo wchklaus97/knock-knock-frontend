@@ -3,6 +3,87 @@ import XCTest
 @testable import VoiceAgentBridge
 
 final class LocalCommandEnvelopeCanonicalizerTests: XCTestCase {
+    func testIPhone13ClassUsesFailClosedDeterministicParser() {
+        XCTAssertEqual(
+            LocalVoiceRuntimePolicy.strategy(machineIdentifier: "iPhone14,2"),
+            .deterministicParser
+        )
+        XCTAssertEqual(
+            LocalVoiceRuntimePolicy.strategy(machineIdentifier: "iPhone14,3"),
+            .deterministicParser
+        )
+        XCTAssertEqual(
+            LocalVoiceRuntimePolicy.strategy(machineIdentifier: "iPhone18,2"),
+            .signedGemma
+        )
+        XCTAssertEqual(
+            LocalVoiceRuntimePolicy.strategy(machineIdentifier: "arm64"),
+            .signedGemma
+        )
+    }
+
+    func testSpeechLocaleFallbackKeepsMandarinAndCantoneseSeparated() {
+        XCTAssertEqual(
+            OnDeviceSpeechRecognizerFactory.fallbackIdentifiers(
+                for: Locale(identifier: "zh-Hans-HK")
+            ),
+            ["zh-CN", "zh-HK", "zh-TW"]
+        )
+        XCTAssertEqual(
+            OnDeviceSpeechRecognizerFactory.fallbackIdentifiers(
+                for: Locale(identifier: "zh-Hant-HK")
+            ),
+            ["zh-HK", "zh-TW", "zh-CN"]
+        )
+        XCTAssertEqual(
+            OnDeviceSpeechRecognizerFactory.fallbackIdentifiers(
+                for: Locale(identifier: "yue-Hant-HK")
+            ),
+            ["yue-HK", "yue-CN", "zh-HK"]
+        )
+        XCTAssertTrue(
+            OnDeviceSpeechRecognizerFactory.fallbackIdentifiers(
+                for: Locale(identifier: "en-HK")
+            ).isEmpty
+        )
+    }
+
+    func testDeterministicParserProducesSafeEnvelopeAndClarifiesMissingRecipient() throws {
+        let reference = try XCTUnwrap(
+            LocalReminderDueAt.parseMilliseconds("2026-08-12T09:15:00+08:00")
+        )
+        let generator = DeterministicCommandGenerator(
+            locale: Locale(identifier: "en-HK"),
+            timezone: try XCTUnwrap(TimeZone(identifier: "Asia/Hong_Kong")),
+            deviceID: "iphone13-pro",
+            identifierFactory: { "fixed" },
+            nowMilliseconds: { reference }
+        )
+        var commandResult: Result<Data, Error>?
+        generator.generateCommand(for: "Send John a message saying I am on my way") {
+            commandResult = $0
+        }
+        let envelope = try CommandEnvelope.decodeStrict(
+            from: try XCTUnwrap(commandResult).get()
+        )
+        XCTAssertEqual(envelope.intent, "send_message")
+        XCTAssertEqual(
+            envelope.args,
+            ["recipient": .string("John"), "body": .string("I am on my way")]
+        )
+        XCTAssertEqual(envelope.riskLevel, .high)
+        XCTAssertTrue(envelope.needsConfirmation)
+        XCTAssertEqual(envelope.modelVersion, DeterministicCommandGenerator.version)
+
+        var clarificationResult: Result<Data, Error>?
+        generator.generateCommand(for: "Send him a message saying the build is ready") {
+            clarificationResult = $0
+        }
+        XCTAssertThrowsError(try XCTUnwrap(clarificationResult).get()) {
+            XCTAssertTrue(LocalVoiceCommandErrorPolicy.requiresClarification($0))
+        }
+    }
+
     func testVoicePreflightRoutesSupportedIntentsAndRejectsUnsafeOrAmbiguousCommands() throws {
         let routes = [
             ("Show me what happened today", "search_history"),
@@ -110,14 +191,15 @@ final class LocalCommandEnvelopeCanonicalizerTests: XCTestCase {
             ) as NSDictionary,
             ["recipient": "Mary", "body": "the meeting starts at three"] as NSDictionary
         )
-        XCTAssertThrowsError(
+        XCTAssertEqual(
             try LocalVoiceArgumentGrounder.arguments(
                 for: "send_message",
                 modelArguments: ["recipient": "Admin", "body": "approved"],
                 transcript: "Message Mary that the meeting starts at three",
                 referenceMilliseconds: reference,
                 timezone: timezone
-            )
+            ) as NSDictionary,
+            ["recipient": "Mary", "body": "the meeting starts at three"] as NSDictionary
         )
         XCTAssertThrowsError(
             try LocalVoiceArgumentGrounder.arguments(
@@ -137,14 +219,15 @@ final class LocalCommandEnvelopeCanonicalizerTests: XCTestCase {
                 timezone: timezone
             )
         )
-        XCTAssertThrowsError(
+        XCTAssertEqual(
             try LocalVoiceArgumentGrounder.arguments(
                 for: "send_message",
                 modelArguments: ["recipient": "Ann", "body": "hello"],
                 transcript: "Message Joanne that hello",
                 referenceMilliseconds: reference,
                 timezone: timezone
-            )
+            ) as NSDictionary,
+            ["recipient": "Joanne", "body": "hello"] as NSDictionary
         )
     }
 

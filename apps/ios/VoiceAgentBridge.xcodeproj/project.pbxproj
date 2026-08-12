@@ -29,6 +29,7 @@
 		8AE8C32B44D75BEB55918927 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BEAF2F2CA23A5162A99B79E /* Models.swift */; };
 		8E39FCC5139F5AA07C78C74F /* LocalVoiceCommandCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FD236C7A543804B27C041D4 /* LocalVoiceCommandCoordinatorTests.swift */; };
 		92E68DB4901ECC95540F451B /* LocalVoiceCommandControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA82608CC7DEEE8B1ABB3BD0 /* LocalVoiceCommandControllerTests.swift */; };
+		9FA19755096A4E54EBA5098E /* SpeechAnalyzerOnDeviceTranscriber.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47773DB941E7546B7E4FB446 /* SpeechAnalyzerOnDeviceTranscriber.swift */; };
 		A17DC2B4DBF67D961CE4EBDE /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D395F5693E39802D84A2DE0 /* AppStore.swift */; };
 		A4F7B8446C4AAAC4DE5C5037 /* NotificationDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A3102CC0FD64B33E8C6512 /* NotificationDiagnostics.swift */; };
 		AB4332BD6D136A8495BEBB90 /* BackgroundRemoteNotificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CB02D354785B86D2132126E /* BackgroundRemoteNotificationTests.swift */; };
@@ -43,6 +44,7 @@
 		E34883AB45A105A7E6650CE4 /* ModelArtifactStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74BA2D4358CF12E52878DF32 /* ModelArtifactStore.swift */; };
 		E65B93B71284AD22011D2A56 /* PushToTalkVoiceCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21A90A73DCC95DB21B1ACFAB /* PushToTalkVoiceCapture.swift */; };
 		E833A7A65F2F41858C9D8B7E /* VoiceActivityDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1F5D54469C09BABC5815B20 /* VoiceActivityDetector.swift */; };
+		F417CDE6A0B171958F18C435 /* VoiceAudioDatasetV2Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C657EA03DB560A56B274FB80 /* VoiceAudioDatasetV2Tests.swift */; };
 		FB3182B40BD8376D018FA41C /* LocalVoiceAdapters.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9321642D5AEBE9EEEB69A6AF /* LocalVoiceAdapters.swift */; };
 /* End PBXBuildFile section */
 
@@ -72,6 +74,7 @@
 		2E57AE4EFF7BDE36581D6F5B /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		32DC4074DC9D2EA6A41D3174 /* VoiceAgentBridgeTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = VoiceAgentBridgeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		3595E8A4AF7E21EAE30D6879 /* ModelsDecodingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelsDecodingTests.swift; sourceTree = "<group>"; };
+		47773DB941E7546B7E4FB446 /* SpeechAnalyzerOnDeviceTranscriber.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechAnalyzerOnDeviceTranscriber.swift; sourceTree = "<group>"; };
 		4D30B279968994BB440B903C /* VoiceAgentBridgeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceAgentBridgeUITests.swift; sourceTree = "<group>"; };
 		4F8290B1E64F0BF7AD39B005 /* BackendCommandPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendCommandPresentation.swift; sourceTree = "<group>"; };
 		5A8C292E2E86149C5183D6F7 /* ProductionViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionViews.swift; sourceTree = "<group>"; };
@@ -99,6 +102,7 @@
 		BD705554BEBFA130F3F1E4A6 /* LocalVoiceCommandCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalVoiceCommandCoordinator.swift; sourceTree = "<group>"; };
 		C4A3102CC0FD64B33E8C6512 /* NotificationDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationDiagnostics.swift; sourceTree = "<group>"; };
 		C6271CCE5FA7C494BBADEB9E /* VoiceCommandGoldenSet.v1.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = VoiceCommandGoldenSet.v1.json; sourceTree = "<group>"; };
+		C657EA03DB560A56B274FB80 /* VoiceAudioDatasetV2Tests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceAudioDatasetV2Tests.swift; sourceTree = "<group>"; };
 		CFB5EA120329E5E293186C82 /* BackendCommandPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendCommandPresentationTests.swift; sourceTree = "<group>"; };
 		D3B75AF8190D9C92C0C3CD6F /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		E1F5D54469C09BABC5815B20 /* VoiceActivityDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceActivityDetector.swift; sourceTree = "<group>"; };
@@ -144,6 +148,7 @@
 				74BA2D4358CF12E52878DF32 /* ModelArtifactStore.swift */,
 				149CAFF91FDC8612C25406DD /* ModelManifest.swift */,
 				21A90A73DCC95DB21B1ACFAB /* PushToTalkVoiceCapture.swift */,
+				47773DB941E7546B7E4FB446 /* SpeechAnalyzerOnDeviceTranscriber.swift */,
 				E1F5D54469C09BABC5815B20 /* VoiceActivityDetector.swift */,
 			);
 			path = Voice;
@@ -163,6 +168,7 @@
 				FCF7CB1D4DEEC850EDE664F2 /* ModelManifestTests.swift */,
 				3595E8A4AF7E21EAE30D6879 /* ModelsDecodingTests.swift */,
 				9F323B1159699C0C4BA9C7B7 /* VoiceActivityDetectorTests.swift */,
+				C657EA03DB560A56B274FB80 /* VoiceAudioDatasetV2Tests.swift */,
 				AA717EF03B5C5EAB9F24A65F /* VoiceCommandGoldenSetTests.swift */,
 				9F1F7D838868646999BFBF67 /* Fixtures */,
 			);
@@ -390,6 +396,7 @@
 				0FF7B9A0DFFFA31708F1A95D /* ModelManifestTests.swift in Sources */,
 				2EE756E3BB3E391BDAC57087 /* ModelsDecodingTests.swift in Sources */,
 				B008650A594C298E52098E25 /* VoiceActivityDetectorTests.swift in Sources */,
+				F417CDE6A0B171958F18C435 /* VoiceAudioDatasetV2Tests.swift in Sources */,
 				473DFF05EA882A4B4398A88B /* VoiceCommandGoldenSetTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -417,6 +424,7 @@
 				E65B93B71284AD22011D2A56 /* PushToTalkVoiceCapture.swift in Sources */,
 				B049614B0D5B76A5CAEFD5FC /* RootView.swift in Sources */,
 				34FAB929C103E28E82FE1816 /* SQLiteStore.swift in Sources */,
+				9FA19755096A4E54EBA5098E /* SpeechAnalyzerOnDeviceTranscriber.swift in Sources */,
 				E833A7A65F2F41858C9D8B7E /* VoiceActivityDetector.swift in Sources */,
 				C0C08D2DE6E9A140CC5C3D0D /* VoiceAgentBridgeApp.swift in Sources */,
 			);
