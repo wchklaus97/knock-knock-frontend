@@ -1134,6 +1134,7 @@ struct ProductionHomeView: View {
                                     Spacer()
                                     Button("Retry") { Task { await store.refresh() } }
                                         .font(.caption.weight(.bold))
+                                        .accessibilityIdentifier("home.connection.retry")
                                 }
                             }
                         }
@@ -1542,7 +1543,8 @@ struct ProductionLoginView: View {
                                 SecureField("Password", text: $password)
                                     .textFieldStyle(.roundedBorder)
                                 Button {
-                                    guard store.applyApiBase() else { return }
+                                    let usesRuntimeOverride = DemoConfig.runtimeApiBaseOverride() != nil
+                                    guard store.applyApiBase(persist: !usesRuntimeOverride) else { return }
                                     guard password.count >= 8 else {
                                         store.errorMessage = "Password must be at least 8 characters."
                                         return
@@ -1877,6 +1879,10 @@ struct ProductionDrawer: View {
         Array(store.sessions.filter(\.needsUser).prefix(3))
     }
 
+    private var recentSessions: [Session] {
+        Array(store.sessions.prefix(12))
+    }
+
     private var drawerContentIDs: [String] {
         var ids = [
             ProductionDrawerScrollAnchors.pinnedSection,
@@ -1893,7 +1899,7 @@ struct ProductionDrawer: View {
                 ProductionDrawerScrollAnchors.agent($0.agent_id)
             })
         }
-        ids.append(contentsOf: store.sessions.map {
+        ids.append(contentsOf: recentSessions.map {
             ProductionDrawerScrollAnchors.recentSession($0.session_id)
         })
         return ids
@@ -2058,7 +2064,7 @@ struct ProductionDrawer: View {
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 6)
                             } else {
-                                ForEach(store.sessions) { session in
+                                ForEach(recentSessions) { session in
                                     ProductionDrawerSessionRow(
                                         session: session,
                                         agentLabel: store.agents.first { $0.agent_id == session.agent_id }?.displayLabel,
@@ -2437,6 +2443,26 @@ struct ProductionInboxView: View {
                                     )
                                 }
                                 .buttonStyle(.plain)
+                            }
+                            if mode == .allSessions && store.hasMoreSessions {
+                                Button {
+                                    Task { await store.loadMoreSessions() }
+                                } label: {
+                                    HStack(spacing: 9) {
+                                        if store.isLoadingMoreSessions {
+                                            ProgressView()
+                                        } else {
+                                            Image(systemName: "clock.arrow.circlepath")
+                                        }
+                                        Text(store.isLoadingMoreSessions ? "Loading older sessions…" : "Load older sessions")
+                                            .font(.subheadline.weight(.semibold))
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 12)
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(store.isLoadingMoreSessions)
+                                .accessibilityIdentifier("sessions.loadMore")
                             }
                         }
                     }

@@ -37,6 +37,7 @@ final class AppStore: ObservableObject {
     private static let settingsSchemaVersion = 3
     private static let settingsSchemaKey = "vab.settingsSchemaVersion"
     private static let userIDKey = "vab.userID"
+    private static let initialSessionPageSize = 20
 
     @Published var token: String? {
         willSet {
@@ -69,6 +70,8 @@ final class AppStore: ObservableObject {
     @Published var knockAlert: KnockAlert?
     @Published var notificationStatusText: String = "unknown"
     @Published private(set) var isRefreshing = false
+    @Published private(set) var isLoadingMoreSessions = false
+    @Published private(set) var hasMoreSessions = false
     @Published private(set) var isAuthenticating = false
     @Published private(set) var hasLoadedData = false
     @Published private(set) var lastRefreshAt: Date?
@@ -112,6 +115,7 @@ final class AppStore: ObservableObject {
     private var foregroundReconciliationIncludeAgents = true
     private var foregroundNeedsReconciliation = true
     private var pendingFullSync = false
+    private var nextSessionCursor: String?
     private var pendingRetryCoordinator = PendingRetryCoordinator()
     private var eventStreamGeneration = 0
     private var appliedCursor: String?
@@ -174,6 +178,16 @@ final class AppStore: ObservableObject {
         activeModelAvailable: Bool
     ) -> Bool {
         forceRefresh || !activeModelAvailable
+    }
+
+    nonisolated static func shouldPersistApiBase(
+        runtimeOverride: String?,
+        persistedApiBase: String?,
+        resolvedApiBase: String
+    ) -> Bool {
+        runtimeOverride == nil
+            && persistedApiBase == nil
+            && !resolvedApiBase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// Only failures proving the POST was rejected before persistence may
@@ -275,13 +289,21 @@ final class AppStore: ObservableObject {
         #endif
 
         email = UserDefaults.standard.string(forKey: "vab.email") ?? DemoConfig.email
-        apiBase = DemoConfig.runtimeApiBaseOverride()
-            ?? UserDefaults.standard.string(forKey: "vab.apiBase")
-            ?? DemoConfig.defaultApiBase
+        let runtimeApiBase = DemoConfig.runtimeApiBaseOverride()
+        let persistedApiBase = UserDefaults.standard.string(forKey: "vab.apiBase")
+        apiBase = runtimeApiBase ?? persistedApiBase ?? DemoConfig.defaultApiBase
         if !email.isEmpty && UserDefaults.standard.string(forKey: "vab.email") == nil {
             UserDefaults.standard.set(email, forKey: "vab.email")
         }
-        if !apiBase.isEmpty && UserDefaults.standard.string(forKey: "vab.apiBase") == nil {
+        // Process environment overrides belong only to this launch (UI tests,
+        // diagnostics, or an explicit offline drill). Persisting one here can
+        // leave the next normal launch permanently pointed at a temporary or
+        // unreachable endpoint.
+        if Self.shouldPersistApiBase(
+            runtimeOverride: runtimeApiBase,
+            persistedApiBase: persistedApiBase,
+            resolvedApiBase: apiBase
+        ) {
             UserDefaults.standard.set(apiBase, forKey: "vab.apiBase")
         }
         localStore.migrateLegacyState()
@@ -290,9 +312,9 @@ final class AppStore: ObservableObject {
         pushes = localStore.loadPushes()
         pendingOperations = localStore.loadPendingOperations()
         pendingCommandConfirmation = localStore.loadPendingCommandConfirmation()
-        if let url = URL(string: apiBase), url.host != nil {
-            client.baseURL = url
-        }
+        // APIClient resolves the same runtime/persisted/bundled precedence on
+        // demand. Assigning through its setter here would incorrectly persist
+        // a process-only UI-test or diagnostic override.
         activeCommandCoordinator.onAnnouncementStateChange = { [weak self] error in
             guard let self else { return }
             self.publishActiveCommandState()
@@ -606,7 +628,7 @@ final class AppStore: ObservableObject {
     }
 
     @discardableResult
-    func applyApiBase() -> Bool {
+    func applyApiBase(persist: Bool = true) -> Bool {
         let trimmed = apiBase.trimmingCharacters(in: .whitespacesAndNewlines)
         #if DEBUG
         let requiresHTTPS = false
@@ -633,11 +655,15 @@ final class AppStore: ObservableObject {
             }
         }
         apiBase = trimmed
-        UserDefaults.standard.set(trimmed, forKey: "vab.apiBase")
+        if persist {
+            UserDefaults.standard.set(trimmed, forKey: "vab.apiBase")
+        }
         stopEventStream()
         stopReconciliation()
         resetEventCursor()
-        client.baseURL = url
+        if persist {
+            client.baseURL = url
+        }
         connectionState = .unknown
         errorMessage = nil
         return true
@@ -712,6 +738,46 @@ final class AppStore: ObservableObject {
             } else if connectionState == .connected {
                 errorMessage = error.localizedDescription
             }
+        }
+    }
+
+    /// The dashboard starts with a compact summary page. Older sessions are
+    /// loaded only from the full Sessions screen so cold start does not fetch
+    /// an unbounded history over a mobile connection.
+    func loadMoreSessions() async {
+        guard token != nil,
+              hasMoreSessions,
+              !isLoadingMoreSessions,
+              !isRefreshing,
+              let cursor = nextSessionCursor,
+              !cursor.isEmpty
+        else { return }
+
+        isLoadingMoreSessions = true
+        defer { isLoadingMoreSessions = false }
+        do {
+            let page = try await client.listSessionsPage(
+                before: cursor,
+                limit: Self.initialSessionPageSize
+            )
+            let existing = Dictionary(uniqueKeysWithValues: sessions.map { ($0.session_id, $0) })
+            for summary in page.sessions {
+                var merged = summary
+                if let detail = existing[summary.session_id] {
+                    merged.mergeDetail(from: detail)
+                }
+                upsertSession(merged)
+            }
+            let candidate = page.next_cursor?.trimmingCharacters(in: .whitespacesAndNewlines)
+            nextSessionCursor = candidate
+            hasMoreSessions = page.has_more
+                && candidate?.isEmpty == false
+                && candidate != cursor
+            localStore.cacheSessions(sessions)
+            connectionState = .connected
+            errorMessage = nil
+        } catch {
+            handleRefreshError(error)
         }
     }
 
@@ -1338,6 +1404,9 @@ final class AppStore: ObservableObject {
         KeychainStore.delete(account: "refresh-token")
         UserDefaults.standard.removeObject(forKey: Self.userIDKey)
         sessions = []
+        nextSessionCursor = nil
+        hasMoreSessions = false
+        isLoadingMoreSessions = false
         agents = []
         pushes = []
         hasLoadedData = false
@@ -1887,7 +1956,7 @@ final class AppStore: ObservableObject {
     }
 
     private func loadRemoteState(includeAgents: Bool, generation: Int? = nil) async throws {
-        async let s = client.listSessions()
+        async let s = client.listSessionsPage(limit: Self.initialSessionPageSize)
         async let p = client.listPushes()
         let commandTask: Task<ActiveCommandApplication?, Error>? =
             activeCommandCoordinator.commandIDForReconciliation == nil
@@ -1908,7 +1977,8 @@ final class AppStore: ObservableObject {
         let agentsTask: Task<[Agent], Error>? = includeAgents
             ? Task { try await client.listAgents() }
             : nil
-        let remoteSessions = try await s
+        let remoteSessionPage = try await s
+        let remoteSessions = remoteSessionPage.sessions
         let newPushes = try await p
         let remoteAgents: [Agent]?
         if let agentsTask {
@@ -1925,6 +1995,11 @@ final class AppStore: ObservableObject {
         {
             return
         }
+        let candidateCursor = remoteSessionPage.next_cursor?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        nextSessionCursor = candidateCursor
+        hasMoreSessions = remoteSessionPage.has_more
+            && candidateCursor?.isEmpty == false
         let details = Dictionary(uniqueKeysWithValues: sessions.map { ($0.session_id, $0) })
         let mergedSessions = remoteSessions.map { summary -> Session in
             var merged = summary
@@ -1933,7 +2008,9 @@ final class AppStore: ObservableObject {
             }
             return merged
         }
-        self.sessions = mergedSessions.sorted { lhs, rhs in
+        let remoteIDs = Set(remoteSessions.map(\.session_id))
+        let cachedOlderSessions = sessions.filter { !remoteIDs.contains($0.session_id) }
+        self.sessions = (mergedSessions + cachedOlderSessions).sorted { lhs, rhs in
             if lhs.needsUser != rhs.needsUser { return lhs.needsUser && !rhs.needsUser }
             return lhs.updated_at > rhs.updated_at
         }
@@ -1957,7 +2034,7 @@ final class AppStore: ObservableObject {
             // later local command is not visually stuck behind the old fence.
             publishActiveCommandState()
         }
-        localStore.cacheSessions(mergedSessions)
+        localStore.cacheSessions(self.sessions)
         localStore.cachePushes(newPushes)
         lastRefreshAt = Date()
         connectionState = .connected
@@ -2151,7 +2228,17 @@ final class AppStore: ObservableObject {
                 idempotencyKey: operation.idempotency_key
             )
             removePendingOperation(operation.id)
-            await refresh()
+            // The response is already authoritative backend state. Publish it
+            // immediately so a destructive action can present its second
+            // confirmation without waiting for a potentially paginated inbox
+            // reconciliation on a slow mobile route.
+            upsertSession(res.session)
+            localStore.cacheSessions(sessions)
+            connectionState = .connected
+            errorMessage = nil
+            Task { @MainActor [weak self] in
+                await self?.refresh(includeAgents: false)
+            }
             return res
         } catch let error as APIClientError {
             if Self.isRetryableNetwork(error) {
@@ -2202,14 +2289,20 @@ final class AppStore: ObservableObject {
         operation.failureCode = nil
         upsertPendingOperation(operation)
         do {
-            _ = try await client.confirm(
+            let res = try await client.confirm(
                 sessionId: session.session_id,
                 actionId: actionId,
                 confirm: confirm,
                 idempotencyKey: operation.idempotency_key
             )
             removePendingOperation(operation.id)
-            await refresh()
+            upsertSession(res.session)
+            localStore.cacheSessions(sessions)
+            connectionState = .connected
+            errorMessage = nil
+            Task { @MainActor [weak self] in
+                await self?.refresh(includeAgents: false)
+            }
         } catch let error as APIClientError {
             if Self.isRetryableNetwork(error) {
                 operation.status = .pending
@@ -2312,7 +2405,7 @@ final class AppStore: ObservableObject {
                             sessionId: operation.session_id,
                             actionId: actionId,
                             confirm: confirm,
-                            idempotencyKey: operation.id
+                            idempotencyKey: operation.idempotency_key
                         )
                     }
                     guard Self.retryContextIsActive(generation: generation, currentGeneration: reconciliationGeneration, tokenAvailable: token != nil) else {

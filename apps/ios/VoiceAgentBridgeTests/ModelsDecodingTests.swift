@@ -2,6 +2,24 @@ import XCTest
 @testable import VoiceAgentBridge
 
 final class ModelsDecodingTests: XCTestCase {
+    func testRuntimeApiOverrideNeverPollutesPersistedServerSelection() {
+        XCTAssertFalse(AppStore.shouldPersistApiBase(
+            runtimeOverride: "https://127.0.0.1:9",
+            persistedApiBase: nil,
+            resolvedApiBase: "https://127.0.0.1:9"
+        ))
+        XCTAssertFalse(AppStore.shouldPersistApiBase(
+            runtimeOverride: nil,
+            persistedApiBase: "https://saved.example.com",
+            resolvedApiBase: "https://saved.example.com"
+        ))
+        XCTAssertTrue(AppStore.shouldPersistApiBase(
+            runtimeOverride: nil,
+            persistedApiBase: nil,
+            resolvedApiBase: "https://bundled.example.com"
+        ))
+    }
+
     func testPhysicalDeviceRegistrationRequiresValidAPNsToken() throws {
         XCTAssertThrowsError(
             try APIClient.deviceRegistration(pushToken: nil, isSimulator: false)
