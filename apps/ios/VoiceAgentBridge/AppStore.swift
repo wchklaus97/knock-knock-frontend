@@ -1399,6 +1399,12 @@ final class AppStore: ObservableObject {
     }
 
     private func presentKnock(_ push: DevPush) {
+        // Home/settings UI tests create a needs_user fixture only to populate
+        // the workspace. They opt out of the full-screen overlay explicitly;
+        // the destructive confirmation UI test leaves it enabled.
+        if ProcessInfo.processInfo.environment["KNOCK_UI_TEST_SUPPRESS_KNOCK_OVERLAY"] == "1" {
+            return
+        }
         knockAlert = KnockAlert(
             id: push.push_id,
             sessionId: push.session_id,
@@ -1406,7 +1412,13 @@ final class AppStore: ObservableObject {
             body: push.body
         )
         #if targetEnvironment(simulator)
-        scheduleLocalBanner(title: push.title, body: push.body, sessionId: push.session_id)
+        // UI tests exercise the in-app decision surface. Disable the extra
+        // simulator notification banner when explicitly requested so a
+        // system-level banner cannot steal a tap during a transition. Real
+        // device/APNs validation does not set this flag.
+        if ProcessInfo.processInfo.environment["KNOCK_UI_TEST_SUPPRESS_LOCAL_BANNER"] != "1" {
+            scheduleLocalBanner(title: push.title, body: push.body, sessionId: push.session_id)
+        }
         #endif
     }
 
