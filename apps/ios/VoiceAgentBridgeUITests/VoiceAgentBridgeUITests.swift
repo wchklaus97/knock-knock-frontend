@@ -426,6 +426,35 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         let dock = app.descendants(matching: .any)["voice.dock"]
         XCTAssertTrue(dock.waitForExistence(timeout: 30))
 
+        // A fresh physical install can show the Speech Recognition and
+        // microphone prompts only after the first press. Prime those prompts
+        // before the measured recording; otherwise releasing the first press
+        // correctly cancels a session that is still waiting for permission.
+        var handledVoicePermission = false
+        addUIInterruptionMonitor(withDescription: "Voice permissions") { alert in
+            let allow = alert.buttons.matching(
+                NSPredicate(
+                    format: "label == %@ OR label == %@ OR label == %@",
+                    "Allow",
+                    "Allow While Using App",
+                    "OK"
+                )
+            ).firstMatch
+            guard allow.exists else { return false }
+            allow.tap()
+            handledVoicePermission = true
+            return true
+        }
+        dock.press(forDuration: 1)
+        app.tap()
+        if handledVoicePermission {
+            // Speech and microphone authorization can arrive as two separate
+            // system prompts. A second prime pass handles the remaining one.
+            dock.press(forDuration: 1)
+            app.tap()
+        }
+        Thread.sleep(forTimeInterval: 1)
+
         let configuredCountdown = Int(
             ProcessInfo.processInfo.environment["KNOCK_PHYSICAL_VOICE_COUNTDOWN_SECONDS"] ?? "5"
         ) ?? 5
