@@ -8,6 +8,9 @@ options:
 packages:
   LiteRTLM:
     path: ThirdParty/LiteRTLM
+  SherpaOnnx:
+    url: https://github.com/k2-fsa/sherpa-onnx
+    exactVersion: 1.13.5
 configs:
   Debug: debug
   Staging: debug
@@ -105,3 +108,37 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: hk.knockknock.app.uitests
         GENERATE_INFOPLIST_FILE: YES
         DEVELOPMENT_TEAM: TXKDW2YS44
+
+  VoiceAgentBridgeSenseVoiceTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: VoiceAgentBridgeSenseVoiceTests
+    dependencies:
+      - target: VoiceAgentBridge
+      - package: SherpaOnnx
+        product: sherpa-onnx
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: hk.knockknock.app.sensevoice-tests
+        GENERATE_INFOPLIST_FILE: YES
+        IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+        DEVELOPMENT_TEAM: TXKDW2YS44
+
+schemes:
+  VoiceAgentBridgeSenseVoiceQualification:
+    build:
+      targets:
+        VoiceAgentBridge: all
+        VoiceAgentBridgeSenseVoiceTests: [test]
+    test:
+      targets:
+        - name: VoiceAgentBridgeSenseVoiceTests
+          parallelizable: false
+      environmentVariables:
+        KNOCK_RUN_SENSEVOICE_UAT: "$(KNOCK_RUN_SENSEVOICE_UAT)"
+        KNOCK_SENSEVOICE_AUDIO_FILES: "$(KNOCK_SENSEVOICE_AUDIO_FILES)"
+        KNOCK_SENSEVOICE_LANGUAGE: "$(KNOCK_SENSEVOICE_LANGUAGE)"
+        KNOCK_SENSEVOICE_NUM_THREADS: "$(KNOCK_SENSEVOICE_NUM_THREADS)"
+        KNOCK_SENSEVOICE_DELETE_UAT_DATA: "$(KNOCK_SENSEVOICE_DELETE_UAT_DATA)"

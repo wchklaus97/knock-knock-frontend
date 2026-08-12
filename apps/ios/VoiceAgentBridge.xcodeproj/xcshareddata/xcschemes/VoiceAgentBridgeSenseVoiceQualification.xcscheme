@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Scheme
+   LastUpgradeVersion = "1600"
+   version = "1.7">
+   <BuildAction
+      parallelizeBuildables = "YES"
+      buildImplicitDependencies = "YES"
+      runPostActionsOnFailure = "NO">
+      <BuildActionEntries>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "YES"
+            buildForArchiving = "YES"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "95B2F73CA8EAD5AB4E6FF270"
+               BuildableName = "VoiceAgentBridge.app"
+               BlueprintName = "VoiceAgentBridge"
+               ReferencedContainer = "container:VoiceAgentBridge.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "C73E1EDEE46E11C940E86B46"
+               BuildableName = "VoiceAgentBridgeSenseVoiceTests.xctest"
+               BlueprintName = "VoiceAgentBridgeSenseVoiceTests"
+               ReferencedContainer = "container:VoiceAgentBridge.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+      </BuildActionEntries>
+   </BuildAction>
+   <TestAction
+      buildConfiguration = "Debug"
+      selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
+      selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
+      shouldUseLaunchSchemeArgsEnv = "NO"
+      onlyGenerateCoverageForSpecifiedTargets = "NO">
+      <MacroExpansion>
+         <BuildableReference
+            BuildableIdentifier = "primary"
+            BlueprintIdentifier = "95B2F73CA8EAD5AB4E6FF270"
+            BuildableName = "VoiceAgentBridge.app"
+            BlueprintName = "VoiceAgentBridge"
+            ReferencedContainer = "container:VoiceAgentBridge.xcodeproj">
+         </BuildableReference>
+      </MacroExpansion>
+      <Testables>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "C73E1EDEE46E11C940E86B46"
+               BuildableName = "VoiceAgentBridgeSenseVoiceTests.xctest"
+               BlueprintName = "VoiceAgentBridgeSenseVoiceTests"
+               ReferencedContainer = "container:VoiceAgentBridge.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+      </Testables>
+      <CommandLineArguments>
+      </CommandLineArguments>
+      <EnvironmentVariables>
+         <EnvironmentVariable
+            key = "KNOCK_RUN_SENSEVOICE_UAT"
+            value = "$(KNOCK_RUN_SENSEVOICE_UAT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_SENSEVOICE_AUDIO_FILES"
+            value = "$(KNOCK_SENSEVOICE_AUDIO_FILES)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_SENSEVOICE_DELETE_UAT_DATA"
+            value = "$(KNOCK_SENSEVOICE_DELETE_UAT_DATA)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_SENSEVOICE_LANGUAGE"
+            value = "$(KNOCK_SENSEVOICE_LANGUAGE)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_SENSEVOICE_NUM_THREADS"
+            value = "$(KNOCK_SENSEVOICE_NUM_THREADS)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+      </EnvironmentVariables>
+   </TestAction>
+   <LaunchAction
+      buildConfiguration = "Debug"
+      selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
+      selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
+      launchStyle = "0"
+      useCustomWorkingDirectory = "NO"
+      ignoresPersistentStateOnLaunch = "NO"
+      debugDocumentVersioning = "YES"
+      debugServiceExtension = "internal"
+      allowLocationSimulation = "YES">
+      <BuildableProductRunnable
+         runnableDebuggingMode = "0">
+         <BuildableReference
+            BuildableIdentifier = "primary"
+            BlueprintIdentifier = "95B2F73CA8EAD5AB4E6FF270"
+            BuildableName = "VoiceAgentBridge.app"
+            BlueprintName = "VoiceAgentBridge"
+            ReferencedContainer = "container:VoiceAgentBridge.xcodeproj">
+         </BuildableReference>
+      </BuildableProductRunnable>
+   </LaunchAction>
+   <ProfileAction
+      buildConfiguration = "Release"
+      shouldUseLaunchSchemeArgsEnv = "YES"
+      savedToolIdentifier = ""
+      useCustomWorkingDirectory = "NO"
+      debugDocumentVersioning = "YES">
+      <BuildableProductRunnable
+         runnableDebuggingMode = "0">
+         <BuildableReference
+            BuildableIdentifier = "primary"
+            BlueprintIdentifier = "95B2F73CA8EAD5AB4E6FF270"
+            BuildableName = "VoiceAgentBridge.app"
+            BlueprintName = "VoiceAgentBridge"
+            ReferencedContainer = "container:VoiceAgentBridge.xcodeproj">
+         </BuildableReference>
+      </BuildableProductRunnable>
+   </ProfileAction>
+   <AnalyzeAction
+      buildConfiguration = "Debug">
+   </AnalyzeAction>
+   <ArchiveAction
+      buildConfiguration = "Release"
+      revealArchiveInOrganizer = "YES">
+   </ArchiveAction>
+</Scheme>
