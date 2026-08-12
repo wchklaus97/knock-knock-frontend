@@ -470,8 +470,21 @@ final class VoiceAgentBridgeUITests: XCTestCase {
                 "History search completed. Review the results on screen."
             )
         ).firstMatch
+        let resultDeadline = Date().addingTimeInterval(120)
+        while Date() < resultDeadline && !terminal.exists {
+            // The account fixture can reconcile a pending decision after the
+            // initial preflight dismissal. Keep that unrelated overlay from
+            // obscuring the backend-owned voice result during physical UAT.
+            let later = app.buttons["knock.later"]
+            if later.exists {
+                later.tap()
+                _ = later.waitForNonExistence(timeout: 5)
+                continue
+            }
+            _ = terminal.waitForExistence(timeout: 2)
+        }
         XCTAssertTrue(
-            terminal.waitForExistence(timeout: 120),
+            terminal.exists,
             "Only the backend-owned history_search.completed presentation is a success oracle."
         )
         attachScreenshot(app, named: "physical-voice-backend-result")
