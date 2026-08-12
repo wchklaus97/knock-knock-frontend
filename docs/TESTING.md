@@ -203,7 +203,10 @@ scripts/regenerate-voice-dataset-v2-local.sh \
   /absolute/path/to/new-repaired-output
 ```
 
-The local generator uses two native voices for English and Mandarin. macOS currently
+The local generator uses two native voices for English and Mandarin. It calibrates each
+pink-noise profile from measured clean/noise RMS energy and rejects any generated WAV
+outside the 14-16 dB SNR window; the Swift integrity test independently measures the PCM
+difference against the clean reference. macOS currently
 exposes only `Sinji` as a native Hong Kong Cantonese voice, so every Cantonese manifest
 row records that explicit provider-limitation exception. The exact macOS/FFmpeg provenance
 and transforms are recorded in the manifest. Validate the external package on Simulator:

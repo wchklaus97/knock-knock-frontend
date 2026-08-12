@@ -91,6 +91,11 @@
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
+            key = "KNOCK_VOICE_AUDIO_DATASET_ROOT"
+            value = "$(KNOCK_VOICE_AUDIO_DATASET_ROOT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
             key = "KNOCK_VOICE_AUDIO_LIMIT"
             value = "$(KNOCK_VOICE_AUDIO_LIMIT)"
             isEnabled = "YES">
@@ -161,6 +166,11 @@
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
+            key = "KNOCK_VOICE_AUDIO_DATASET_ROOT"
+            value = "$(KNOCK_VOICE_AUDIO_DATASET_ROOT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
             key = "KNOCK_VOICE_AUDIO_LIMIT"
             value = "$(KNOCK_VOICE_AUDIO_LIMIT)"
             isEnabled = "YES">
@@ -224,6 +234,11 @@
          <EnvironmentVariable
             key = "KNOCK_UI_TEST_API_BASE_URL"
             value = "$(KNOCK_API_BASE_URL)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_AUDIO_DATASET_ROOT"
+            value = "$(KNOCK_VOICE_AUDIO_DATASET_ROOT)"
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable

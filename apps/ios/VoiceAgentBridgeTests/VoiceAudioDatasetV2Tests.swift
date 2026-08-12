@@ -139,6 +139,7 @@ private struct VoiceWAVInspection {
     let audioFormat: Int
     let sampleCount: Int
     let containsHardClipping: Bool
+    let pcmSamples: [Int16]
 }
 
 private enum VoiceAudioDatasetV2Error: LocalizedError {
@@ -305,6 +306,29 @@ final class VoiceAudioDatasetV2Tests: XCTestCase {
                 expect(!inspection.containsHardClipping, "\(row.relativePath) contains hard clipping", failures: &failures)
                 let duration = Int((Double(inspection.sampleCount) / Double(inspection.sampleRate) * 1_000).rounded())
                 expect(abs(duration - row.durationMilliseconds) <= 2, "duration mismatch: \(row.relativePath)", failures: &failures)
+                if row.profile == "noise_snr15" {
+                    guard let cleanRow = manifest.first(where: {
+                        $0.exampleID == row.exampleID && $0.profile == "clean_normal"
+                    }) else {
+                        failures.append("\(row.exampleID) is missing its clean_normal SNR reference")
+                        continue
+                    }
+                    let cleanData = try Data(contentsOf: package.audioURL(for: cleanRow))
+                    let cleanInspection = try inspectWAV(cleanData, path: cleanRow.relativePath)
+                    let measuredSNR = signalToNoiseRatio(
+                        clean: cleanInspection.pcmSamples,
+                        mixed: inspection.pcmSamples
+                    )
+                    expect(
+                        (14.0 ... 16.0).contains(measuredSNR),
+                        String(
+                            format: "%@ measured SNR %.2f dB; expected 14-16 dB",
+                            row.relativePath,
+                            measuredSNR
+                        ),
+                        failures: &failures
+                    )
+                }
             } catch {
                 failures.append(error.localizedDescription)
             }
@@ -349,10 +373,10 @@ final class VoiceAudioDatasetV2Tests: XCTestCase {
         guard let format, let samples, !samples.isEmpty, samples.count.isMultiple(of: 2) else {
             throw VoiceAudioDatasetV2Error.invalidWAV("\(path) is missing fmt or sample data")
         }
-        var clipped = false
-        samples.withUnsafeBytes { rawBuffer in
-            let values = rawBuffer.bindMemory(to: Int16.self)
-            clipped = values.contains { $0 == Int16.min || $0 == Int16.max }
+        var pcmSamples: [Int16] = []
+        pcmSamples.reserveCapacity(samples.count / 2)
+        for sampleOffset in stride(from: 0, to: samples.count, by: 2) {
+            pcmSamples.append(Int16(bitPattern: readUInt16(samples, at: sampleOffset)))
         }
         return VoiceWAVInspection(
             sampleRate: format.sampleRate,
@@ -360,8 +384,23 @@ final class VoiceAudioDatasetV2Tests: XCTestCase {
             bitsPerSample: format.bitsPerSample,
             audioFormat: format.audioFormat,
             sampleCount: samples.count / max(1, format.channels * (format.bitsPerSample / 8)),
-            containsHardClipping: clipped
+            containsHardClipping: pcmSamples.contains { $0 == Int16.min || $0 == Int16.max },
+            pcmSamples: pcmSamples
         )
+    }
+
+    private func signalToNoiseRatio(clean: [Int16], mixed: [Int16]) -> Double {
+        guard clean.count == mixed.count, !clean.isEmpty else { return -.infinity }
+        var signalEnergy = 0.0
+        var noiseEnergy = 0.0
+        for (cleanSample, mixedSample) in zip(clean, mixed) {
+            let signal = Double(cleanSample)
+            let noise = Double(mixedSample) - signal
+            signalEnergy += signal * signal
+            noiseEnergy += noise * noise
+        }
+        guard signalEnergy > 0, noiseEnergy > 0 else { return -.infinity }
+        return 10.0 * log10(signalEnergy / noiseEnergy)
     }
 
     private func readUInt16(_ data: Data, at offset: Int) -> UInt16 {

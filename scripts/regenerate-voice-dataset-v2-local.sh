@@ -41,6 +41,33 @@ cleanup() {
 }
 trap cleanup EXIT
 
+mean_volume_db() {
+  local audio_path=$1
+  ffmpeg -hide_banner -nostats -i "$audio_path" -af volumedetect -f null - 2>&1 \
+    | awk '/mean_volume:/ {print $(NF - 1)}'
+}
+
+measured_snr_db() {
+  local clean_path=$1
+  local mixed_path=$2
+  local measurement_id=$3
+  local clean_pcm="$temporary_root/${measurement_id}-clean.pcm"
+  local mixed_pcm="$temporary_root/${measurement_id}-mixed.pcm"
+  local clean_samples="$temporary_root/${measurement_id}-clean.txt"
+  local mixed_samples="$temporary_root/${measurement_id}-mixed.txt"
+
+  ffmpeg -hide_banner -loglevel error -y -i "$clean_path" -f s16le -acodec pcm_s16le "$clean_pcm"
+  ffmpeg -hide_banner -loglevel error -y -i "$mixed_path" -f s16le -acodec pcm_s16le "$mixed_pcm"
+  od -An -v -td2 "$clean_pcm" | awk '{for (i = 1; i <= NF; i++) print $i}' >"$clean_samples"
+  od -An -v -td2 "$mixed_pcm" | awk '{for (i = 1; i <= NF; i++) print $i}' >"$mixed_samples"
+  paste "$clean_samples" "$mixed_samples" \
+    | awk '{signal += $1 * $1; difference = $2 - $1; noise += difference * difference}
+      END {
+        if (noise <= 0 || signal <= 0) exit 1
+        printf "%.3f", 10 * log(signal / noise) / log(10)
+      }'
+}
+
 dataset_path="$output_root/$dataset_name"
 index=0
 while IFS=$'\t' read -r example_id locale encoded_text; do
@@ -70,6 +97,7 @@ while IFS=$'\t' read -r example_id locale encoded_text; do
   clean_wav="$audio_root/${example_id}__clean_normal.wav"
   fast_wav="$audio_root/${example_id}__fast_phone.wav"
   noise_wav="$audio_root/${example_id}__noise_snr15.wav"
+  noise_source="$temporary_root/${example_id}-pink-noise.wav"
 
   say -v "$clean_voice" -r 180 -o "$clean_aiff" -- "$text"
   say -v "$fast_voice" -r 207 -o "$fast_aiff" -- "$text"
@@ -82,12 +110,24 @@ while IFS=$'\t' read -r example_id locale encoded_text; do
     -ar 16000 -ac 1 -c:a pcm_s16le "$fast_wav"
 
   seed=$((1000 + index))
+  duration_seconds=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$clean_wav")
   ffmpeg -hide_banner -loglevel error -y \
-    -i "$clean_wav" \
-    -f lavfi -i "anoisesrc=color=pink:sample_rate=16000:amplitude=0.2:seed=$seed" \
+    -f lavfi -i "anoisesrc=color=pink:sample_rate=16000:amplitude=0.2:seed=$seed:duration=$duration_seconds" \
+    -ar 16000 -ac 1 -c:a pcm_s16le "$noise_source"
+  signal_mean_db=$(mean_volume_db "$clean_wav")
+  noise_mean_db=$(mean_volume_db "$noise_source")
+  noise_gain_db=$(awk -v signal="$signal_mean_db" -v noise="$noise_mean_db" \
+    'BEGIN {printf "%.3f", signal - noise - 15.0}')
+  ffmpeg -hide_banner -loglevel error -y \
+    -i "$clean_wav" -i "$noise_source" \
     -filter_complex \
-      "[0:a]loudnorm=I=-23:TP=-3:LRA=7[s];[1:a]loudnorm=I=-23:TP=-3:LRA=7,volume=0.177828[n];[s][n]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95[out]" \
-    -map "[out]" -ar 16000 -ac 1 -c:a pcm_s16le -shortest "$noise_wav"
+      "[1:a]volume=${noise_gain_db}dB[n];[0:a][n]amix=inputs=2:duration=first:normalize=0[out]" \
+    -map "[out]" -ar 16000 -ac 1 -c:a pcm_s16le "$noise_wav"
+  actual_snr_db=$(measured_snr_db "$clean_wav" "$noise_wav" "$example_id")
+  awk -v snr="$actual_snr_db" 'BEGIN {exit !(snr >= 14.0 && snr <= 16.0)}' || {
+    echo "$example_id noise profile measured ${actual_snr_db} dB; expected 14-16 dB" >&2
+    exit 65
+  }
 
   index=$((index + 1))
 done < <(
@@ -142,7 +182,7 @@ while IFS= read -r row; do
           ;;
         noise_snr15)
           voice_id="$clean_voice"
-          transform="clean_normal plus deterministic pink non-speech noise at 15 dB SNR; limiter 0.95"
+          transform="clean_normal plus RMS-calibrated deterministic pink non-speech noise at 15 dB SNR"
           ;;
         *)
           echo "unexpected profile: $profile" >&2
