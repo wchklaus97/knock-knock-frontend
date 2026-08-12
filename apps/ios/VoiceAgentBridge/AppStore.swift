@@ -183,7 +183,7 @@ final class AppStore: ObservableObject {
     nonisolated static func commandSubmissionDefinitelyRejected(_ error: Error) -> Bool {
         guard let apiError = error as? APIClientError else { return false }
         switch apiError {
-        case .noToken, .invalidBaseURL:
+        case .noToken, .missingPushToken, .invalidPushToken, .invalidBaseURL:
             return true
         case let .badStatus(status, _, metadata):
             guard !metadata.retryable else { return false }
@@ -504,7 +504,11 @@ final class AppStore: ObservableObject {
                 self.apnsToken = token
                 UserDefaults.standard.set(token, forKey: "vab.apnsToken")
                 if self.token != nil {
-                    try? await self.client.registerDevice(pushToken: token)
+                    do {
+                        try await self.client.registerDevice(pushToken: token)
+                    } catch {
+                        self.errorMessage = "Push registration failed: \(error.localizedDescription)"
+                    }
                 }
             }
         }

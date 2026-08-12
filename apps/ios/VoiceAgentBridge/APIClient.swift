@@ -26,6 +26,8 @@ enum APIClientError: LocalizedError {
     case badStatus(Int, String, APIErrorMetadata)
     case decoding
     case noToken
+    case missingPushToken
+    case invalidPushToken
     case invalidBaseURL
     case network(String)
 
@@ -38,6 +40,8 @@ enum APIClientError: LocalizedError {
             return "HTTP \(code): \(message)"
         case .decoding: return "The server returned an invalid response."
         case .noToken: return "Not signed in"
+        case .missingPushToken: return "Waiting for a real APNs device token."
+        case .invalidPushToken: return "The APNs device token is invalid."
         case .invalidBaseURL: return "Enter a valid server URL (use HTTPS for production)."
         case let .network(message): return "Network error: \(message)"
         }
@@ -129,23 +133,38 @@ final class APIClient: @unchecked Sendable {
             let device_id: String
         }
         #if targetEnvironment(simulator)
-        let platform = "ios_simulator"
-        let token = pushToken ?? "sim-\(UUID().uuidString)"
+        let registration = try Self.deviceRegistration(pushToken: pushToken, isSimulator: true)
         #else
-        let platform = "ios"
-        let token = pushToken ?? "dev-\(UUID().uuidString)"
+        let registration = try Self.deviceRegistration(pushToken: pushToken, isSimulator: false)
         #endif
         let _: EmptyJSON = try await post(
             "/v1/phone/devices",
             body: DeviceBody(
-                platform: platform,
-                push_token: token,
+                platform: registration.platform,
+                push_token: registration.token,
                 locale: Locale.current.identifier.replacingOccurrences(of: "_", with: "-"),
                 timezone: TimeZone.current.identifier,
                 device_id: Self.stableDeviceID
             ),
             auth: true
         )
+    }
+
+    static func deviceRegistration(
+        pushToken: String?,
+        isSimulator: Bool
+    ) throws -> (platform: String, token: String) {
+        if isSimulator {
+            return ("ios_simulator", pushToken ?? "sim-\(UUID().uuidString)")
+        }
+        guard let pushToken else { throw APIClientError.missingPushToken }
+        let normalized = pushToken.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard normalized.utf8.count == 64,
+              normalized.unicodeScalars.allSatisfy({
+                  (48 ... 57).contains($0.value) || (97 ... 102).contains($0.value)
+              })
+        else { throw APIClientError.invalidPushToken }
+        return ("ios", normalized)
     }
 
     private static var stableDeviceID: String {

@@ -2,6 +2,39 @@ import XCTest
 @testable import VoiceAgentBridge
 
 final class ModelsDecodingTests: XCTestCase {
+    func testPhysicalDeviceRegistrationRequiresValidAPNsToken() throws {
+        XCTAssertThrowsError(
+            try APIClient.deviceRegistration(pushToken: nil, isSimulator: false)
+        ) { error in
+            guard case APIClientError.missingPushToken = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+        XCTAssertThrowsError(
+            try APIClient.deviceRegistration(pushToken: "dev-placeholder", isSimulator: false)
+        ) { error in
+            guard case APIClientError.invalidPushToken = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+        let token = String(repeating: "A1", count: 32)
+        let registration = try APIClient.deviceRegistration(
+            pushToken: token,
+            isSimulator: false
+        )
+        XCTAssertEqual(registration.platform, "ios")
+        XCTAssertEqual(registration.token, token.lowercased())
+    }
+
+    func testSimulatorMayUseNonAPNsFixtureToken() throws {
+        let registration = try APIClient.deviceRegistration(
+            pushToken: nil,
+            isSimulator: true
+        )
+        XCTAssertEqual(registration.platform, "ios_simulator")
+        XCTAssertTrue(registration.token.hasPrefix("sim-"))
+    }
+
     private let decoder = JSONDecoder()
 
     func testLegacyFixtureEmailMigrationIsScoped() {
