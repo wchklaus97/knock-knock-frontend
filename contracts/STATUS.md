@@ -22,9 +22,12 @@ an automatic pass is already active. Command wakes contain no resource or
 business identifier. A newer awaiting-confirmation version invalidates any
 older local token, and History search is uniformly trimmed and bounded to
 1–200 characters. Exact test evidence is maintained in the
-backend release report. Model publication/public-key configuration,
-real-model accuracy, physical-device voice/APNs/two-device evaluation, and
-human release approval remain backend-canonical release gates.
+backend release report. The UAT-signed Gemma 3 1B int4 model now passes the
+32-example semantic/safety gate and the 2-second latency gate on iPhone 17 Pro
+Max. iPhone 13 Pro passes semantic/safety checks but not the latency target.
+Production trust-key configuration, model publication, microphone/thermal
+voice UAT, APNs/two-device evaluation, and human release approval remain
+backend-canonical release gates.
 
 ## ProgressStatus — `update_progress` only / 仅进度
 

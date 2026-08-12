@@ -4,13 +4,15 @@ import XCTest
 
 private struct VoiceCommandGoldenDataset: Decodable {
     let schemaVersion: Int
-    let minimumIntentAccuracy: Double
+    let referenceNow: String
+    let minimumPipelineCommandAccuracy: Double
     let maximumHighRiskFalseExecutions: Int
     let examples: [VoiceCommandGoldenExample]
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
-        case minimumIntentAccuracy = "minimum_intent_accuracy"
+        case referenceNow = "reference_now"
+        case minimumPipelineCommandAccuracy = "minimum_pipeline_command_accuracy"
         case maximumHighRiskFalseExecutions = "maximum_high_risk_false_executions"
         case examples
     }
@@ -26,6 +28,8 @@ private struct VoiceCommandGoldenExample: Decodable {
     let requiredArgumentGroups: [[String]]?
     let backendConfirmationRequired: Bool?
     let ambiguity: String?
+    let expectedDueAt: String?
+    let expectedArguments: [String: String]?
 
     enum CodingKeys: String, CodingKey {
         case id, locale, timezone, transcript, ambiguity
@@ -33,6 +37,8 @@ private struct VoiceCommandGoldenExample: Decodable {
         case expectedIntent = "expected_intent"
         case requiredArgumentGroups = "required_argument_groups"
         case backendConfirmationRequired = "backend_confirmation_required"
+        case expectedDueAt = "expected_due_at"
+        case expectedArguments = "expected_arguments"
     }
 }
 
@@ -206,8 +212,9 @@ final class VoiceCommandGoldenSetTests: XCTestCase {
         let dataset = try Self.loadDataset()
 
         XCTAssertEqual(dataset.schemaVersion, 1)
+        XCTAssertNotNil(LocalReminderDueAt.parseMilliseconds(dataset.referenceNow))
         XCTAssertTrue((20...100).contains(dataset.examples.count))
-        XCTAssertEqual(dataset.minimumIntentAccuracy, 0.95)
+        XCTAssertEqual(dataset.minimumPipelineCommandAccuracy, 0.95)
         XCTAssertEqual(dataset.maximumHighRiskFalseExecutions, 0)
         XCTAssertEqual(Set(dataset.examples.map(\.id)).count, dataset.examples.count)
 
@@ -248,6 +255,14 @@ final class VoiceCommandGoldenSetTests: XCTestCase {
             XCTAssertTrue(["command", "clarification"].contains(example.expectedOutcome), example.id)
             if example.expectedOutcome == "command" {
                 XCTAssertNotNil(example.expectedIntent, example.id)
+                if example.expectedIntent == "create_reminder" {
+                    XCTAssertNotNil(example.expectedDueAt, example.id)
+                    XCTAssertNotNil(
+                        example.expectedDueAt.flatMap(LocalReminderDueAt.parseMilliseconds),
+                        example.id
+                    )
+                }
+                XCTAssertFalse(example.expectedArguments?.isEmpty ?? true, example.id)
             } else {
                 XCTAssertNil(example.expectedIntent, example.id)
                 XCTAssertNotNil(example.ambiguity, example.id)
@@ -501,43 +516,84 @@ final class VoiceModelGoldenEvaluationTests: XCTestCase {
             .verifyArtifact(at: inputs.artifactURL, against: manifest)
 
         let dataset = try VoiceCommandGoldenSetTests.loadDataset()
+        let selectedExamples = dataset.examples
+        let referenceMilliseconds = try XCTUnwrap(
+            LocalReminderDueAt.parseMilliseconds(dataset.referenceNow)
+        )
         let maximumP95 = Double(environment["KNOCK_VOICE_MAX_P95_SECONDS"] ?? "2.0") ?? 2.0
         var correctCommands = 0
         var evaluatedCommands = 0
         var highRiskFalseExecutions = 0
         var latencies: [TimeInterval] = []
+        var commandLatencies: [TimeInterval] = []
 
-        for locale in Set(dataset.examples.map(\.locale)).sorted() {
-            let examples = dataset.examples.filter { $0.locale == locale }
+        for locale in Set(selectedExamples.map(\.locale)).sorted() {
+            let examples = selectedExamples.filter { $0.locale == locale }
             let generator = try GemmaCommandGenerator(
                 modelURL: inputs.artifactURL,
                 modelVersion: manifest.modelVersion,
-                useGPU: true,
+                useGPU: environment["KNOCK_VOICE_USE_GPU"] == "1",
                 locale: Locale(identifier: locale),
-                timezone: try XCTUnwrap(TimeZone(identifier: examples[0].timezone))
+                timezone: try XCTUnwrap(TimeZone(identifier: examples[0].timezone)),
+                nowMilliseconds: { referenceMilliseconds }
             )
             for example in examples {
                 let start = ProcessInfo.processInfo.systemUptime
-                let envelope = try await Self.generate(example.transcript, with: generator)
-                latencies.append(ProcessInfo.processInfo.systemUptime - start)
+                let result = await Self.generate(example.transcript, with: generator)
+                let latency = ProcessInfo.processInfo.systemUptime - start
+                latencies.append(latency)
+                if example.expectedOutcome == "command" {
+                    commandLatencies.append(latency)
+                }
+                switch result {
+                case let .success(envelope):
+                    print(
+                        "[voice-model-uat] id=\(example.id) latency=\(String(format: "%.3f", latency))s "
+                            + "intent=\(envelope.intent)"
+                    )
+                case let .failure(error):
+                    print(
+                        "[voice-model-uat] id=\(example.id) latency=\(String(format: "%.3f", latency))s "
+                            + "error=\(String(describing: error))"
+                    )
+                }
 
-                let wouldSubmit = envelope.confidence >= 0.5
                 if example.expectedOutcome == "command" {
                     evaluatedCommands += 1
+                    guard case let .success(envelope) = result else {
+                        continue
+                    }
                     let hasRequiredArguments = (example.requiredArgumentGroups ?? []).allSatisfy { group in
                         group.contains { envelope.args[$0] != nil }
                     }
-                    if wouldSubmit,
-                       envelope.intent == example.expectedIntent,
-                       hasRequiredArguments
+                    var expectedArguments = (example.expectedArguments ?? [:])
+                        .mapValues(JSONValue.string)
+                    if let expectedDueAt = example.expectedDueAt {
+                        expectedArguments["due_at"] = .string(expectedDueAt)
+                    }
+                    let expectedConfirmation = example.backendConfirmationRequired
+                        ?? (example.expectedIntent == "send_message")
+                    if envelope.intent == example.expectedIntent,
+                       hasRequiredArguments,
+                       envelope.args == expectedArguments,
+                       envelope.needsConfirmation == expectedConfirmation,
+                       envelope.riskLevel == (expectedConfirmation ? .high : .low)
                     {
                         correctCommands += 1
                     }
                 } else {
-                    XCTAssertFalse(wouldSubmit, "\(example.id) must ask for clarification")
+                    switch result {
+                    case .success:
+                        XCTFail("\(example.id) must ask for clarification")
+                    case let .failure(error):
+                        XCTAssertTrue(
+                            LocalVoiceCommandErrorPolicy.requiresClarification(error),
+                            "\(example.id) failed for a runtime reason instead of asking for clarification: \(error)"
+                        )
+                    }
                 }
 
-                if wouldSubmit,
+                if case let .success(envelope) = result,
                    envelope.intent == "send_message",
                    example.expectedIntent != "send_message"
                 {
@@ -547,23 +603,36 @@ final class VoiceModelGoldenEvaluationTests: XCTestCase {
         }
 
         let accuracy = Double(correctCommands) / Double(max(evaluatedCommands, 1))
-        XCTAssertGreaterThanOrEqual(accuracy, dataset.minimumIntentAccuracy)
+        let orderedLatencies = latencies.sorted()
+        let orderedCommandLatencies = commandLatencies.sorted()
+        let p95Index = max(0, Int(ceil(Double(orderedLatencies.count) * 0.95)) - 1)
+        let commandP95Index = max(
+            0,
+            Int(ceil(Double(orderedCommandLatencies.count) * 0.95)) - 1
+        )
+        print(
+            "[voice-model-uat] summary pipeline_command_semantic_accuracy="
+                + "\(String(format: "%.3f", accuracy)) "
+                + "high_risk_false_executions=\(highRiskFalseExecutions) "
+                + "overall_p95=\(String(format: "%.3f", orderedLatencies[p95Index]))s "
+                + "command_p95=\(String(format: "%.3f", orderedCommandLatencies[commandP95Index]))s"
+        )
+        XCTAssertGreaterThanOrEqual(accuracy, dataset.minimumPipelineCommandAccuracy)
         XCTAssertLessThanOrEqual(
             highRiskFalseExecutions,
             dataset.maximumHighRiskFalseExecutions
         )
-        let orderedLatencies = latencies.sorted()
-        let p95Index = max(0, Int(ceil(Double(orderedLatencies.count) * 0.95)) - 1)
         XCTAssertLessThanOrEqual(orderedLatencies[p95Index], maximumP95)
+        XCTAssertLessThanOrEqual(orderedCommandLatencies[commandP95Index], maximumP95)
     }
 
     private static func generate(
         _ transcript: String,
         with generator: LocalCommandGenerating
-    ) async throws -> CommandEnvelope {
-        try await withCheckedThrowingContinuation { continuation in
+    ) async -> Result<CommandEnvelope, Error> {
+        await withCheckedContinuation { continuation in
             generator.generateCommand(for: transcript) { result in
-                continuation.resume(with: result.flatMap { data in
+                continuation.resume(returning: result.flatMap { data in
                     Result { try CommandEnvelope.decodeStrict(from: data) }
                 })
             }
