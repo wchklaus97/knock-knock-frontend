@@ -100,6 +100,56 @@ Do **not** commit secrets, `.env`, `.env.agent`, or `.p8` files.
 
 ---
 
+## Physical-device signed voice-model UAT
+
+Host filesystem paths are not reachable from an XCTest process running on an
+iPhone. The signed-model golden test therefore keeps the existing host/simulator
+configuration, but requires all three values together:
+
+- `KNOCK_VOICE_MODEL_PATH`
+- `KNOCK_VOICE_MODEL_MANIFEST_PATH`
+- `KNOCK_MODEL_PUBLIC_KEY_BASE64`
+
+A partial environment is a test failure. With no environment triple, the test
+looks in the app's Documents container at:
+
+```text
+KnockKnockVoiceModelUAT/
+  model.litertlm
+  manifest.json
+  public-key.base64
+  required
+```
+
+The `required` marker makes missing or invalid staged inputs fail instead of
+being reported as the ordinary unconfigured-model skip.
+
+To stage an approved artifact on an installed development build, connect and
+unlock the iPhone, obtain its CoreDevice UUID, and run:
+
+```bash
+scripts/ios-voice-model-uat.sh \
+  --device "$KNOCK_DEVICE_UDID" \
+  --model /absolute/path/to/model.litertlm \
+  --manifest /absolute/path/to/manifest.json \
+  --public-key /absolute/path/to/public-key.base64
+```
+
+The script accepts the equivalent path variables
+`KNOCK_VOICE_MODEL_PATH`, `KNOCK_VOICE_MODEL_MANIFEST_PATH`, and
+`KNOCK_MODEL_PUBLIC_KEY_PATH`. It validates the files and 32-byte Ed25519
+public key, creates a private temporary payload, and uses `xcrun devicectl`
+with the `appDataContainer` domain for `hk.knockknock.app`. It copies only to
+`Documents/KnockKnockVoiceModelUAT`, does not print key material, does not
+delete device data, and does not run the test. Run the exact targeted
+`xcodebuild` command it prints after staging. That command removes the three
+host-input variables from the test process so physical-device resolution cannot
+accidentally select Mac-only paths. The marker intentionally remains in app
+data, so subsequent targeted runs stay fail-closed until a valid payload is
+staged again or the app data is deliberately reset by the operator.
+
+---
+
 ## Your mandate (end-to-end)
 
 Own the remaining **test → debug → fix → retest** loop until the Definition of Done below passes. Prefer small, focused fixes. Do not redesign architecture unless a bug requires it.

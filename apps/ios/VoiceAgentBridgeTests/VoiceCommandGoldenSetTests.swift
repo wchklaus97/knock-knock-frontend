@@ -36,6 +36,171 @@ private struct VoiceCommandGoldenExample: Decodable {
     }
 }
 
+private struct VoiceModelUATInputs {
+    let artifactURL: URL
+    let manifestURL: URL
+    let publicKey: Data
+}
+
+private enum VoiceModelUATInputError: Error, Equatable, LocalizedError {
+    case partialEnvironment(missingKeys: [String])
+    case invalidEnvironmentInput(key: String)
+    case requiredStagedInputsInvalid
+
+    var errorDescription: String? {
+        switch self {
+        case let .partialEnvironment(missingKeys):
+            return "Voice-model UAT environment is partial; missing: \(missingKeys.joined(separator: ", "))"
+        case let .invalidEnvironmentInput(key):
+            return "Voice-model UAT environment input is missing or invalid: \(key)"
+        case .requiredStagedInputsInvalid:
+            return "Required voice-model UAT inputs are missing or invalid in Documents/KnockKnockVoiceModelUAT"
+        }
+    }
+}
+
+private struct VoiceModelUATInputResolver {
+    static let modelEnvironmentKey = "KNOCK_VOICE_MODEL_PATH"
+    static let manifestEnvironmentKey = "KNOCK_VOICE_MODEL_MANIFEST_PATH"
+    static let publicKeyEnvironmentKey = "KNOCK_MODEL_PUBLIC_KEY_BASE64"
+    static let stagedDirectoryName = "KnockKnockVoiceModelUAT"
+    static let stagedModelName = "model.litertlm"
+    static let stagedManifestName = "manifest.json"
+    static let stagedPublicKeyName = "public-key.base64"
+    static let requiredMarkerName = "required"
+
+    private static let publicKeyByteCount = 32
+    private static let maximumPublicKeyFileSize = 4_096
+
+    let fileManager: FileManager
+
+    init(fileManager: FileManager = .default) {
+        self.fileManager = fileManager
+    }
+
+    func resolve(
+        environment: [String: String],
+        documentsDirectory: URL
+    ) throws -> VoiceModelUATInputs? {
+        let environmentKeys = [
+            Self.modelEnvironmentKey,
+            Self.manifestEnvironmentKey,
+            Self.publicKeyEnvironmentKey,
+        ]
+        let suppliedKeys = environmentKeys.filter { environment[$0] != nil }
+
+        if !suppliedKeys.isEmpty {
+            let missingKeys = environmentKeys.filter {
+                environment[$0]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
+            }
+            guard missingKeys.isEmpty else {
+                throw VoiceModelUATInputError.partialEnvironment(missingKeys: missingKeys)
+            }
+
+            let artifactURL = URL(
+                fileURLWithPath: environment[Self.modelEnvironmentKey]!,
+                isDirectory: false
+            )
+            let manifestURL = URL(
+                fileURLWithPath: environment[Self.manifestEnvironmentKey]!,
+                isDirectory: false
+            )
+            guard isNonEmptyRegularFile(artifactURL) else {
+                throw VoiceModelUATInputError.invalidEnvironmentInput(
+                    key: Self.modelEnvironmentKey
+                )
+            }
+            guard isNonEmptyRegularFile(manifestURL) else {
+                throw VoiceModelUATInputError.invalidEnvironmentInput(
+                    key: Self.manifestEnvironmentKey
+                )
+            }
+            guard let publicKey = decodePublicKey(
+                environment[Self.publicKeyEnvironmentKey]!
+            ) else {
+                throw VoiceModelUATInputError.invalidEnvironmentInput(
+                    key: Self.publicKeyEnvironmentKey
+                )
+            }
+            return VoiceModelUATInputs(
+                artifactURL: artifactURL,
+                manifestURL: manifestURL,
+                publicKey: publicKey
+            )
+        }
+
+        let stagedDirectory = documentsDirectory.appendingPathComponent(
+            Self.stagedDirectoryName,
+            isDirectory: true
+        )
+        let requiredMarker = stagedDirectory.appendingPathComponent(
+            Self.requiredMarkerName,
+            isDirectory: false
+        )
+        let required = fileManager.fileExists(atPath: requiredMarker.path)
+        let artifactURL = stagedDirectory.appendingPathComponent(
+            Self.stagedModelName,
+            isDirectory: false
+        )
+        let manifestURL = stagedDirectory.appendingPathComponent(
+            Self.stagedManifestName,
+            isDirectory: false
+        )
+        let publicKeyURL = stagedDirectory.appendingPathComponent(
+            Self.stagedPublicKeyName,
+            isDirectory: false
+        )
+
+        guard isNonEmptyRegularFile(artifactURL),
+              isNonEmptyRegularFile(manifestURL),
+              isNonEmptyRegularFile(publicKeyURL),
+              let publicKey = readPublicKey(at: publicKeyURL)
+        else {
+            if required {
+                throw VoiceModelUATInputError.requiredStagedInputsInvalid
+            }
+            return nil
+        }
+
+        return VoiceModelUATInputs(
+            artifactURL: artifactURL,
+            manifestURL: manifestURL,
+            publicKey: publicKey
+        )
+    }
+
+    private func isNonEmptyRegularFile(_ url: URL) -> Bool {
+        guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+              attributes[.type] as? FileAttributeType == .typeRegular,
+              let size = attributes[.size] as? NSNumber
+        else {
+            return false
+        }
+        return size.int64Value > 0
+    }
+
+    private func readPublicKey(at url: URL) -> Data? {
+        guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? NSNumber,
+              (1...Self.maximumPublicKeyFileSize).contains(size.intValue),
+              let encoded = try? String(contentsOf: url, encoding: .utf8)
+        else {
+            return nil
+        }
+        return decodePublicKey(encoded)
+    }
+
+    private func decodePublicKey(_ encoded: String) -> Data? {
+        let normalized = encoded.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let publicKey = Data(base64Encoded: normalized),
+              publicKey.count == Self.publicKeyByteCount
+        else {
+            return nil
+        }
+        return publicKey
+    }
+}
+
 final class VoiceCommandGoldenSetTests: XCTestCase {
     func testGoldenSetCoversReleaseActionsLocalesAndAmbiguities() throws {
         let dataset = try Self.loadDataset()
@@ -102,27 +267,238 @@ final class VoiceCommandGoldenSetTests: XCTestCase {
     }
 }
 
+final class VoiceModelUATInputResolverTests: XCTestCase {
+    func testCompleteEnvironmentTripleResolvesExistingInputs() throws {
+        try withTemporaryDocumentsDirectory { documentsDirectory in
+            let environmentDirectory = documentsDirectory.appendingPathComponent(
+                "environment",
+                isDirectory: true
+            )
+            let expectedKey = try writeValidInputs(to: environmentDirectory)
+            let environment = [
+                VoiceModelUATInputResolver.modelEnvironmentKey:
+                    environmentDirectory.appendingPathComponent("model.litertlm").path,
+                VoiceModelUATInputResolver.manifestEnvironmentKey:
+                    environmentDirectory.appendingPathComponent("manifest.json").path,
+                VoiceModelUATInputResolver.publicKeyEnvironmentKey:
+                    expectedKey.base64EncodedString(),
+            ]
+
+            let inputs = try XCTUnwrap(
+                VoiceModelUATInputResolver().resolve(
+                    environment: environment,
+                    documentsDirectory: documentsDirectory
+                )
+            )
+
+            XCTAssertEqual(inputs.artifactURL.path, environment[VoiceModelUATInputResolver.modelEnvironmentKey])
+            XCTAssertEqual(inputs.manifestURL.path, environment[VoiceModelUATInputResolver.manifestEnvironmentKey])
+            XCTAssertEqual(inputs.publicKey, expectedKey)
+        }
+    }
+
+    func testPartialEnvironmentRejectsRatherThanFallingBackToStagedInputs() throws {
+        try withTemporaryDocumentsDirectory { documentsDirectory in
+            let stagedDirectory = documentsDirectory.appendingPathComponent(
+                VoiceModelUATInputResolver.stagedDirectoryName,
+                isDirectory: true
+            )
+            _ = try writeValidInputs(to: stagedDirectory)
+
+            XCTAssertThrowsError(
+                try VoiceModelUATInputResolver().resolve(
+                    environment: [VoiceModelUATInputResolver.modelEnvironmentKey: "/tmp/model.litertlm"],
+                    documentsDirectory: documentsDirectory
+                )
+            ) { error in
+                XCTAssertEqual(
+                    error as? VoiceModelUATInputError,
+                    .partialEnvironment(missingKeys: [
+                        VoiceModelUATInputResolver.manifestEnvironmentKey,
+                        VoiceModelUATInputResolver.publicKeyEnvironmentKey,
+                    ])
+                )
+            }
+        }
+    }
+
+    func testCompleteStagedDeviceDirectoryResolvesWithoutHostPaths() throws {
+        try withTemporaryDocumentsDirectory { documentsDirectory in
+            let stagedDirectory = documentsDirectory.appendingPathComponent(
+                VoiceModelUATInputResolver.stagedDirectoryName,
+                isDirectory: true
+            )
+            let expectedKey = try writeValidInputs(to: stagedDirectory)
+
+            let inputs = try XCTUnwrap(
+                VoiceModelUATInputResolver().resolve(
+                    environment: [:],
+                    documentsDirectory: documentsDirectory
+                )
+            )
+
+            XCTAssertEqual(
+                inputs.artifactURL,
+                stagedDirectory.appendingPathComponent(VoiceModelUATInputResolver.stagedModelName)
+            )
+            XCTAssertEqual(
+                inputs.manifestURL,
+                stagedDirectory.appendingPathComponent(VoiceModelUATInputResolver.stagedManifestName)
+            )
+            XCTAssertEqual(inputs.publicKey, expectedKey)
+        }
+    }
+
+    func testUnstagedInputsRemainOptionalWithoutRequiredMarker() throws {
+        try withTemporaryDocumentsDirectory { documentsDirectory in
+            XCTAssertNil(
+                try VoiceModelUATInputResolver().resolve(
+                    environment: [:],
+                    documentsDirectory: documentsDirectory
+                )
+            )
+
+            let stagedDirectory = documentsDirectory.appendingPathComponent(
+                VoiceModelUATInputResolver.stagedDirectoryName,
+                isDirectory: true
+            )
+            try FileManager.default.createDirectory(
+                at: stagedDirectory,
+                withIntermediateDirectories: true
+            )
+            try Data([0x01]).write(
+                to: stagedDirectory.appendingPathComponent(
+                    VoiceModelUATInputResolver.stagedModelName
+                )
+            )
+            XCTAssertNil(
+                try VoiceModelUATInputResolver().resolve(
+                    environment: [:],
+                    documentsDirectory: documentsDirectory
+                )
+            )
+        }
+    }
+
+    func testRequiredMarkerMakesMissingStagedInputsFailClosed() throws {
+        try withTemporaryDocumentsDirectory { documentsDirectory in
+            let stagedDirectory = documentsDirectory.appendingPathComponent(
+                VoiceModelUATInputResolver.stagedDirectoryName,
+                isDirectory: true
+            )
+            try FileManager.default.createDirectory(
+                at: stagedDirectory,
+                withIntermediateDirectories: true
+            )
+            try Data().write(
+                to: stagedDirectory.appendingPathComponent(
+                    VoiceModelUATInputResolver.requiredMarkerName
+                )
+            )
+
+            XCTAssertThrowsError(
+                try VoiceModelUATInputResolver().resolve(
+                    environment: [:],
+                    documentsDirectory: documentsDirectory
+                )
+            ) { error in
+                XCTAssertEqual(
+                    error as? VoiceModelUATInputError,
+                    .requiredStagedInputsInvalid
+                )
+            }
+        }
+    }
+
+    func testRequiredMarkerMakesInvalidStagedPublicKeyFailClosed() throws {
+        try withTemporaryDocumentsDirectory { documentsDirectory in
+            let stagedDirectory = documentsDirectory.appendingPathComponent(
+                VoiceModelUATInputResolver.stagedDirectoryName,
+                isDirectory: true
+            )
+            _ = try writeValidInputs(to: stagedDirectory)
+            try Data("not-base64".utf8).write(
+                to: stagedDirectory.appendingPathComponent(
+                    VoiceModelUATInputResolver.stagedPublicKeyName
+                )
+            )
+            try Data().write(
+                to: stagedDirectory.appendingPathComponent(
+                    VoiceModelUATInputResolver.requiredMarkerName
+                )
+            )
+
+            XCTAssertThrowsError(
+                try VoiceModelUATInputResolver().resolve(
+                    environment: [:],
+                    documentsDirectory: documentsDirectory
+                )
+            ) { error in
+                XCTAssertEqual(
+                    error as? VoiceModelUATInputError,
+                    .requiredStagedInputsInvalid
+                )
+            }
+        }
+    }
+
+    private func withTemporaryDocumentsDirectory(
+        _ body: (URL) throws -> Void
+    ) throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "VoiceModelUATInputResolverTests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: false
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try body(directory)
+    }
+
+    @discardableResult
+    private func writeValidInputs(to directory: URL) throws -> Data {
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        try Data([0x01]).write(
+            to: directory.appendingPathComponent(VoiceModelUATInputResolver.stagedModelName)
+        )
+        try Data("{}".utf8).write(
+            to: directory.appendingPathComponent(VoiceModelUATInputResolver.stagedManifestName)
+        )
+        let publicKey = Data((0..<32).map(UInt8.init))
+        try Data(publicKey.base64EncodedString().utf8).write(
+            to: directory.appendingPathComponent(VoiceModelUATInputResolver.stagedPublicKeyName)
+        )
+        return publicKey
+    }
+}
+
 #if canImport(CLiteRTLM)
 
 /// Opt-in release/UAT gate. It intentionally skips on ordinary unit-test runs
-/// and becomes mandatory when a signed artifact path, manifest, and public key
-/// are supplied by the release environment.
+/// and becomes mandatory when a complete release environment or a required
+/// Documents/KnockKnockVoiceModelUAT payload is supplied.
 final class VoiceModelGoldenEvaluationTests: XCTestCase {
     func testSignedModelMeetsAccuracySafetyAndLatencyGates() async throws {
         let environment = ProcessInfo.processInfo.environment
-        guard let artifactPath = environment["KNOCK_VOICE_MODEL_PATH"],
-              let manifestPath = environment["KNOCK_VOICE_MODEL_MANIFEST_PATH"],
-              let publicKeyBase64 = environment["KNOCK_MODEL_PUBLIC_KEY_BASE64"]
-        else {
+        let documentsDirectory = try XCTUnwrap(
+            FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        )
+        guard let inputs = try VoiceModelUATInputResolver().resolve(
+            environment: environment,
+            documentsDirectory: documentsDirectory
+        ) else {
             throw XCTSkip("Signed voice model inputs are not configured for this test run")
         }
-        let artifactURL = URL(fileURLWithPath: artifactPath)
         let manifest = try ModelManifest.decodeStrict(
-            from: Data(contentsOf: URL(fileURLWithPath: manifestPath))
+            from: Data(contentsOf: inputs.manifestURL)
         )
-        let publicKey = try XCTUnwrap(Data(base64Encoded: publicKeyBase64))
-        try Ed25519ModelArtifactVerifier(publicKeyRawRepresentation: publicKey)
-            .verifyArtifact(at: artifactURL, against: manifest)
+        try Ed25519ModelArtifactVerifier(publicKeyRawRepresentation: inputs.publicKey)
+            .verifyArtifact(at: inputs.artifactURL, against: manifest)
 
         let dataset = try VoiceCommandGoldenSetTests.loadDataset()
         let maximumP95 = Double(environment["KNOCK_VOICE_MAX_P95_SECONDS"] ?? "2.0") ?? 2.0
@@ -134,7 +510,7 @@ final class VoiceModelGoldenEvaluationTests: XCTestCase {
         for locale in Set(dataset.examples.map(\.locale)).sorted() {
             let examples = dataset.examples.filter { $0.locale == locale }
             let generator = try GemmaCommandGenerator(
-                modelURL: artifactURL,
+                modelURL: inputs.artifactURL,
                 modelVersion: manifest.modelVersion,
                 useGPU: true,
                 locale: Locale(identifier: locale),
