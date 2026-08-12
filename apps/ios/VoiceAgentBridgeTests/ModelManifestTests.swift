@@ -2,6 +2,10 @@ import CryptoKit
 import XCTest
 @testable import VoiceAgentBridge
 
+#if canImport(CLiteRTLM)
+import CLiteRTLM
+#endif
+
 final class ModelManifestTests: XCTestCase {
     func testLiteRTModelOutputParserAcceptsOnlyOneCompleteJSONObject() throws {
         let accepted = try LiteRTModelOutputParser.extractJSONObject(
@@ -992,6 +996,198 @@ final class LiteRTConversationCommandRunnerTests: XCTestCase {
         return try XCTUnwrap(String(data: data, encoding: .utf8))
     }
 }
+
+#if canImport(CLiteRTLM)
+
+/// Opt-in smoke against LiteRT-LM's small, public v0.12 test model. This proves
+/// that the production streaming/cancellation ownership seam works with the
+/// real C runtime; it does not substitute for the gated Gemma accuracy UAT.
+final class LiteRTNativeLifecycleSmokeTests: XCTestCase {
+    private static let expectedModelSize: UInt64 = 32_178_176
+    private static let expectedModelSHA256 =
+        "b7dde54b285b67913a08c114c96d4b25ffdafff1678e1eb7f9691d5bf7d21739"
+
+    func testOfficialTestModelStreamsThroughProductionRunner() async throws {
+        let modelURL = try requireLifecycleModel()
+        let engine = try makeEngine(modelURL: modelURL, maxTokens: 16)
+        defer { litert_lm_engine_delete(engine) }
+
+        let runner = makeRunner(engine: engine)
+        let output = try await runner.run(messageJSON: try messageJSON(text: "Hello"))
+
+        XCTAssertFalse(output.isEmpty)
+    }
+
+    func testOfficialTestModelCancellationJoinsBeforeConversationDeletion() async throws {
+        let modelURL = try requireLifecycleModel()
+        let engine = try makeEngine(modelURL: modelURL, maxTokens: 512)
+        defer { litert_lm_engine_delete(engine) }
+
+        let streamStarted = expectation(description: "native stream started")
+        let nativeCancelCalled = expectation(description: "native cancel called")
+        let conversationDeleted = expectation(description: "conversation deleted")
+        let allowStartToReturn = DispatchSemaphore(value: 0)
+        let runner = makeRunner(
+            engine: engine,
+            deleteConversation: { conversation in
+                litert_lm_conversation_delete(conversation)
+                conversationDeleted.fulfill()
+            },
+            beforeStartReturns: {
+                streamStarted.fulfill()
+                _ = allowStartToReturn.wait(timeout: .now() + 2)
+            },
+            cancelConversation: { conversation in
+                nativeCancelCalled.fulfill()
+                litert_lm_conversation_cancel_process(conversation)
+            }
+        )
+
+        let task = Task {
+            try await runner.run(messageJSON: try messageJSON(
+                text: "Write a long response about the history of Hong Kong."
+            ))
+        }
+        await fulfillment(of: [streamStarted], timeout: 5)
+        task.cancel()
+        allowStartToReturn.signal()
+
+        do {
+            _ = try await task.value
+            XCTFail("Cancelled native inference must not return output")
+        } catch is CancellationError {
+            // Expected.
+        } catch {
+            XCTFail("Unexpected cancellation error: \(error)")
+        }
+        await fulfillment(of: [nativeCancelCalled, conversationDeleted], timeout: 5)
+    }
+
+    private func requireLifecycleModel() throws -> URL {
+        if let path = ProcessInfo.processInfo.environment["KNOCK_LITERT_LIFECYCLE_MODEL_PATH"],
+           !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return try requireExistingModel(at: URL(fileURLWithPath: path))
+        }
+
+        if let documents = FileManager.default.urls(
+            for: .documentDirectory,
+            in: .userDomainMask
+        ).first {
+            let stagedURL = documents
+                .appendingPathComponent("KnockKnockLiteRTLifecycleUAT", isDirectory: true)
+                .appendingPathComponent("test_lm.litertlm")
+            if FileManager.default.fileExists(atPath: stagedURL.path) {
+                return try requireExistingModel(at: stagedURL)
+            }
+        }
+
+        throw XCTSkip("Official LiteRT-LM lifecycle test model is not configured")
+    }
+
+    private func requireExistingModel(at url: URL) throws -> URL {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              attributes[.type] as? FileAttributeType == .typeRegular,
+              (attributes[.size] as? NSNumber)?.uint64Value == Self.expectedModelSize
+        else {
+            XCTFail("Configured LiteRT-LM lifecycle test model does not exist")
+            throw CocoaError(.fileNoSuchFile)
+        }
+        let digest = try Ed25519ModelArtifactVerifier.sha256(of: url)
+        guard Ed25519ModelArtifactVerifier.hex(digest) == Self.expectedModelSHA256 else {
+            XCTFail("Configured LiteRT-LM lifecycle test model failed SHA-256 verification")
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        return url
+    }
+
+    private func makeEngine(modelURL: URL, maxTokens: Int32) throws -> OpaquePointer {
+        let settings = try XCTUnwrap(litert_lm_engine_settings_create(
+            modelURL.path,
+            "cpu",
+            nil,
+            nil
+        ))
+        defer { litert_lm_engine_settings_delete(settings) }
+        litert_lm_engine_settings_set_max_num_tokens(settings, maxTokens)
+        return try XCTUnwrap(litert_lm_engine_create(settings))
+    }
+
+    private func makeRunner(
+        engine: OpaquePointer,
+        deleteConversation: @escaping (OpaquePointer) -> Void = {
+            litert_lm_conversation_delete($0)
+        },
+        beforeStartReturns: @escaping () -> Void = {},
+        cancelConversation: @escaping (OpaquePointer) -> Void = {
+            litert_lm_conversation_cancel_process($0)
+        }
+    ) -> LiteRTStreamingConversationCommandRunner<OpaquePointer> {
+        LiteRTStreamingConversationCommandRunner<OpaquePointer>(
+            makeConversation: {
+                litert_lm_conversation_create(engine, nil)
+            },
+            deleteConversation: deleteConversation,
+            startStream: { conversation, message, callback in
+                let context = NativeLifecycleStreamContext(callback: callback)
+                let contextPointer = Unmanaged.passRetained(context).toOpaque()
+                let status = litert_lm_conversation_send_message_stream(
+                    conversation,
+                    message,
+                    nil,
+                    nil,
+                    nativeLifecycleStreamCallback,
+                    contextPointer
+                )
+                if status != 0 {
+                    Unmanaged<NativeLifecycleStreamContext>
+                        .fromOpaque(contextPointer)
+                        .release()
+                }
+                beforeStartReturns()
+                return Int(status)
+            },
+            cancelConversation: cancelConversation
+        )
+    }
+
+    private func messageJSON(text: String) throws -> String {
+        let object: [String: Any] = [
+            "role": "user",
+            "content": [["type": "text", "text": text]],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: object)
+        return try XCTUnwrap(String(data: data, encoding: .utf8))
+    }
+}
+
+private final class NativeLifecycleStreamContext {
+    let callback: LiteRTStreamingConversationCommandRunner<OpaquePointer>.StreamCallback
+
+    init(callback: @escaping LiteRTStreamingConversationCommandRunner<OpaquePointer>.StreamCallback) {
+        self.callback = callback
+    }
+}
+
+private func nativeLifecycleStreamCallback(
+    callbackData: UnsafeMutableRawPointer?,
+    chunk: UnsafePointer<CChar>?,
+    isFinal: Bool,
+    errorMessage: UnsafePointer<CChar>?
+) {
+    guard let callbackData else { return }
+    let unmanaged = Unmanaged<NativeLifecycleStreamContext>.fromOpaque(callbackData)
+    let context = unmanaged.takeUnretainedValue()
+    let error: Error? = errorMessage == nil
+        ? nil
+        : LocalVoiceAdapterError.gemmaRuntimeGenerationFailed
+    let callbackExit = context.callback(chunk.map(String.init(cString:)), isFinal, error)
+    finishLiteRTStreamCallback(
+        callbackExit,
+        releasingContext: isFinal || error != nil ? { unmanaged.release() } : nil
+    )
+}
+
+#endif
 
 private final class LockedEvents: @unchecked Sendable {
     private let lock = NSLock()
