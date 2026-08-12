@@ -97,7 +97,7 @@ final class LocalVoiceModelManager {
     }
 
     func makeCommandGenerator(
-        useGPU: Bool = true,
+        useGPU: Bool = false,
         locale: Locale = .current,
         timezone: TimeZone = .current,
         deviceID: String? = nil,

@@ -51,6 +51,145 @@ enum LocalCommandEnvelopeCanonicalizerError: Error, Equatable {
     case clarificationRequired(ClarificationReason)
 }
 
+enum LocalCommandClock {
+    static func currentMilliseconds() -> Int64 {
+        let milliseconds = Date().timeIntervalSince1970 * 1_000
+        guard milliseconds.isFinite else { return 0 }
+        if milliseconds <= Double(Int64.min) { return Int64.min }
+        if milliseconds >= Double(Int64.max) { return Int64.max }
+        return Int64(milliseconds.rounded(.down))
+    }
+}
+
+/// Mirrors the backend's reminder timestamp parser. Keeping this boundary
+/// strict prevents a model-produced relative time from appearing valid on the
+/// phone only to be rejected (or interpreted differently) by the backend.
+enum LocalReminderDueAt {
+    static func parseMilliseconds(_ timestamp: String) -> Int64? {
+        let bytes = Array(timestamp.utf8)
+        guard bytes.count >= 20,
+              bytes[4] == 0x2D,
+              bytes[7] == 0x2D,
+              bytes[10] == 0x54 || bytes[10] == 0x74,
+              bytes[13] == 0x3A,
+              bytes[16] == 0x3A,
+              let year = decimal(bytes, 0..<4),
+              let month = decimal(bytes, 5..<7),
+              let day = decimal(bytes, 8..<10),
+              let hour = decimal(bytes, 11..<13),
+              let minute = decimal(bytes, 14..<16),
+              let second = decimal(bytes, 17..<19),
+              day > 0,
+              let maximumDay = daysInMonth(year: year, month: month),
+              day <= maximumDay,
+              hour <= 23,
+              minute <= 59,
+              second <= 59
+        else {
+            return nil
+        }
+
+        var cursor = 19
+        var milliseconds = 0
+        var fractionalDigits = 0
+        if bytes.indices.contains(cursor), bytes[cursor] == 0x2E {
+            cursor += 1
+            let fractionStart = cursor
+            while bytes.indices.contains(cursor), bytes[cursor].isASCIIDigit {
+                guard fractionalDigits < 3 else { return nil }
+                milliseconds = milliseconds * 10 + Int(bytes[cursor] - 48)
+                fractionalDigits += 1
+                cursor += 1
+            }
+            guard cursor > fractionStart else { return nil }
+            while fractionalDigits < 3 {
+                milliseconds *= 10
+                fractionalDigits += 1
+            }
+        }
+
+        guard bytes.indices.contains(cursor) else { return nil }
+        let offsetSeconds: Int64
+        switch bytes[cursor] {
+        case 0x5A, 0x7A:
+            guard cursor + 1 == bytes.count else { return nil }
+            offsetSeconds = 0
+        case 0x2B, 0x2D:
+            guard cursor + 6 == bytes.count,
+                  bytes[cursor + 3] == 0x3A,
+                  let offsetHour = decimal(bytes, (cursor + 1)..<(cursor + 3)),
+                  let offsetMinute = decimal(bytes, (cursor + 4)..<(cursor + 6)),
+                  offsetHour <= 23,
+                  offsetMinute <= 59
+            else {
+                return nil
+            }
+            let magnitude = Int64(offsetHour * 3_600 + offsetMinute * 60)
+            offsetSeconds = bytes[cursor] == 0x2B ? magnitude : -magnitude
+        default:
+            return nil
+        }
+
+        let unixSeconds = daysFromCivil(year: year, month: month, day: day) * 86_400
+            + Int64(hour * 3_600 + minute * 60 + second)
+            - offsetSeconds
+        let (scaledSeconds, multiplyOverflow) = unixSeconds.multipliedReportingOverflow(by: 1_000)
+        let (result, additionOverflow) = scaledSeconds.addingReportingOverflow(Int64(milliseconds))
+        return multiplyOverflow || additionOverflow ? nil : result
+    }
+
+    static func isStrictlyFuture(
+        _ timestamp: String,
+        relativeToMilliseconds referenceMilliseconds: Int64
+    ) -> Bool {
+        guard let dueAtMilliseconds = parseMilliseconds(timestamp) else { return false }
+        return dueAtMilliseconds > referenceMilliseconds
+    }
+
+    private static func decimal(_ bytes: [UInt8], _ range: Range<Int>) -> Int? {
+        guard range.lowerBound >= 0, range.upperBound <= bytes.count else { return nil }
+        var value = 0
+        for index in range {
+            guard bytes[index].isASCIIDigit else { return nil }
+            value = value * 10 + Int(bytes[index] - 48)
+        }
+        return value
+    }
+
+    private static func daysInMonth(year: Int, month: Int) -> Int? {
+        switch month {
+        case 1, 3, 5, 7, 8, 10, 12:
+            return 31
+        case 4, 6, 9, 11:
+            return 30
+        case 2:
+            return isLeapYear(year) ? 29 : 28
+        default:
+            return nil
+        }
+    }
+
+    private static func isLeapYear(_ year: Int) -> Bool {
+        year.isMultiple(of: 4) && (!year.isMultiple(of: 100) || year.isMultiple(of: 400))
+    }
+
+    // Howard Hinnant's civil-date conversion, shifted to the Unix epoch.
+    private static func daysFromCivil(year: Int, month: Int, day: Int) -> Int64 {
+        let adjustedYear = Int64(year) - (month <= 2 ? 1 : 0)
+        let era = (adjustedYear >= 0 ? adjustedYear : adjustedYear - 399) / 400
+        let yearOfEra = adjustedYear - era * 400
+        let adjustedMonth = Int64(month)
+        let dayOfYear = (153 * (adjustedMonth + (month > 2 ? -3 : 9)) + 2) / 5
+            + Int64(day) - 1
+        let dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear
+        return era * 146_097 + dayOfEra - 719_468
+    }
+}
+
+private extension UInt8 {
+    var isASCIIDigit: Bool { (48...57).contains(self) }
+}
+
 /// Shared classifier for errors crossing the untrusted local-model boundary.
 /// Semantic uncertainty asks the user to clarify; runtime or transport errors
 /// remain failures and must never be disguised as an ambiguous utterance.
@@ -63,31 +202,18 @@ enum LocalVoiceCommandErrorPolicy {
     }
 }
 
-/// The model-facing DTO. It intentionally mirrors the currently deployed
-/// prompt, but none of its transport or policy claims are authoritative.
+/// The model-facing DTO contains semantics only. Transport identity, locale,
+/// timezone, risk, and confirmation policy are deliberately absent so a model
+/// can neither choose nor weaken them.
 private struct LocalModelCommandDraft: Decodable {
-    let schemaVersion: Int
-    let commandID: String
     let intent: String
     let args: [String: JSONValue]
-    let claimedRiskLevel: CommandEnvelope.RiskLevel
-    let claimedNeedsConfirmation: Bool
-    let idempotencyKey: String
     let confidence: Double
-    let locale: String
-    let timezone: String
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
-        case schemaVersion = "schema_version"
-        case commandID = "command_id"
         case intent
         case args
-        case claimedRiskLevel = "risk_level"
-        case claimedNeedsConfirmation = "needs_confirmation"
-        case idempotencyKey = "idempotency_key"
         case confidence
-        case locale
-        case timezone
     }
 
     init(from decoder: Decoder) throws {
@@ -96,22 +222,9 @@ private struct LocalModelCommandDraft: Decodable {
             allowed: CodingKeys.allCases.map(\.rawValue)
         )
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
-        commandID = try container.decode(String.self, forKey: .commandID)
         intent = try container.decode(String.self, forKey: .intent)
         args = try container.decode([String: JSONValue].self, forKey: .args)
-        claimedRiskLevel = try container.decode(
-            CommandEnvelope.RiskLevel.self,
-            forKey: .claimedRiskLevel
-        )
-        claimedNeedsConfirmation = try container.decode(
-            Bool.self,
-            forKey: .claimedNeedsConfirmation
-        )
-        idempotencyKey = try container.decode(String.self, forKey: .idempotencyKey)
         confidence = try container.decode(Double.self, forKey: .confidence)
-        locale = try container.decode(String.self, forKey: .locale)
-        timezone = try container.decode(String.self, forKey: .timezone)
     }
 
     static func decodeStrict(from data: Data) throws -> LocalModelCommandDraft {
@@ -155,7 +268,8 @@ enum LocalVoiceCommandPolicy {
     static func semantics(
         intent: String,
         args: [String: JSONValue],
-        confidence: Double
+        confidence: Double,
+        referenceMilliseconds: Int64 = LocalCommandClock.currentMilliseconds()
     ) throws -> LocalVoiceCommandSemantics {
         guard confidence.isFinite, (0...1).contains(confidence) else {
             throw clarification(.invalidModelOutput)
@@ -200,6 +314,12 @@ enum LocalVoiceCommandPolicy {
                 aliases: ["due_at", "time", "datetime"],
                 maximumCharacters: 64
             )
+            guard LocalReminderDueAt.isStrictlyFuture(
+                dueAt,
+                relativeToMilliseconds: referenceMilliseconds
+            ) else {
+                throw clarification(.invalidModelOutput)
+            }
             semantics = LocalVoiceCommandSemantics(
                 intent: supportedIntent.rawValue,
                 args: ["title": .string(title), "due_at": .string(dueAt)],
@@ -261,11 +381,15 @@ enum LocalVoiceCommandPolicy {
 
     /// Defense in depth for generators used outside the production adapter.
     /// Rebuilds policy fields instead of trusting their encoded values.
-    static func authoritativeEnvelope(from envelope: CommandEnvelope) throws -> CommandEnvelope {
+    static func authoritativeEnvelope(
+        from envelope: CommandEnvelope,
+        referenceMilliseconds: Int64 = LocalCommandClock.currentMilliseconds()
+    ) throws -> CommandEnvelope {
         let local = try semantics(
             intent: envelope.intent,
             args: envelope.args,
-            confidence: envelope.confidence
+            confidence: envelope.confidence,
+            referenceMilliseconds: referenceMilliseconds
         )
         return try CommandEnvelope(
             schemaVersion: envelope.schemaVersion,
@@ -355,19 +479,18 @@ struct LocalCommandEnvelopeCanonicalizer {
 
     func canonicalize(
         modelOutput: Data,
-        context: LocalCommandEnvelopeContext
+        context: LocalCommandEnvelopeContext,
+        validationMilliseconds: Int64 = LocalCommandClock.currentMilliseconds()
     ) throws -> Data {
         let draft: LocalModelCommandDraft
         let local: LocalVoiceCommandSemantics
         do {
             draft = try LocalModelCommandDraft.decodeStrict(from: modelOutput)
-            guard draft.schemaVersion == CommandEnvelope.supportedVersion else {
-                throw CommandEnvelopeError.unsupportedVersion
-            }
             local = try LocalVoiceCommandPolicy.semantics(
                 intent: draft.intent,
                 args: draft.args,
-                confidence: draft.confidence
+                confidence: draft.confidence,
+                referenceMilliseconds: validationMilliseconds
             )
         } catch let error as LocalCommandEnvelopeCanonicalizerError {
             throw error

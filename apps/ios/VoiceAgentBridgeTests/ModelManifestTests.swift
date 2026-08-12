@@ -7,6 +7,29 @@ import CLiteRTLM
 #endif
 
 final class ModelManifestTests: XCTestCase {
+    func testModelResponseTransportUnwrapsOnlyOneExactJSONFence() {
+        let object = #"{"intent":"search_history","args":{}}"#
+        XCTAssertEqual(
+            LiteRTModelResponseTransport.jsonCandidate(
+                from: "  ```json\n\(object)\n```  "
+            ),
+            object
+        )
+
+        let rejectedWrappers = [
+            "before```json\n\(object)\n```",
+            "```json\n\(object)\n```after",
+            "```JSON\n\(object)\n```",
+            "```json\n```json\n\(object)\n```\n```",
+        ]
+        for response in rejectedWrappers {
+            XCTAssertEqual(
+                LiteRTModelResponseTransport.jsonCandidate(from: response),
+                response
+            )
+        }
+    }
+
     func testLiteRTModelOutputParserAcceptsOnlyOneCompleteJSONObject() throws {
         let accepted = try LiteRTModelOutputParser.extractJSONObject(
             from: "  \n{\"intent\":\"search_history\",\"args\":{}}\t "
@@ -602,6 +625,112 @@ final class LiteRTConversationCommandRunnerTests: XCTestCase {
         ])
     }
 
+    func testStreamingTimeoutCancelsAndDeletesConversationExactlyOnce() async {
+        let callbackReady = expectation(description: "stream callback installed")
+        let callbackBox = StreamCallbackBox()
+        let events = LockedEvents()
+        let runner = LiteRTStreamingConversationCommandRunner<Int>(
+            makeConversation: {
+                events.append("create")
+                return 15
+            },
+            deleteConversation: { conversation in
+                events.append("delete:\(conversation)")
+            },
+            startStream: { conversation, _, callback in
+                events.append("start:\(conversation)")
+                callbackBox.callback = callback
+                callbackReady.fulfill()
+                return 0
+            },
+            cancelConversation: { conversation in
+                events.append("cancel:\(conversation)")
+                callbackBox.callback?(nil, true, nil).finish()
+            }
+        )
+
+        do {
+            _ = try await runner.run(
+                messageJSON: "request",
+                timeoutNanoseconds: 100_000_000
+            )
+            XCTFail("A stream without a terminal response must time out")
+        } catch let error as LocalVoiceAdapterError {
+            XCTAssertEqual(error, .gemmaRuntimeGenerationTimedOut)
+        } catch {
+            XCTFail("Unexpected timeout error: \(error)")
+        }
+        await fulfillment(of: [callbackReady], timeout: 1)
+
+        XCTAssertEqual(events.values, [
+            "create",
+            "start:15",
+            "cancel:15",
+            "delete:15",
+        ])
+    }
+
+    func testStreamingTimeoutReturnsWhenNativeCancelNeverCallsBack() async {
+        let callbackReady = expectation(description: "stream callback installed")
+        let events = LockedEvents()
+        let runner = LiteRTStreamingConversationCommandRunner<Int>(
+            makeConversation: {
+                events.append("create")
+                return 16
+            },
+            deleteConversation: { conversation in
+                events.append("delete:\(conversation)")
+            },
+            startStream: { conversation, _, _ in
+                events.append("start:\(conversation)")
+                callbackReady.fulfill()
+                return 0
+            },
+            cancelConversation: { conversation in
+                events.append("cancel:\(conversation)")
+                // Deliberately omit the final callback to model a wedged native runtime.
+            }
+        )
+
+        let started = ProcessInfo.processInfo.systemUptime
+        do {
+            _ = try await runner.run(
+                messageJSON: "request",
+                timeoutNanoseconds: 100_000_000
+            )
+            XCTFail("A stalled stream must time out")
+        } catch let error as LocalVoiceAdapterError {
+            XCTAssertEqual(error, .gemmaRuntimeGenerationTimedOut)
+        } catch {
+            XCTFail("Unexpected timeout error: \(error)")
+        }
+        await fulfillment(of: [callbackReady], timeout: 1)
+
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 1)
+        XCTAssertEqual(events.values, ["create", "start:16", "cancel:16"])
+    }
+
+    func testZeroStreamingTimeoutFailsBeforeCreatingConversation() async {
+        let runner = LiteRTStreamingConversationCommandRunner<Int>(
+            makeConversation: {
+                XCTFail("A zero timeout must not create native state")
+                return 1
+            },
+            deleteConversation: { _ in },
+            startStream: { _, _, _ in 0 },
+            cancelConversation: { _ in }
+        )
+
+        do {
+            _ = try await runner.run(messageJSON: "request", timeoutNanoseconds: 0)
+            XCTFail("A zero timeout must fail closed")
+        } catch let error as LocalVoiceAdapterError {
+            XCTAssertEqual(error, .gemmaRuntimeGenerationTimedOut)
+        } catch {
+            XCTFail("Unexpected timeout error: \(error)")
+        }
+    }
+
     func testCancelFinalRaceDoesNotDeleteWhileNativeCancelIsInFlight() async {
         let callbackReady = expectation(description: "stream callback installed")
         let conversationDeleted = expectation(description: "conversation deleted")
@@ -1170,17 +1299,31 @@ private final class NativeLifecycleStreamContext {
 
 private func nativeLifecycleStreamCallback(
     callbackData: UnsafeMutableRawPointer?,
-    chunk: UnsafePointer<CChar>?,
-    isFinal: Bool,
-    errorMessage: UnsafePointer<CChar>?
+    chunk: OpaquePointer?
 ) {
     guard let callbackData else { return }
     let unmanaged = Unmanaged<NativeLifecycleStreamContext>.fromOpaque(callbackData)
     let context = unmanaged.takeUnretainedValue()
+    guard let chunk else {
+        let callbackExit = context.callback(
+            nil,
+            true,
+            LocalVoiceAdapterError.gemmaRuntimeGenerationFailed
+        )
+        finishLiteRTStreamCallback(
+            callbackExit,
+            releasingContext: { unmanaged.release() }
+        )
+        return
+    }
+
+    let text = litert_lm_stream_chunk_get_text(chunk).map(String.init(cString:))
+    let isFinal = litert_lm_stream_chunk_is_final(chunk)
+    let errorMessage = litert_lm_stream_chunk_get_error(chunk)
     let error: Error? = errorMessage == nil
         ? nil
         : LocalVoiceAdapterError.gemmaRuntimeGenerationFailed
-    let callbackExit = context.callback(chunk.map(String.init(cString:)), isFinal, error)
+    let callbackExit = context.callback(text, isFinal, error)
     finishLiteRTStreamCallback(
         callbackExit,
         releasingContext: isFinal || error != nil ? { unmanaged.release() } : nil
