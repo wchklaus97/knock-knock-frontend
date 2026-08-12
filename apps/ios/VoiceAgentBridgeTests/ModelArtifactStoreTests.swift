@@ -485,6 +485,100 @@ final class ModelArtifactStoreTests: XCTestCase {
         XCTAssertNil(relaunchedAfterTampering.rollbackModel)
     }
 
+    func testRuntimeRejectedUpdateIsDeletedAndPreviousModelSurvivesRelaunch() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("model-runtime-rejection-\(UUID().uuidString)", isDirectory: true)
+        let installedRoot = root.appendingPathComponent("installed", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let signingKey = Curve25519.Signing.PrivateKey()
+        let firstBytes = Data("known-good-runtime".utf8)
+        let rejectedBytes = Data("signed-but-runtime-incompatible".utf8)
+        let firstSource = root.appendingPathComponent("first.source")
+        let rejectedSource = root.appendingPathComponent("rejected.source")
+        try firstBytes.write(to: firstSource, options: .atomic)
+        try rejectedBytes.write(to: rejectedSource, options: .atomic)
+        let firstManifest = try signedManifest(
+            bytes: firstBytes,
+            key: signingKey,
+            version: "1.0.0"
+        )
+        let rejectedManifest = try signedManifest(
+            bytes: rejectedBytes,
+            key: signingKey,
+            version: "2.0.0"
+        )
+        let selector = RollbackSafeModelSelector(
+            verifier: try Ed25519ModelArtifactVerifier(
+                publicKeyRawRepresentation: signingKey.publicKey.rawRepresentation
+            ),
+            capabilities: DeclaredModelCapabilities(identifiers: ["cpu-v1"])
+        )
+        let store = SignedModelArtifactStore(rootURL: installedRoot, selector: selector)
+        let first = try await store.install(SignedModelArtifactDescriptor(
+            manifest: firstManifest,
+            downloadURL: firstSource
+        ))
+        let rejected = try await store.install(SignedModelArtifactDescriptor(
+            manifest: rejectedManifest,
+            downloadURL: rejectedSource
+        ))
+        let rejectedManifestURL = rejected.artifactURL.appendingPathExtension("manifest")
+
+        try store.rejectRuntimeIncompatibleModel(rejected, restoring: first)
+
+        XCTAssertEqual(selector.activeModel, first)
+        XCTAssertNil(selector.rollbackModel)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: rejected.artifactURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: rejectedManifestURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: first.artifactURL.path))
+
+        let relaunched = try LocalVoiceModelManager(
+            rootURL: installedRoot,
+            publicKeyBase64: signingKey.publicKey.rawRepresentation.base64EncodedString()
+        )
+        XCTAssertEqual(relaunched.activeModel?.manifest.modelVersion, "1.0.0")
+        XCTAssertNil(relaunched.rollbackModel)
+    }
+
+    func testRuntimeRejectedFirstInstallLeavesNoSelectableModel() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("model-first-runtime-rejection-\(UUID().uuidString)", isDirectory: true)
+        let installedRoot = root.appendingPathComponent("installed", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let signingKey = Curve25519.Signing.PrivateKey()
+        let bytes = Data("signed-but-unloadable".utf8)
+        let source = root.appendingPathComponent("candidate.source")
+        try bytes.write(to: source, options: .atomic)
+        let manifest = try signedManifest(bytes: bytes, key: signingKey, version: "1.0.0")
+        let selector = RollbackSafeModelSelector(
+            verifier: try Ed25519ModelArtifactVerifier(
+                publicKeyRawRepresentation: signingKey.publicKey.rawRepresentation
+            ),
+            capabilities: DeclaredModelCapabilities(identifiers: ["cpu-v1"])
+        )
+        let store = SignedModelArtifactStore(rootURL: installedRoot, selector: selector)
+        let rejected = try await store.install(SignedModelArtifactDescriptor(
+            manifest: manifest,
+            downloadURL: source
+        ))
+
+        try store.rejectRuntimeIncompatibleModel(rejected, restoring: nil)
+
+        XCTAssertNil(selector.activeModel)
+        XCTAssertNil(selector.rollbackModel)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: rejected.artifactURL.path))
+        let relaunched = try LocalVoiceModelManager(
+            rootURL: installedRoot,
+            publicKeyBase64: signingKey.publicKey.rawRepresentation.base64EncodedString()
+        )
+        XCTAssertNil(relaunched.activeModel)
+        XCTAssertNil(relaunched.rollbackModel)
+    }
+
     private func signedManifest(
         bytes: Data,
         key: Curve25519.Signing.PrivateKey,

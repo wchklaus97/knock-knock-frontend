@@ -164,6 +164,35 @@ staged again or the app data is deliberately reset by the operator.
 - Raw model output, transcript text, key material, and the model artifact are
   not committed or printed by the UAT gate.
 
+### 2026-08-12 release-safety closure and 270M decision
+
+- A Release build now fails closed unless one valid 32-byte Ed25519 model
+  public key is injected. The archive entry point accepts only an absolute,
+  readable, non-symlink key file and creates private temporary key and
+  Info.plist copies. Only their paths reach Xcode process arguments; the key
+  content does not.
+- Signature and hash verification are only the first activation gate. The app
+  now opens the exact LiteRT-LM container before reporting `Ready`. A newly
+  installed model that cannot initialize is quarantined and removed; an update
+  restores the already verified predecessor, including after relaunch.
+- The 304,005,120-byte Gemma 3 270M q8 candidate was evaluated only against the
+  checked-in 32-example synthetic command set. The original prompt scored
+  0.125 with command p95 2.469 seconds. JSON-schema constrained decoding was
+  rejected because this model vocabulary is unsupported by the LiteRT FST
+  constraint provider and therefore scored 0.000. A shortened unconstrained
+  prompt improved accuracy to 0.500 with command p95 1.533 seconds. All runs
+  recorded zero high-risk false executions, but none met the 0.950 accuracy
+  gate.
+- The 270M candidate is therefore rejected for iPhone 13 and staging. iPhone 13
+  remains on deterministic parsing plus clarification; iPhone 17 Pro Max keeps
+  the previously validated Gemma 3 1B path. The experimental prompt and
+  constrained-decoding wiring are not part of the release code.
+- Clean Simulator regression after these changes: 186 unit tests executed with
+  zero failures (three opt-in/environment tests skipped), and four UI tests
+  executed with zero failures (the opt-in physical voice test skipped). The
+  destructive confirmation, Today/Week, drawer, Settings, and pairing flows
+  passed against one isolated local Rust Worker/D1 fixture.
+
 ---
 
 ## Your mandate (end-to-end)

@@ -1011,6 +1011,12 @@ final class AppStore: ObservableObject {
             }
             try Task.checkCancellation()
             guard localVoiceScopeIsCurrent(scope) else { throw CancellationError() }
+            // Signature/hash verification proves provenance, not that the
+            // container can actually initialize on this device. Probe before
+            // replacing the controller or reporting Ready.
+            try await manager.validateActiveModelRuntime()
+            try Task.checkCancellation()
+            guard localVoiceScopeIsCurrent(scope) else { throw CancellationError() }
             let replacement = try makeVoiceController(using: manager, scope: scope)
             guard localVoiceScopeIsCurrent(scope) else {
                 replacement.abort()
@@ -1037,7 +1043,9 @@ final class AppStore: ObservableObject {
                 var previousSelectionRestored = manager.activeModel == previousModel
                 if !previousSelectionRestored,
                    manager.rollbackModel == previousModel,
-                   (try? manager.rollback()) != nil
+                   (try? manager.rejectActiveModelAfterRuntimeFailure(
+                       restoring: previousModel
+                   )) != nil
                 {
                     previousSelectionRestored = manager.activeModel == previousModel
                 }
@@ -1051,6 +1059,14 @@ final class AppStore: ObservableObject {
                     errorMessage = "The voice model update failed and the previous verified model could not be restored. \(message)"
                 }
             } else {
+                // A first installation has no predecessor to roll back to.
+                // Quarantine an unloadable artifact so relaunch cannot select
+                // it again merely because its signature remains valid.
+                if let manager = voiceModelManager,
+                   error as? LocalVoiceAdapterError == .gemmaRuntimeInitializationFailed
+                {
+                    try? manager.rejectActiveModelAfterRuntimeFailure(restoring: nil)
+                }
                 voiceController = nil
                 voiceModelStatus = "Unavailable · \(message)"
                 errorMessage = "On-device voice is not ready: \(message)"
@@ -2024,6 +2040,14 @@ final class AppStore: ObservableObject {
     }
 
     private func presentKnock(_ push: DevPush) {
+        // Home/settings UI tests create a needs_user fixture only to populate
+        // the workspace. They opt out of the full-screen overlay explicitly;
+        // the destructive confirmation test keeps the real overlay enabled.
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["KNOCK_UI_TEST_SUPPRESS_KNOCK_OVERLAY"] == "1" {
+            return
+        }
+        #endif
         knockAlert = KnockAlert(
             id: push.push_id,
             sessionId: push.session_id,
@@ -2031,7 +2055,13 @@ final class AppStore: ObservableObject {
             body: push.body
         )
         #if targetEnvironment(simulator)
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["KNOCK_UI_TEST_SUPPRESS_LOCAL_BANNER"] != "1" {
+            scheduleLocalBanner(title: push.title, body: push.body, sessionId: push.session_id)
+        }
+        #else
         scheduleLocalBanner(title: push.title, body: push.body, sessionId: push.session_id)
+        #endif
         #endif
     }
 

@@ -29,6 +29,15 @@ Production trust-key configuration, model publication, microphone/thermal
 voice UAT, APNs/two-device evaluation, and human release approval remain
 backend-canonical release gates.
 
+The app now has two independent model activation gates: provenance verification
+and a real LiteRT-LM startup probe. Runtime-incompatible updates are quarantined
+and the previously verified model is restored; a first-install failure cannot
+be reported as `Ready`. Release builds also fail when the pinned 32-byte
+Ed25519 public key is absent or invalid. The evaluated Gemma 3 270M q8 candidate
+is explicitly rejected: its best controlled 32-example result was 0.500
+semantic accuracy (command p95 1.533 seconds, zero high-risk false executions),
+below the 0.950 release threshold. It is not approved for iPhone 13 or staging.
+
 ## ProgressStatus — `update_progress` only / 仅进度
 
 | Value | EN | 中文 |

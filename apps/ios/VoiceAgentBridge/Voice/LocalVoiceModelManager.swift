@@ -117,6 +117,30 @@ final class LocalVoiceModelManager {
         )
     }
 
+    /// Opens and closes the native engine away from the main actor before the
+    /// UI may report the signed model as ready.
+    func validateActiveModelRuntime(useGPU: Bool = false) async throws {
+        guard let activeModel else {
+            throw LocalVoiceModelManagerError.modelNotInstalled
+        }
+        try await GemmaCommandGenerator.validateRuntime(
+            modelURL: activeModel.artifactURL,
+            useGPU: useGPU
+        )
+    }
+
+    /// Permanently removes the current signed artifact after the native runtime
+    /// rejects it, restoring only the selector's already verified predecessor.
+    func rejectActiveModelAfterRuntimeFailure(
+        restoring previousModel: InstalledModel?
+    ) throws {
+        guard let rejected = activeModel else {
+            throw LocalVoiceModelManagerError.modelNotInstalled
+        }
+        try store.rejectRuntimeIncompatibleModel(rejected, restoring: previousModel)
+        activeModel = selector.activeModel
+    }
+
     @discardableResult
     func rollback() throws -> InstalledModel {
         let previousSelection = selector.selectionSnapshot

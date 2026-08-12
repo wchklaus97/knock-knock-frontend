@@ -384,6 +384,26 @@ final class RollbackSafeModelSelector {
         return candidate
     }
 
+    /// Removes a runtime-incompatible active model from the selectable set.
+    /// `fallback` must be the already verified rollback candidate; no arbitrary
+    /// artifact can be introduced through this recovery path.
+    func rejectActiveModel(
+        _ rejected: InstalledModel,
+        restoring fallback: InstalledModel?
+    ) throws {
+        guard activeModel == rejected else {
+            throw ModelSelectionError.invalidRestoredSelection
+        }
+        if let fallback {
+            guard rollbackModel == fallback else {
+                throw ModelSelectionError.invalidRestoredSelection
+            }
+            try verifyForSelection(fallback)
+        }
+        activeModel = fallback
+        rollbackModel = nil
+    }
+
     private func verifyForSelection(_ candidate: InstalledModel) throws {
         guard capabilities.supports(minimumCapability: candidate.manifest.minimumCapability) else {
             throw ModelSelectionError.unsupportedCapability(candidate.manifest.minimumCapability)

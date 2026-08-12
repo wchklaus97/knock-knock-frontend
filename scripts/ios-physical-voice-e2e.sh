@@ -11,7 +11,8 @@ SCHEDULED_URL="${KNOCK_LOCAL_SCHEDULED_URL:-}"
 COUNTDOWN_SECONDS="${KNOCK_PHYSICAL_VOICE_COUNTDOWN_SECONDS:-5}"
 ARTIFACTS_DIR="${KNOCK_VOICE_E2E_ARTIFACTS_DIR:-}"
 DERIVED_DATA=""
-XCCONFIG_PATH=""
+PRIVATE_PUBLIC_KEY_PATH=""
+PRIVATE_INFO_PLIST_PATH=""
 SCHEDULED_PID=""
 
 usage() {
@@ -134,13 +135,14 @@ PY
 [[ "${PUBLIC_KEY_PATH}" = /* && -f "${PUBLIC_KEY_PATH}" \
   && ! -L "${PUBLIC_KEY_PATH}" && -r "${PUBLIC_KEY_PATH}" ]] \
   || fail "--public-key must be an absolute readable regular file, not a symlink"
-PUBLIC_KEY="$(tr -d '\r\n' < "${PUBLIC_KEY_PATH}")"
-python3 - "${PUBLIC_KEY}" <<'PY' || fail "public key must be one base64-encoded 32-byte Ed25519 key"
+python3 - "${PUBLIC_KEY_PATH}" <<'PY' || fail "public key must be one base64-encoded 32-byte Ed25519 key"
 import base64
+import pathlib
 import sys
 
 try:
-    raw = base64.b64decode(sys.argv[1], validate=True)
+    encoded = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").strip()
+    raw = base64.b64decode(encoded, validate=True)
 except (ValueError, UnicodeError):
     raise SystemExit(1)
 raise SystemExit(0 if len(raw) == 32 else 1)
@@ -173,9 +175,29 @@ else
   chmod 700 "${ARTIFACTS_DIR}"
 fi
 DERIVED_DATA="$(mktemp -d "${TMPDIR:-/tmp}/knock-voice-e2e-derived.XXXXXX")"
-XCCONFIG_PATH="${DERIVED_DATA}/VoiceE2E.xcconfig"
-printf 'KNOCK_MODEL_PUBLIC_KEY_BASE64 = "%s"\n' "${PUBLIC_KEY}" > "${XCCONFIG_PATH}"
-chmod 600 "${XCCONFIG_PATH}"
+PRIVATE_PUBLIC_KEY_PATH="${DERIVED_DATA}/model-public-key.base64"
+PRIVATE_INFO_PLIST_PATH="${DERIVED_DATA}/VoiceAgentBridge-Info.plist"
+cp "${PUBLIC_KEY_PATH}" "${PRIVATE_PUBLIC_KEY_PATH}"
+python3 - \
+  "${ROOT_DIR}/apps/ios/VoiceAgentBridge/Info.plist" \
+  "${PRIVATE_PUBLIC_KEY_PATH}" \
+  "${PRIVATE_INFO_PLIST_PATH}" <<'PY'
+import pathlib
+import plistlib
+import sys
+
+source_path = pathlib.Path(sys.argv[1])
+key_path = pathlib.Path(sys.argv[2])
+output_path = pathlib.Path(sys.argv[3])
+with source_path.open("rb") as handle:
+    payload = plistlib.load(handle)
+payload["KNOCK_MODEL_PUBLIC_KEY_BASE64"] = key_path.read_text(
+    encoding="utf-8"
+).strip()
+with output_path.open("wb") as handle:
+    plistlib.dump(payload, handle, sort_keys=False)
+PY
+chmod 600 "${PRIVATE_PUBLIC_KEY_PATH}" "${PRIVATE_INFO_PLIST_PATH}"
 
 if [[ -n "${SCHEDULED_URL}" ]]; then
   (
@@ -200,13 +222,14 @@ set +e
     -project VoiceAgentBridge.xcodeproj \
     -scheme VoiceAgentBridge \
     -configuration Staging \
-    -xcconfig "${XCCONFIG_PATH}" \
     -destination "platform=iOS,id=${DEVICE_ID}" \
     -derivedDataPath "${DERIVED_DATA}" \
     -resultBundlePath "${ARTIFACTS_DIR}/physical-voice.xcresult" \
     -allowProvisioningUpdates \
     -only-testing:VoiceAgentBridgeUITests/VoiceAgentBridgeUITests/testPhysicalVoiceProductionPath \
     KNOCK_API_BASE_URL="${API_BASE}" \
+    KNOCK_MODEL_PUBLIC_KEY_PATH="${PRIVATE_PUBLIC_KEY_PATH}" \
+    INFOPLIST_FILE="${PRIVATE_INFO_PLIST_PATH}" \
     KNOCK_RUN_PHYSICAL_VOICE_E2E=1 \
     KNOCK_PHYSICAL_VOICE_COUNTDOWN_SECONDS="${COUNTDOWN_SECONDS}" \
     test

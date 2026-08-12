@@ -1499,6 +1499,57 @@ final class GemmaCommandGenerator: LocalCommandGenerating {
     deinit {
         cancelGeneration()
     }
+
+    /// Provenance verification happens before this point. This probe verifies
+    /// the second activation gate: the exact LiteRT-LM container must open on
+    /// the target runtime before the app can advertise it as ready.
+    static func validateRuntime(
+        modelURL: URL,
+        cacheDirectory: URL? = nil,
+        useGPU: Bool = false
+    ) async throws {
+        guard FileManager.default.fileExists(atPath: modelURL.path) else {
+            throw LocalVoiceAdapterError.modelArtifactMissing
+        }
+        let modelPath = modelURL.path
+        let cachePath = cacheDirectory?.path
+        try await Task.detached(priority: .userInitiated) {
+            guard let engine = LiteRTLMEngineFactory.makeEngine(
+                modelPath: modelPath,
+                cacheDirectory: cachePath,
+                useGPU: useGPU
+            ) else {
+                throw LocalVoiceAdapterError.gemmaRuntimeInitializationFailed
+            }
+            litert_lm_engine_delete(engine)
+        }.value
+    }
+}
+
+private enum LiteRTLMEngineFactory {
+    static func makeEngine(
+        modelPath: String,
+        cacheDirectory: String?,
+        useGPU: Bool
+    ) -> OpaquePointer? {
+        let backends = useGPU ? ["gpu", "cpu"] : ["cpu"]
+        for backend in backends {
+            guard let settings = litert_lm_engine_settings_create(
+                modelPath, backend, nil, nil
+            ) else {
+                continue
+            }
+            defer { litert_lm_engine_settings_delete(settings) }
+            litert_lm_engine_settings_set_max_num_tokens(settings, 2_048)
+            if let cacheDirectory {
+                litert_lm_engine_settings_set_cache_dir(settings, cacheDirectory)
+            }
+            if let engine = litert_lm_engine_create(settings) {
+                return engine
+            }
+        }
+        return nil
+    }
 }
 
 private actor LiteRTLMCommandRuntime {
@@ -1563,7 +1614,11 @@ private actor LiteRTLMCommandRuntime {
             throw LocalVoiceAdapterError.invalidModelOutput
         }
         if engine == nil {
-            engine = makeEngine()
+            engine = LiteRTLMEngineFactory.makeEngine(
+                modelPath: modelPath,
+                cacheDirectory: cacheDirectory,
+                useGPU: useGPU
+            )
             guard engine != nil else {
                 throw LocalVoiceAdapterError.gemmaRuntimeInitializationFailed
             }
@@ -1646,28 +1701,6 @@ private actor LiteRTLMCommandRuntime {
             Unmanaged<LiteRTCommandStreamContext>.fromOpaque(contextPointer).release()
         }
         return Int(status)
-    }
-
-    private func makeEngine() -> OpaquePointer? {
-        let backends = useGPU ? ["gpu", "cpu"] : ["cpu"]
-        for backend in backends {
-            guard let settings = litert_lm_engine_settings_create(
-                modelPath, backend, nil, nil
-            ) else {
-                continue
-            }
-            defer { litert_lm_engine_settings_delete(settings) }
-            // Match this Gemma 3 1B artifact's published context length. This
-            // budget includes both prompt and response tokens.
-            litert_lm_engine_settings_set_max_num_tokens(settings, 2_048)
-            if let cacheDirectory {
-                litert_lm_engine_settings_set_cache_dir(settings, cacheDirectory)
-            }
-            if let engine = litert_lm_engine_create(settings) {
-                return engine
-            }
-        }
-        return nil
     }
 
     private func makeConversation(engine: OpaquePointer) -> OpaquePointer? {
@@ -1834,6 +1867,14 @@ struct GemmaCommandGenerator: LocalCommandGenerating {
 
     func generateCommand(for transcript: String, completion: @escaping (Result<Data, Error>) -> Void) {
         completion(.failure(LocalVoiceAdapterError.gemmaRuntimeNotLinked))
+    }
+
+    static func validateRuntime(
+        modelURL: URL,
+        cacheDirectory: URL? = nil,
+        useGPU: Bool = false
+    ) async throws {
+        throw LocalVoiceAdapterError.gemmaRuntimeNotLinked
     }
 }
 

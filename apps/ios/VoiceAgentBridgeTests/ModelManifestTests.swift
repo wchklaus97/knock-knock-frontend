@@ -1128,6 +1128,22 @@ final class LiteRTConversationCommandRunnerTests: XCTestCase {
 
 #if canImport(CLiteRTLM)
 
+final class GemmaRuntimeValidationTests: XCTestCase {
+    func testSignedBytesThatAreNotALiteRTContainerFailRuntimeValidation() async throws {
+        let modelURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("invalid-litert-model-\(UUID().uuidString).litertlm")
+        try Data("validly-signed-bytes-are-not-enough".utf8).write(to: modelURL, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: modelURL) }
+
+        do {
+            try await GemmaCommandGenerator.validateRuntime(modelURL: modelURL)
+            XCTFail("A signed artifact that cannot initialize must never become Ready")
+        } catch let error as LocalVoiceAdapterError {
+            XCTAssertEqual(error, .gemmaRuntimeInitializationFailed)
+        }
+    }
+}
+
 /// Opt-in smoke against LiteRT-LM's small, public v0.12 test model. This proves
 /// that the production streaming/cancellation ownership seam works with the
 /// real C runtime; it does not substitute for the gated Gemma accuracy UAT.

@@ -163,6 +163,53 @@ final class SignedModelArtifactStore {
         try encoder.encode(state).write(to: selectionStateURL, options: .atomic)
     }
 
+    /// Quarantines an artifact that passed signature verification but could not
+    /// initialize in LiteRT-LM. Hidden temporary names keep a crash between
+    /// file moves and state persistence from making the rejected model eligible
+    /// during the next restore.
+    func rejectRuntimeIncompatibleModel(
+        _ rejected: InstalledModel,
+        restoring fallback: InstalledModel?
+    ) throws {
+        let expectedArtifactURL = rootURL.appendingPathComponent(Self.fileName(for: rejected.manifest))
+        guard rejected.artifactURL.standardizedFileURL == expectedArtifactURL.standardizedFileURL else {
+            throw ModelSelectionError.invalidRestoredSelection
+        }
+
+        let manifestURL = expectedArtifactURL.appendingPathExtension("manifest")
+        let quarantineID = UUID().uuidString
+        let quarantinedArtifactURL = rootURL.appendingPathComponent(".rejected-\(quarantineID).litertlm")
+        let quarantinedManifestURL = rootURL.appendingPathComponent(".rejected-\(quarantineID).manifest")
+        let previousSelection = selector.selectionSnapshot
+        var movedArtifact = false
+        var movedManifest = false
+
+        do {
+            if fileManager.fileExists(atPath: expectedArtifactURL.path) {
+                try fileManager.moveItem(at: expectedArtifactURL, to: quarantinedArtifactURL)
+                movedArtifact = true
+            }
+            if fileManager.fileExists(atPath: manifestURL.path) {
+                try fileManager.moveItem(at: manifestURL, to: quarantinedManifestURL)
+                movedManifest = true
+            }
+            try selector.rejectActiveModel(rejected, restoring: fallback)
+            try persistSelection()
+        } catch {
+            selector.restoreKnownVerifiedSelection(previousSelection)
+            if movedManifest {
+                try? fileManager.moveItem(at: quarantinedManifestURL, to: manifestURL)
+            }
+            if movedArtifact {
+                try? fileManager.moveItem(at: quarantinedArtifactURL, to: expectedArtifactURL)
+            }
+            throw error
+        }
+
+        if movedManifest { try? fileManager.removeItem(at: quarantinedManifestURL) }
+        if movedArtifact { try? fileManager.removeItem(at: quarantinedArtifactURL) }
+    }
+
     private func download(_ descriptor: SignedModelArtifactDescriptor, to destination: URL) async throws {
         if descriptor.downloadURL.isFileURL {
             try validateDownloadedFile(at: descriptor.downloadURL, manifest: descriptor.manifest)

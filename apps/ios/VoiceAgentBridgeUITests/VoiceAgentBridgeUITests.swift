@@ -211,9 +211,20 @@ final class VoiceAgentBridgeUITests: XCTestCase {
 
     private func dismissKnockIfPresent(_ app: XCUIApplication) {
         let later = app.buttons["knock.later"]
-        if later.waitForExistence(timeout: 5) {
-            later.tap()
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline {
+            if later.exists {
+                later.tap()
+                _ = later.waitForNonExistence(timeout: 5)
+                continue
+            }
+            if app.buttons["drawer.open"].exists {
+                if later.waitForExistence(timeout: 2) { continue }
+                return
+            }
+            _ = later.waitForExistence(timeout: 1)
         }
+        XCTAssertFalse(later.exists, "The knock overlay must be dismissible before continuing.")
     }
 
     private func attachScreenshot(_ app: XCUIApplication, named name: String) {
@@ -223,9 +234,13 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         add(attachment)
     }
 
-    private func launchForIsolatedFixture() -> XCUIApplication {
+    private func launchForIsolatedFixture(suppressKnockOverlay: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["KNOCK_UI_TEST_RESET_AUTH"] = "1"
+        app.launchEnvironment["KNOCK_UI_TEST_SUPPRESS_LOCAL_BANNER"] = "1"
+        if suppressKnockOverlay {
+            app.launchEnvironment["KNOCK_UI_TEST_SUPPRESS_KNOCK_OVERLAY"] = "1"
+        }
         // Pass the same endpoint explicitly to the application process. This
         // prevents a stale simulator UserDefaults value from winning over
         // the Worker selected by the fixture runner.
@@ -277,7 +292,7 @@ final class VoiceAgentBridgeUITests: XCTestCase {
 
     func testSettingsGeneratesAndCopiesPairingCode() async throws {
         _ = try await UITestFixtureClient().prepareNeedsUserFixture()
-        let app = launchForIsolatedFixture()
+        let app = launchForIsolatedFixture(suppressKnockOverlay: true)
         signInIfNeeded(app)
         dismissKnockIfPresent(app)
 
@@ -285,8 +300,9 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         XCTAssertTrue(menu.waitForExistence(timeout: 15))
         menu.tap()
 
-        XCTAssertTrue(app.buttons["drawer.home"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["drawer.sessions"].waitForExistence(timeout: 5))
+        dismissKnockIfPresent(app)
+        XCTAssertTrue(app.buttons["drawer.home"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["drawer.sessions"].waitForExistence(timeout: 15))
         let settings = app.buttons["drawer.settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 15))
         settings.tap()
@@ -308,7 +324,7 @@ final class VoiceAgentBridgeUITests: XCTestCase {
 
     func testHomeScopesAndAgentRowsStayUsable() async throws {
         _ = try await UITestFixtureClient().prepareNeedsUserFixture()
-        let app = launchForIsolatedFixture()
+        let app = launchForIsolatedFixture(suppressKnockOverlay: true)
         signInIfNeeded(app)
         dismissKnockIfPresent(app)
         attachScreenshot(app, named: "home-today")
@@ -318,8 +334,12 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         XCTAssertTrue(app.segmentedControls.buttons["This week"].exists)
         XCTAssertTrue(app.staticTexts["Today"].exists)
 
-        app.segmentedControls.buttons["This week"].tap()
-        XCTAssertTrue(app.staticTexts["This week"].waitForExistence(timeout: 5))
+        dismissKnockIfPresent(app)
+        let thisWeek = app.segmentedControls.buttons["This week"]
+        XCTAssertTrue(thisWeek.waitForExistence(timeout: 15))
+        XCTAssertTrue(thisWeek.isHittable, "The workspace must be unobstructed before changing scope.")
+        thisWeek.tap()
+        XCTAssertTrue(app.staticTexts["This week"].waitForExistence(timeout: 15))
         attachScreenshot(app, named: "home-this-week")
 
         let menu = app.buttons["drawer.open"]

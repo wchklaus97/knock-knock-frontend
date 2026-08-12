@@ -38,6 +38,11 @@ targets:
       - path: VoiceAgentBridge
     dependencies:
       - package: LiteRTLM
+    preBuildScripts:
+      - name: Validate Release Voice Model Trust Key
+        basedOnDependencyAnalysis: false
+        script: |
+          "${SRCROOT}/../../scripts/validate-ios-release-model-key.sh"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: hk.knockknock.app
