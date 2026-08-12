@@ -39,6 +39,7 @@ results are supporting evidence only and must not be reported as physical voice 
 | Parser latency simulation | p50 291 µs, p95 898 µs on the current Simulator run | Informational only |
 | iOS regression | 192 tests: 187 passed, 0 failed, 5 opt-in physical/model tests skipped | Passed |
 | arm64 iOS build | Generic physical-device Debug build | Passed |
+| Raw-audio privacy boundary | Capture requires on-device recognition, appends buffers directly to `SFSpeechAudioBufferRecognitionRequest`, has no file/network dependency, removes the input tap, ends audio, cancels recognition, and releases handlers during cleanup | Passed by source/runtime-boundary audit; physical observation still pending |
 | Backend authority | Command isolation, idempotency, confirmation, paging, and execution-time authority gates | Passed separately |
 | One-WAV physical STT | Xcode cannot launch while the phone is locked; Speech/Microphone permission is human-controlled | Pending |
 | Full physical audio pipeline | 1 clean → 12-ID subset → all 144 profiles | Pending |
@@ -82,8 +83,9 @@ Expected elapsed time after the phone is unlocked and authorized:
 - high-risk false executions exactly 0
 - no duplicate side effect for an idempotent replay
 - no microphone buffer or raw user recording persisted or uploaded
+- only the validated `CommandEnvelope` may cross the authenticated command API boundary;
+  the active-command journal intentionally excludes audio and transcripts
 - no merge or production rollout based only on transcript simulation
 
 Implementation and evidence are tracked in
 [frontend Draft PR #20](https://github.com/wchklaus97/knock-knock-frontend/pull/20).
-
