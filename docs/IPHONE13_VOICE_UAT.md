@@ -50,6 +50,8 @@ results are supporting evidence only and must not be reported as physical voice 
 | DictationTranscriber comparison | English 35/37 (94.6%), Cantonese 56/75 (74.7%), Simplified Chinese 51/71 (71.8%); per-locale p95 438/785/660 ms | Rejected; worse than SpeechTranscriber |
 | WhisperKit tiny comparison | English 94.6%, Cantonese 45.3%, Simplified Chinese 45.1%, p95 inference 278 ms | Rejected; multilingual accuracy failed |
 | WhisperKit base comparison | English 94.6%, Cantonese 45.3%, Simplified Chinese 47.9%, p95 inference 418 ms | Rejected; multilingual accuracy failed |
+| WhisperKit base real Cantonese | Four user recordings: forced `zh` 37.3% / p95 591 ms; automatic language 41.3% / p95 341 ms | Rejected; critical names, time, and verbs failed |
+| iPhone 17 Pro Max matched WhisperKit base | Same four recordings and automatic language: warm load 15.924 s, p95 243 ms, accuracy 40.0%; iPhone 13 Pro was 16.381 s / 341 ms / 41.3% | About 29% faster inference, but still rejected for accuracy |
 | Full physical audio pipeline | All 144 profiles | Blocked by failed 12-WAV gate |
 | Live push-to-talk/VAD | Real microphone, stop/final transcript, clarification, confirmation, result/TTS | Pending |
 | Stability | memory, thermal, repeated commands, interruption/cancellation | Pending |

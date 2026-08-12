@@ -22,6 +22,25 @@ final class WhisperKitQualificationTests: XCTestCase {
         XCTAssertFalse(String(describing: WhisperKit.self).isEmpty)
     }
 
+    func testDeleteStagedHumanAudioAfterUAT() throws {
+        guard ProcessInfo.processInfo.environment["KNOCK_WHISPERKIT_DELETE_HUMAN_AUDIO"] == "1" else {
+            throw XCTSkip("Set KNOCK_WHISPERKIT_DELETE_HUMAN_AUDIO=1 after physical UAT")
+        }
+        let documents = try XCTUnwrap(
+            FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        ).standardizedFileURL
+        let target = documents.appendingPathComponent(
+            "KnockKnockVoiceHumanUAT",
+            isDirectory: true
+        ).standardizedFileURL
+        XCTAssertEqual(target.deletingLastPathComponent(), documents)
+        XCTAssertEqual(target.lastPathComponent, "KnockKnockVoiceHumanUAT")
+        if FileManager.default.fileExists(atPath: target.path) {
+            try FileManager.default.removeItem(at: target)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
+    }
+
     func testConfiguredFileTranscribesOnPhysicalDevice() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard environment["KNOCK_RUN_WHISPERKIT_UAT"] == "1" else {
@@ -29,6 +48,7 @@ final class WhisperKitQualificationTests: XCTestCase {
         }
 
         let model = environment["KNOCK_WHISPERKIT_MODEL"] ?? "tiny"
+        let languageMode = environment["KNOCK_WHISPERKIT_LANGUAGE_MODE"] ?? "forced"
         let documents = try XCTUnwrap(
             FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
         )
@@ -36,12 +56,16 @@ final class WhisperKitQualificationTests: XCTestCase {
             findFile(named: "KNOCK_KNOCK_VOICE_GOLDEN_V2.json", below: documents)
         )
         let dataset = try JSONDecoder().decode(Dataset.self, from: Data(contentsOf: datasetURL))
-        let requestedFile = environment["KNOCK_WHISPERKIT_AUDIO_FILE"]
-            .flatMap { $0.isEmpty ? nil : $0 }
+        let requestedFiles = environment["KNOCK_WHISPERKIT_AUDIO_FILE"]?
+            .split(separator: ",")
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty } ?? []
+        let requestedFilesByID = Dictionary(uniqueKeysWithValues: requestedFiles.map { fileName in
+            (fileName.components(separatedBy: "__").first ?? fileName, fileName)
+        })
         let selectedExamples: [Dataset.Example]
-        if let requestedFile {
-            let requestedID = requestedFile.components(separatedBy: "__").first ?? requestedFile
-            selectedExamples = dataset.examples.filter { $0.id == requestedID }
+        if !requestedFilesByID.isEmpty {
+            selectedExamples = dataset.examples.filter { requestedFilesByID[$0.id] != nil }
         } else {
             let coreIDs = Set(dataset.humanRecordingSubset)
             selectedExamples = dataset.examples.filter { coreIDs.contains($0.id) }
@@ -64,16 +88,18 @@ final class WhisperKitQualificationTests: XCTestCase {
         var localeReferenceUnits: [String: Int] = [:]
         var inferenceTimes: [Int] = []
         for example in selectedExamples {
-            let fileName = requestedFile ?? "\(example.id)__clean_normal.wav"
+            let fileName = requestedFilesByID[example.id] ?? "\(example.id)__clean_normal.wav"
             let audioURL = try XCTUnwrap(findFile(named: fileName, below: documents))
             let inferenceStarted = ProcessInfo.processInfo.systemUptime
             let results = try await whisper.transcribe(
                 audioPath: audioURL.path,
                 decodeOptions: DecodingOptions(
-                    language: example.locale == "en-HK" ? "en" : "zh",
+                    language: languageMode == "auto"
+                        ? nil
+                        : (example.locale == "en-HK" ? "en" : "zh"),
                     temperature: 0,
-                    usePrefillPrompt: true,
-                    detectLanguage: false,
+                    usePrefillPrompt: languageMode != "auto",
+                    detectLanguage: languageMode == "auto",
                     withoutTimestamps: true
                 )
             )
@@ -90,7 +116,8 @@ final class WhisperKitQualificationTests: XCTestCase {
             localeReferenceUnits[example.locale, default: 0] += comparison.referenceCount
             inferenceTimes.append(inferenceMilliseconds)
             print(
-                "WHISPERKIT_SAMPLE model=\(model) id=\(example.id) locale=\(example.locale) "
+                "WHISPERKIT_SAMPLE model=\(model) language_mode=\(languageMode) "
+                    + "id=\(example.id) locale=\(example.locale) "
                     + "inference_ms=\(inferenceMilliseconds) edits=\(comparison.distance) "
                     + "reference_units=\(comparison.referenceCount) transcript=\(transcript)"
             )
@@ -105,7 +132,8 @@ final class WhisperKitQualificationTests: XCTestCase {
         let sortedTimes = inferenceTimes.sorted()
         let p95Index = max(0, Int(ceil(Double(sortedTimes.count) * 0.95)) - 1)
         print(
-            "WHISPERKIT_SUMMARY model=\(model) samples=\(selectedExamples.count) "
+            "WHISPERKIT_SUMMARY model=\(model) language_mode=\(languageMode) "
+                + "samples=\(selectedExamples.count) "
                 + "load_ms=\(loadMilliseconds) p95_inference_ms=\(sortedTimes[p95Index])"
         )
     }

@@ -152,6 +152,16 @@
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
+            key = "KNOCK_WHISPERKIT_DELETE_HUMAN_AUDIO"
+            value = "$(KNOCK_WHISPERKIT_DELETE_HUMAN_AUDIO)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_WHISPERKIT_LANGUAGE_MODE"
+            value = "$(KNOCK_WHISPERKIT_LANGUAGE_MODE)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
             key = "KNOCK_WHISPERKIT_MODEL"
             value = "$(KNOCK_WHISPERKIT_MODEL)"
             isEnabled = "YES">
@@ -257,6 +267,16 @@
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
+            key = "KNOCK_WHISPERKIT_DELETE_HUMAN_AUDIO"
+            value = "$(KNOCK_WHISPERKIT_DELETE_HUMAN_AUDIO)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_WHISPERKIT_LANGUAGE_MODE"
+            value = "$(KNOCK_WHISPERKIT_LANGUAGE_MODE)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
             key = "KNOCK_WHISPERKIT_MODEL"
             value = "$(KNOCK_WHISPERKIT_MODEL)"
             isEnabled = "YES">
@@ -355,6 +375,16 @@
          <EnvironmentVariable
             key = "KNOCK_WHISPERKIT_AUDIO_FILE"
             value = "$(KNOCK_WHISPERKIT_AUDIO_FILE)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_WHISPERKIT_DELETE_HUMAN_AUDIO"
+            value = "$(KNOCK_WHISPERKIT_DELETE_HUMAN_AUDIO)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_WHISPERKIT_LANGUAGE_MODE"
+            value = "$(KNOCK_WHISPERKIT_LANGUAGE_MODE)"
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
