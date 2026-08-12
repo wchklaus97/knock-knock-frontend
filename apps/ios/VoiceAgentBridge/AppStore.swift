@@ -963,10 +963,16 @@ final class AppStore: ObservableObject {
         return true
     }
 
-    private func consumeCommandApplication(_ application: ActiveCommandApplication) {
+    /// Consumes only responses already fenced by `ActiveCommandCheckpointCoordinator`.
+    /// Internal visibility keeps the server-owned UI transition deterministic in tests.
+    func consumeCommandApplication(_ application: ActiveCommandApplication) {
         publishActiveCommandState()
-        guard application.outcome == .applied else { return }
         let response = application.response
+        // Eligibility can expire without a command version change, so consume
+        // this field for idempotent reconciliation responses as well as newer
+        // lifecycle versions. A missing, null, or malformed value clears Undo.
+        undoableCommandID = response.serverAuthorizedUndoCommandID
+        guard application.outcome == .applied else { return }
         latestCommandResponse = response
         if response.state != "awaiting_confirmation",
            pendingCommandConfirmation?.command_id == response.command_id
@@ -974,17 +980,6 @@ final class AppStore: ObservableObject {
             pendingCommandConfirmation = nil
             localStore.clearPendingCommandConfirmation()
         }
-        let alreadyUndone: Bool
-        if case let .object(result) = response.result {
-            alreadyUndone = result["undo"] != nil
-        } else {
-            alreadyUndone = false
-        }
-        undoableCommandID = response.state == "succeeded"
-            && response.action?.reversible == true
-            && !alreadyUndone
-            ? response.command_id
-            : nil
         guard response.state == "awaiting_confirmation" else { return }
         guard let action = response.action,
               action.confirm_required
@@ -1072,7 +1067,6 @@ final class AppStore: ObservableObject {
             let response = try await client.undoCommand(commandID: commandID)
             let canonical = (try? await client.getCommand(commandID: commandID)) ?? response
             if try handleCommandResponse(canonical, expectedCommandID: commandID) {
-                undoableCommandID = nil
                 await refresh()
             }
         } catch {

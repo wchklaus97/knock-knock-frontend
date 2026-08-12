@@ -774,6 +774,17 @@ struct CommandResponse: Decodable, Equatable {
     let version: Int?
     let created_at: String?
     let updated_at: String?
+
+    /// Undo is server-owned, time-bounded authority. Do not infer it from
+    /// action metadata, result contents, or client timestamps.
+    var serverAuthorizedUndoCommandID: String? {
+        guard state == "succeeded",
+              let undoCommandID = undo_command_id,
+              !undoCommandID.isEmpty,
+              undoCommandID == command_id
+        else { return nil }
+        return undoCommandID
+    }
 }
 
 struct CommandPresentation: Codable, Equatable {
