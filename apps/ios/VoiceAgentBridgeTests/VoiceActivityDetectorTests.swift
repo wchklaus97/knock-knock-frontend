@@ -89,6 +89,85 @@ final class VoiceActivityDetectorTests: XCTestCase {
         XCTAssertTrue(vad.hasDetectedSpeech)
     }
 
+    func testRecognitionErrorAfterReleaseFailsClosedWithoutEmittingPartialTranscript() {
+        let partial = PushToTalkVoiceCapture.Transcript(text: "partial command", isFinal: false)
+
+        let action = PushToTalkVoiceCapture.recognitionCallbackAction(
+            transcript: partial,
+            hasError: true,
+            callbackCaptureID: 7,
+            activeCaptureID: 7,
+            state: .stopping,
+            pendingStopReason: .userReleased
+        )
+
+        XCTAssertEqual(action, .failRecognition)
+    }
+
+    func testRecognitionErrorAfterVADStopFailsClosedWithoutEmittingPartialTranscript() {
+        let partial = PushToTalkVoiceCapture.Transcript(text: "partial command", isFinal: false)
+        let vadStopReasons: [PushToTalkVoiceCapture.StopReason] = [
+            .silence,
+            .noSpeech,
+            .maximumDuration,
+        ]
+
+        for reason in vadStopReasons {
+            let action = PushToTalkVoiceCapture.recognitionCallbackAction(
+                transcript: partial,
+                hasError: true,
+                callbackCaptureID: 7,
+                activeCaptureID: 7,
+                state: .stopping,
+                pendingStopReason: reason
+            )
+
+            XCTAssertEqual(action, .failRecognition, "Failed closed for \(reason)")
+        }
+    }
+
+    func testValidFinalRecognitionResultWinsOverAccompanyingError() {
+        let final = PushToTalkVoiceCapture.Transcript(text: "complete command", isFinal: true)
+
+        let action = PushToTalkVoiceCapture.recognitionCallbackAction(
+            transcript: final,
+            hasError: true,
+            callbackCaptureID: 7,
+            activeCaptureID: 7,
+            state: .stopping,
+            pendingStopReason: .silence
+        )
+
+        XCTAssertEqual(action, .finishWithFinalTranscript(final, .silence))
+    }
+
+    func testStaleRecognitionCallbacksCannotAffectCurrentOrCompletedCapture() {
+        let staleFinal = PushToTalkVoiceCapture.Transcript(text: "stale command", isFinal: true)
+
+        XCTAssertEqual(
+            PushToTalkVoiceCapture.recognitionCallbackAction(
+                transcript: staleFinal,
+                hasError: true,
+                callbackCaptureID: 6,
+                activeCaptureID: 7,
+                state: .stopping,
+                pendingStopReason: .userReleased
+            ),
+            .ignore
+        )
+        XCTAssertEqual(
+            PushToTalkVoiceCapture.recognitionCallbackAction(
+                transcript: staleFinal,
+                hasError: true,
+                callbackCaptureID: 7,
+                activeCaptureID: nil,
+                state: .idle,
+                pendingStopReason: nil
+            ),
+            .ignore
+        )
+    }
+
     func testPCMLevelUsesRMSWithoutRetainingSamples() throws {
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1))
         let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4))

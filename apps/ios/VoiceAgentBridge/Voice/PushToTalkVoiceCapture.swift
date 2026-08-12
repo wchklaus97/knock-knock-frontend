@@ -49,6 +49,13 @@ final class PushToTalkVoiceCapture {
         let isFinal: Bool
     }
 
+    enum RecognitionCallbackAction: Equatable {
+        case ignore
+        case emitPartialTranscript(Transcript)
+        case finishWithFinalTranscript(Transcript, StopReason)
+        case failRecognition
+    }
+
     private struct AudioSessionSnapshot {
         let category: AVAudioSession.Category
         let mode: AVAudioSession.Mode
@@ -250,24 +257,56 @@ final class PushToTalkVoiceCapture {
         error: Error?,
         captureID: UInt64
     ) {
-        guard self.captureID == captureID, state != .idle else { return }
-
-        if let result {
-            transcriptHandler?(
-                Transcript(text: result.bestTranscription.formattedString, isFinal: result.isFinal)
-            )
-            if result.isFinal {
-                finishAfterFinalTranscript(captureID: captureID)
-                return
-            }
+        let transcript = result.map {
+            Transcript(text: $0.bestTranscription.formattedString, isFinal: $0.isFinal)
         }
+        let action = Self.recognitionCallbackAction(
+            transcript: transcript,
+            hasError: error != nil,
+            callbackCaptureID: captureID,
+            activeCaptureID: self.captureID,
+            state: state,
+            pendingStopReason: pendingStopReason
+        )
 
-        guard error != nil else { return }
-        if state == .stopping, let reason = pendingStopReason {
-            completeGracefulStop(reason: reason, captureID: captureID)
-        } else {
+        switch action {
+        case .ignore:
+            return
+        case let .emitPartialTranscript(transcript):
+            transcriptHandler?(transcript)
+        case let .finishWithFinalTranscript(transcript, reason):
+            transcriptHandler?(
+                transcript
+            )
+            finishAfterFinalTranscript(reason: reason, captureID: captureID)
+        case .failRecognition:
             failCapture(.recognitionFailure, captureID: captureID)
         }
+    }
+
+    static func recognitionCallbackAction(
+        transcript: Transcript?,
+        hasError: Bool,
+        callbackCaptureID: UInt64,
+        activeCaptureID: UInt64?,
+        state: State,
+        pendingStopReason: StopReason?
+    ) -> RecognitionCallbackAction {
+        guard activeCaptureID == callbackCaptureID, state != .idle else { return .ignore }
+
+        if let transcript, transcript.isFinal {
+            let reason = state == .stopping
+                ? pendingStopReason ?? .finalTranscript
+                : .finalTranscript
+            return .finishWithFinalTranscript(transcript, reason)
+        }
+        if hasError {
+            return .failRecognition
+        }
+        if let transcript {
+            return .emitPartialTranscript(transcript)
+        }
+        return .ignore
     }
 
     private func handleVADEvent(_ event: VoiceActivityDetector.Event, captureID: UInt64) {
@@ -306,9 +345,9 @@ final class PushToTalkVoiceCapture {
         )
     }
 
-    private func finishAfterFinalTranscript(captureID: UInt64) {
+    private func finishAfterFinalTranscript(reason fallbackReason: StopReason, captureID: UInt64) {
         guard self.captureID == captureID else { return }
-        let reason = pendingStopReason ?? .finalTranscript
+        let reason = pendingStopReason ?? fallbackReason
         if state == .listening {
             state = .stopping
             pendingStopReason = reason
