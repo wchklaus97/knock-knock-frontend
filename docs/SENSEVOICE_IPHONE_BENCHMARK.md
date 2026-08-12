@@ -140,12 +140,12 @@ or production rollback is required.
 
 ## Next architecture gate
 
-Do not integrate SenseVoice into push-to-talk. Continue with Apple
-SpeechAnalyzer plus fail-closed clarification on iPhone 13 Pro. If another
-candidate is evaluated, prioritize a stronger Cantonese/English model and a
-larger multi-speaker dataset; iPhone 17 Pro Max may separately qualify Whisper
-large-v3. Every candidate must repeat the same offline, privacy, entity, safety,
-and physical-device gates before integration.
+Do not use SenseVoice as a unified push-to-talk model. The later same-corpus
+comparison qualifies it only for the Mandarin branch of an explicit language
+router. Cantonese uses Apple SpeechAnalyzer; English uses Apple with strict
+clarification because it remains slightly below the release gate. The
+SenseVoice production adapter still requires signed-model startup, lifecycle,
+memory, and command-safety qualification before it can be enabled.
 
 ## Public-corpus follow-up
 

@@ -215,7 +215,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()
-        print("[push] device token \(token.prefix(12))… (\(token.count) chars)")
+        print("[push] received a valid-length device token")
         onDeviceToken?(token)
     }
 

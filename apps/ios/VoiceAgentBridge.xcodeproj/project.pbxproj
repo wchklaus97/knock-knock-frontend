@@ -17,6 +17,7 @@
 		25641E57D673CB29E940845B /* CommandResponseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E961F8A69AB7D6BDE901A076 /* CommandResponseTests.swift */; };
 		2EE756E3BB3E391BDAC57087 /* ModelsDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3595E8A4AF7E21EAE30D6879 /* ModelsDecodingTests.swift */; };
 		34FAB929C103E28E82FE1816 /* SQLiteStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A0FA7BC48E2BC3640609CEB /* SQLiteStore.swift */; };
+		3BC3B873563D6D40048D0CD4 /* VoiceLanguageRoutingPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA15AA96F79F6DA091129FC5 /* VoiceLanguageRoutingPolicy.swift */; };
 		431E50C47EA9942550BABB6C /* LocalVoiceModelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 702971A67B4C464BAD29C2BF /* LocalVoiceModelManager.swift */; };
 		473DFF05EA882A4B4398A88B /* VoiceCommandGoldenSetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA717EF03B5C5EAB9F24A65F /* VoiceCommandGoldenSetTests.swift */; };
 		49795404D433FEBEB093D31C /* CommandEnvelopeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C1D1AD3C4D5FC05095BE5A6 /* CommandEnvelopeTests.swift */; };
@@ -46,6 +47,7 @@
 		E34883AB45A105A7E6650CE4 /* ModelArtifactStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74BA2D4358CF12E52878DF32 /* ModelArtifactStore.swift */; };
 		E65B93B71284AD22011D2A56 /* PushToTalkVoiceCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21A90A73DCC95DB21B1ACFAB /* PushToTalkVoiceCapture.swift */; };
 		E833A7A65F2F41858C9D8B7E /* VoiceActivityDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1F5D54469C09BABC5815B20 /* VoiceActivityDetector.swift */; };
+		F0BF3EE3A752C8CA3AC03C81 /* VoiceLanguageRoutingPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28408E45AF85490E27B9BACF /* VoiceLanguageRoutingPolicyTests.swift */; };
 		F417CDE6A0B171958F18C435 /* VoiceAudioDatasetV2Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C657EA03DB560A56B274FB80 /* VoiceAudioDatasetV2Tests.swift */; };
 		FB3182B40BD8376D018FA41C /* LocalVoiceAdapters.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9321642D5AEBE9EEEB69A6AF /* LocalVoiceAdapters.swift */; };
 /* End PBXBuildFile section */
@@ -79,6 +81,7 @@
 		149CAFF91FDC8612C25406DD /* ModelManifest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelManifest.swift; sourceTree = "<group>"; };
 		19C24F29A3BD81FEBD216B85 /* VoiceAgentBridgeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceAgentBridgeApp.swift; sourceTree = "<group>"; };
 		21A90A73DCC95DB21B1ACFAB /* PushToTalkVoiceCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushToTalkVoiceCapture.swift; sourceTree = "<group>"; };
+		28408E45AF85490E27B9BACF /* VoiceLanguageRoutingPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceLanguageRoutingPolicyTests.swift; sourceTree = "<group>"; };
 		2CB02D354785B86D2132126E /* BackgroundRemoteNotificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundRemoteNotificationTests.swift; sourceTree = "<group>"; };
 		2E57AE4EFF7BDE36581D6F5B /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		302E856E2F847031E3C1C228 /* VoiceAgentBridgeSenseVoiceTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = VoiceAgentBridgeSenseVoiceTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -109,6 +112,7 @@
 		A870B09F37E0388AC4950D5C /* VoiceAgentBridge.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = VoiceAgentBridge.entitlements; sourceTree = "<group>"; };
 		A99A0C0747DF715EF6BCBDAB /* LocalVoiceCommandController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalVoiceCommandController.swift; sourceTree = "<group>"; };
 		AA717EF03B5C5EAB9F24A65F /* VoiceCommandGoldenSetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCommandGoldenSetTests.swift; sourceTree = "<group>"; };
+		BA15AA96F79F6DA091129FC5 /* VoiceLanguageRoutingPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceLanguageRoutingPolicy.swift; sourceTree = "<group>"; };
 		BD705554BEBFA130F3F1E4A6 /* LocalVoiceCommandCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalVoiceCommandCoordinator.swift; sourceTree = "<group>"; };
 		BF2C728ACB72E6A978C36A25 /* SenseVoiceQualificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SenseVoiceQualificationTests.swift; sourceTree = "<group>"; };
 		C4A3102CC0FD64B33E8C6512 /* NotificationDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationDiagnostics.swift; sourceTree = "<group>"; };
@@ -178,6 +182,7 @@
 				21A90A73DCC95DB21B1ACFAB /* PushToTalkVoiceCapture.swift */,
 				47773DB941E7546B7E4FB446 /* SpeechAnalyzerOnDeviceTranscriber.swift */,
 				E1F5D54469C09BABC5815B20 /* VoiceActivityDetector.swift */,
+				BA15AA96F79F6DA091129FC5 /* VoiceLanguageRoutingPolicy.swift */,
 			);
 			path = Voice;
 			sourceTree = "<group>";
@@ -198,6 +203,7 @@
 				9F323B1159699C0C4BA9C7B7 /* VoiceActivityDetectorTests.swift */,
 				C657EA03DB560A56B274FB80 /* VoiceAudioDatasetV2Tests.swift */,
 				AA717EF03B5C5EAB9F24A65F /* VoiceCommandGoldenSetTests.swift */,
+				28408E45AF85490E27B9BACF /* VoiceLanguageRoutingPolicyTests.swift */,
 				9F1F7D838868646999BFBF67 /* Fixtures */,
 			);
 			path = VoiceAgentBridgeTests;
@@ -453,6 +459,7 @@
 				B008650A594C298E52098E25 /* VoiceActivityDetectorTests.swift in Sources */,
 				F417CDE6A0B171958F18C435 /* VoiceAudioDatasetV2Tests.swift in Sources */,
 				473DFF05EA882A4B4398A88B /* VoiceCommandGoldenSetTests.swift in Sources */,
+				F0BF3EE3A752C8CA3AC03C81 /* VoiceLanguageRoutingPolicyTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -482,6 +489,7 @@
 				9FA19755096A4E54EBA5098E /* SpeechAnalyzerOnDeviceTranscriber.swift in Sources */,
 				E833A7A65F2F41858C9D8B7E /* VoiceActivityDetector.swift in Sources */,
 				C0C08D2DE6E9A140CC5C3D0D /* VoiceAgentBridgeApp.swift in Sources */,
+				3BC3B873563D6D40048D0CD4 /* VoiceLanguageRoutingPolicy.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

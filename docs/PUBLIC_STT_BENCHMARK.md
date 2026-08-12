@@ -111,6 +111,47 @@ when followed by a tested Traditional-Chinese conversion layer. It does not
 qualify for Hong Kong English. The original 12-command human UAT also remains a
 separate product-safety failure and is not overridden by this public benchmark.
 
+## Same-corpus Apple Speech and WhisperKit comparison
+
+All three runtimes were subsequently run against the exact same manifest and
+120 SHA-256-verified clips. Apple automatic mode selected `SpeechTranscriber`
+for every sample, resolving `en-HK` to `en_GB`, Mandarin to `zh_CN`, and
+Cantonese to `zh_HK`. Accuracy was identical across devices; hardware changed
+latency only.
+
+| Runtime / device | `en-HK` | `zh-Hans-CN` | `yue-Hant-HK` | Overall p95 |
+|---|---:|---:|---:|---:|
+| Apple Speech / iPhone 13 Pro | 89.46% | 87.25% | **92.77%** | 255 ms |
+| Apple Speech / iPhone 17 Pro Max | 89.46% | 87.25% | **92.77%** | 138 ms |
+| SenseVoice INT8 / iPhone 13 Pro | 71.8% | **97.9%** | 65.3% raw / 90.6% script-normalized | 198 ms |
+| SenseVoice INT8 / iPhone 17 Pro Max | 71.8% | **97.9%** | 65.3% raw / 90.6% script-normalized | 159 ms |
+| WhisperKit base / iPhone 13 Pro | 81.62% | 57.19% raw / 72.55% simplified-normalized | 50.84% | 332 ms |
+| WhisperKit base / iPhone 17 Pro Max | 81.37% | 57.35% raw / 73.20% simplified-normalized | 50.84% | 219 ms |
+
+The frozen route is therefore:
+
+- Cantonese: Apple SpeechAnalyzer/SpeechTranscriber, with Traditional output.
+- Mandarin: SenseVoice when its signed model is installed and successfully
+  opened; otherwise Apple fallback is clarification-only.
+- Hong Kong English: Apple Speech is the best tested candidate, but 89.46% is
+  below the 90% gate, so entity-bearing and high-risk commands remain
+  clarification-only until a stronger English candidate passes.
+- WhisperKit base: rejected for this trilingual route.
+
+`VoiceLanguageRoutingPolicy` encodes this decision without executing actions.
+`VoiceTranscriptNormalizer` converts only Cantonese output to Traditional
+Chinese; Mandarin remains Simplified and Latin entities are preserved. Backend
+validation, confirmation, and idempotency remain authoritative.
+
+The physical-device evidence is retained locally in:
+
+- `/private/tmp/knock-knock-public-apple-iphone13.xcresult`
+- `/private/tmp/knock-knock-public-apple-iphone17.xcresult`
+- `/private/tmp/knock-knock-public-whisper-iphone13-full.log`
+- `/private/tmp/knock-knock-public-whisper-iphone17-full.log`
+
+These paths are local evidence, not repository dependencies.
+
 ## Privacy and cleanup
 
 The script hashes Common Voice client identifiers before writing the manifest.

@@ -1304,4 +1304,288 @@ final class VoiceAudioPipelineEvaluationTests: XCTestCase {
     }
 }
 
+private struct PublicSTTBenchmarkDataset: Decodable {
+    struct Example: Decodable {
+        let id: String
+        let locale: String
+        let text: String
+    }
+
+    let datasetID: String
+    let schemaVersion: Int
+    let examples: [Example]
+
+    enum CodingKeys: String, CodingKey {
+        case datasetID = "dataset_id"
+        case schemaVersion = "schema_version"
+        case examples
+    }
+}
+
+private struct PublicSTTBenchmarkManifestRow: Decodable {
+    let id: String
+    let locale: String
+    let relativePath: String
+    let sha256: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, locale, sha256
+        case relativePath = "relative_path"
+    }
+}
+
+/// Opt-in, physical-device comparison over the exact public 120-clip corpus
+/// used by the WhisperKit and SenseVoice qualification runners. It records the
+/// concrete Apple backend selected by automatic mode instead of labelling every
+/// result generically as "Apple Speech".
+final class PublicAppleSTTBenchmarkTests: XCTestCase {
+    private static let datasetID = "knock-knock-public-stt-benchmark-v1"
+    private static let stagedDirectoryName = "KnockKnockPublicSTTUAT"
+
+    func testSamePublicCorpusRunsThroughAppleOnDeviceSpeech() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["KNOCK_RUN_PUBLIC_STT_APPLE_UAT"] == "1" else {
+            throw XCTSkip("Set KNOCK_RUN_PUBLIC_STT_APPLE_UAT=1 for this physical-device benchmark")
+        }
+
+        let root = try stagedRoot()
+        let dataset = try JSONDecoder().decode(
+            PublicSTTBenchmarkDataset.self,
+            from: Data(contentsOf: root.appendingPathComponent("KNOCK_KNOCK_VOICE_GOLDEN_V2.json"))
+        )
+        XCTAssertEqual(dataset.datasetID, Self.datasetID)
+        XCTAssertEqual(dataset.schemaVersion, 1)
+        XCTAssertEqual(dataset.examples.count, 120)
+        XCTAssertEqual(Dictionary(grouping: dataset.examples, by: \.locale).mapValues(\.count), [
+            "en-HK": 40,
+            "zh-Hans-CN": 40,
+            "yue-Hant-HK": 40,
+        ])
+
+        let manifest = try decodeManifest(root.appendingPathComponent("audio-manifest.jsonl"))
+        XCTAssertEqual(manifest.count, 120)
+        XCTAssertEqual(Set(manifest.map(\.id)).count, 120)
+        XCTAssertEqual(Set(manifest.map(\.relativePath)).count, 120)
+        XCTAssertEqual(Set(manifest.map(\.sha256)).count, 120)
+        let examples = Dictionary(uniqueKeysWithValues: dataset.examples.map { ($0.id, $0) })
+        let requestedBackend = environment["KNOCK_PUBLIC_STT_APPLE_BACKEND"] ?? "speech_analyzer"
+        if requestedBackend == "system_speech" {
+            XCTAssertEqual(
+                SFSpeechRecognizer.authorizationStatus(),
+                .authorized,
+                "System Speech requires physical-device Speech Recognition permission"
+            )
+        }
+
+        var localeDistances: [String: Int] = [:]
+        var localeReferenceCounts: [String: Int] = [:]
+        var timings: [Int] = []
+        var backendCounts: [String: Int] = [:]
+        var failures: [String] = []
+        for row in manifest.sorted(by: { $0.id < $1.id }) {
+            guard let example = examples[row.id], example.locale == row.locale else {
+                failures.append("\(row.id): manifest/dataset mismatch")
+                continue
+            }
+            guard isSafeRelativePath(row.relativePath) else {
+                failures.append("\(row.id): unsafe relative path")
+                continue
+            }
+            let audioURL = root.appendingPathComponent(row.relativePath)
+            let data = try Data(contentsOf: audioURL)
+            let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            guard digest == row.sha256 else {
+                failures.append("\(row.id): SHA-256 mismatch")
+                continue
+            }
+
+            let started = ProcessInfo.processInfo.systemUptime
+            do {
+                let output = try await transcribe(
+                    audioURL,
+                    locale: Locale(identifier: row.locale),
+                    requestedBackend: requestedBackend
+                )
+                let elapsed = Int(((ProcessInfo.processInfo.systemUptime - started) * 1_000).rounded())
+                let comparison = transcriptionDistance(
+                    expected: example.text,
+                    actual: output.text,
+                    locale: row.locale
+                )
+                localeDistances[row.locale, default: 0] += comparison.distance
+                localeReferenceCounts[row.locale, default: 0] += comparison.referenceCount
+                timings.append(elapsed)
+                backendCounts[output.backend, default: 0] += 1
+                print(
+                    "PUBLIC_APPLE_STT_SAMPLE id=\(row.id) locale=\(row.locale) "
+                        + "backend=\(output.backend) resolved_locale=\(output.resolvedLocale) "
+                        + "latency_ms=\(elapsed) edits=\(comparison.distance) "
+                        + "reference_units=\(comparison.referenceCount) transcript=\(output.text)"
+                )
+            } catch {
+                failures.append("\(row.id): \(error)")
+            }
+        }
+
+        for locale in ["en-HK", "zh-Hans-CN", "yue-Hant-HK"] {
+            let edits = localeDistances[locale, default: 0]
+            let units = localeReferenceCounts[locale, default: 0]
+            let accuracy = units == 0 ? 0 : max(0, 1 - Double(edits) / Double(units))
+            print(
+                String(
+                    format: "PUBLIC_APPLE_STT_LOCALE locale=%@ accuracy=%.6f edits=%d reference_units=%d",
+                    locale,
+                    accuracy,
+                    edits,
+                    units
+                )
+            )
+        }
+        print(
+            "PUBLIC_APPLE_STT_SUMMARY samples=\(timings.count) p95_ms=\(percentile(timings, 0.95)) "
+                + "requested_backend=\(requestedBackend) actual_backends=\(backendCounts)"
+        )
+        XCTAssertTrue(failures.isEmpty, failures.joined(separator: "\n"))
+        XCTAssertEqual(timings.count, 120)
+    }
+
+    func testDeleteStagedPublicCorpusAfterUAT() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["KNOCK_CLEAN_PUBLIC_STT_APPLE_UAT"] == "1" else {
+            throw XCTSkip("Set KNOCK_CLEAN_PUBLIC_STT_APPLE_UAT=1 after physical-device UAT")
+        }
+        let root = try stagedRoot()
+        let dataset = try JSONDecoder().decode(
+            PublicSTTBenchmarkDataset.self,
+            from: Data(contentsOf: root.appendingPathComponent("KNOCK_KNOCK_VOICE_GOLDEN_V2.json"))
+        )
+        XCTAssertEqual(dataset.datasetID, Self.datasetID)
+        try FileManager.default.removeItem(at: root)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+    }
+
+    private func stagedRoot() throws -> URL {
+        let documents = try XCTUnwrap(
+            FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        )
+        let root = documents.appendingPathComponent(Self.stagedDirectoryName, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: root.path) else {
+            throw VoiceAudioDatasetV2Error.invalidRoot
+        }
+        return root
+    }
+
+    private func decodeManifest(_ url: URL) throws -> [PublicSTTBenchmarkManifestRow] {
+        let decoder = JSONDecoder()
+        return try String(contentsOf: url, encoding: .utf8)
+            .split(whereSeparator: \.isNewline)
+            .enumerated()
+            .map { index, line in
+                guard let data = String(line).data(using: .utf8),
+                      let row = try? decoder.decode(PublicSTTBenchmarkManifestRow.self, from: data)
+                else { throw VoiceAudioDatasetV2Error.invalidManifestLine(index + 1) }
+                return row
+            }
+    }
+
+    private func isSafeRelativePath(_ value: String) -> Bool {
+        !value.isEmpty
+            && !value.hasPrefix("/")
+            && !value.split(separator: "/").contains("..")
+    }
+
+    private func transcribe(
+        _ url: URL,
+        locale: Locale,
+        requestedBackend: String
+    ) async throws -> (text: String, backend: String, resolvedLocale: String) {
+#if compiler(>=6.2)
+        if requestedBackend == "speech_analyzer" || requestedBackend == "speech_analyzer_dictation" {
+            guard #available(iOS 26.0, *) else {
+                throw LocalVoiceAdapterError.speechRecognizerUnavailable
+            }
+            let output = try await SpeechAnalyzerOnDeviceTranscriber.transcribe(
+                audioFileURL: url,
+                locale: locale,
+                mode: requestedBackend == "speech_analyzer_dictation" ? .dictationTranscriber : .automatic
+            )
+            return (output.text, output.backend.rawValue, output.localeIdentifier)
+        }
+#endif
+        guard requestedBackend == "system_speech" else {
+            throw LocalVoiceAdapterError.speechRecognizerUnavailable
+        }
+        let recognizer = SystemOnDeviceSpeechTranscriber(locale: locale)
+        try recognizer.reset()
+        let file = try AVAudioFile(forReading: url)
+        while file.framePosition < file.length {
+            let remaining = min(4_096, file.length - file.framePosition)
+            guard let buffer = AVAudioPCMBuffer(
+                pcmFormat: file.processingFormat,
+                frameCapacity: AVAudioFrameCount(remaining)
+            ) else { throw VoiceAudioDatasetV2Error.invalidWAV(url.lastPathComponent) }
+            try file.read(into: buffer)
+            guard buffer.frameLength > 0 else { break }
+            try recognizer.append(buffer)
+        }
+        let completed = expectation(description: "Apple System Speech \(url.lastPathComponent)")
+        var recognitionResult: Result<String, Error>?
+        recognizer.finish {
+            recognitionResult = $0
+            completed.fulfill()
+        }
+        await fulfillment(of: [completed], timeout: 20)
+        let text = try XCTUnwrap(recognitionResult).get()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { throw LocalVoiceAdapterError.invalidModelOutput }
+        return (text, "system_speech", locale.identifier)
+    }
+
+    private func transcriptionDistance(
+        expected: String,
+        actual: String,
+        locale: String
+    ) -> (distance: Int, referenceCount: Int) {
+        if locale == "en-HK" {
+            let lhs = expected.lowercased()
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { !$0.isEmpty }
+            let rhs = actual.lowercased()
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { !$0.isEmpty }
+            return (levenshtein(lhs, rhs), lhs.count)
+        }
+        let lhs = Array(expected.lowercased().filter { character in
+            character.unicodeScalars.contains { CharacterSet.alphanumerics.contains($0) }
+        })
+        let rhs = Array(actual.lowercased().filter { character in
+            character.unicodeScalars.contains { CharacterSet.alphanumerics.contains($0) }
+        })
+        return (levenshtein(lhs, rhs), lhs.count)
+    }
+
+    private func levenshtein<Element: Equatable>(_ lhs: [Element], _ rhs: [Element]) -> Int {
+        var previous = Array(0...rhs.count)
+        for (leftIndex, left) in lhs.enumerated() {
+            var current = [leftIndex + 1]
+            for (rightIndex, right) in rhs.enumerated() {
+                current.append(min(
+                    current[rightIndex] + 1,
+                    previous[rightIndex + 1] + 1,
+                    previous[rightIndex] + (left == right ? 0 : 1)
+                ))
+            }
+            previous = current
+        }
+        return previous[rhs.count]
+    }
+
+    private func percentile(_ values: [Int], _ percentile: Double) -> Int {
+        let ordered = values.sorted()
+        guard !ordered.isEmpty else { return 0 }
+        let index = max(0, min(ordered.count - 1, Int(ceil(Double(ordered.count) * percentile)) - 1))
+        return ordered[index]
+    }
+}
+
 #endif
