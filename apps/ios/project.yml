@@ -8,6 +8,9 @@ options:
 packages:
   LiteRTLM:
     path: ThirdParty/LiteRTLM
+  ArgmaxOSS:
+    url: https://github.com/argmaxinc/argmax-oss-swift
+    from: 1.0.0
 configs:
   Debug: debug
   Staging: debug
@@ -64,6 +67,7 @@ targets:
     scheme:
       testTargets:
         - VoiceAgentBridgeTests
+        - VoiceAgentBridgeWhisperKitTests
         - VoiceAgentBridgeUITests
       environmentVariables:
         KNOCK_UI_TEST_API_BASE_URL: "$(KNOCK_API_BASE_URL)"
@@ -79,6 +83,9 @@ targets:
         KNOCK_VOICE_RESULT_DEVICE: "$(KNOCK_VOICE_RESULT_DEVICE)"
         KNOCK_VOICE_STT_BACKEND: "$(KNOCK_VOICE_STT_BACKEND)"
         KNOCK_VOICE_USE_GPU: "$(KNOCK_VOICE_USE_GPU)"
+        KNOCK_RUN_WHISPERKIT_UAT: "$(KNOCK_RUN_WHISPERKIT_UAT)"
+        KNOCK_WHISPERKIT_MODEL: "$(KNOCK_WHISPERKIT_MODEL)"
+        KNOCK_WHISPERKIT_AUDIO_FILE: "$(KNOCK_WHISPERKIT_AUDIO_FILE)"
 
   VoiceAgentBridgeTests:
     type: bundle.unit-test
@@ -104,4 +111,21 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: hk.knockknock.app.uitests
         GENERATE_INFOPLIST_FILE: YES
+        DEVELOPMENT_TEAM: TXKDW2YS44
+
+  VoiceAgentBridgeWhisperKitTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: VoiceAgentBridgeWhisperKitTests
+    dependencies:
+      - target: VoiceAgentBridge
+      - package: ArgmaxOSS
+        product: WhisperKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: hk.knockknock.app.whisperkit-tests
+        GENERATE_INFOPLIST_FILE: YES
+        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
         DEVELOPMENT_TEAM: TXKDW2YS44

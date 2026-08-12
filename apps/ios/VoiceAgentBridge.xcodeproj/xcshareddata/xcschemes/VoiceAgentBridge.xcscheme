@@ -55,6 +55,17 @@
             parallelizable = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
+               BlueprintIdentifier = "8B56757D033D5873FB4CC7EA"
+               BuildableName = "VoiceAgentBridgeWhisperKitTests.xctest"
+               BlueprintName = "VoiceAgentBridgeWhisperKitTests"
+               ReferencedContainer = "container:VoiceAgentBridge.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
                BlueprintIdentifier = "88316352B2D23303A8BD9E7C"
                BuildableName = "VoiceAgentBridgeUITests.xctest"
                BlueprintName = "VoiceAgentBridgeUITests"
@@ -83,6 +94,11 @@
          <EnvironmentVariable
             key = "KNOCK_RUN_VOICE_AUDIO_STT_UAT"
             value = "$(KNOCK_RUN_VOICE_AUDIO_STT_UAT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_RUN_WHISPERKIT_UAT"
+            value = "$(KNOCK_RUN_WHISPERKIT_UAT)"
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
@@ -128,6 +144,16 @@
          <EnvironmentVariable
             key = "KNOCK_VOICE_USE_GPU"
             value = "$(KNOCK_VOICE_USE_GPU)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_WHISPERKIT_AUDIO_FILE"
+            value = "$(KNOCK_WHISPERKIT_AUDIO_FILE)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_WHISPERKIT_MODEL"
+            value = "$(KNOCK_WHISPERKIT_MODEL)"
             isEnabled = "YES">
          </EnvironmentVariable>
       </EnvironmentVariables>
@@ -176,6 +202,11 @@
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
+            key = "KNOCK_RUN_WHISPERKIT_UAT"
+            value = "$(KNOCK_RUN_WHISPERKIT_UAT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
             key = "KNOCK_UI_TEST_API_BASE_URL"
             value = "$(KNOCK_API_BASE_URL)"
             isEnabled = "YES">
@@ -218,6 +249,16 @@
          <EnvironmentVariable
             key = "KNOCK_VOICE_USE_GPU"
             value = "$(KNOCK_VOICE_USE_GPU)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_WHISPERKIT_AUDIO_FILE"
+            value = "$(KNOCK_WHISPERKIT_AUDIO_FILE)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_WHISPERKIT_MODEL"
+            value = "$(KNOCK_WHISPERKIT_MODEL)"
             isEnabled = "YES">
          </EnvironmentVariable>
       </EnvironmentVariables>
@@ -262,6 +303,11 @@
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
+            key = "KNOCK_RUN_WHISPERKIT_UAT"
+            value = "$(KNOCK_RUN_WHISPERKIT_UAT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
             key = "KNOCK_UI_TEST_API_BASE_URL"
             value = "$(KNOCK_API_BASE_URL)"
             isEnabled = "YES">
@@ -304,6 +350,16 @@
          <EnvironmentVariable
             key = "KNOCK_VOICE_USE_GPU"
             value = "$(KNOCK_VOICE_USE_GPU)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_WHISPERKIT_AUDIO_FILE"
+            value = "$(KNOCK_WHISPERKIT_AUDIO_FILE)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_WHISPERKIT_MODEL"
+            value = "$(KNOCK_WHISPERKIT_MODEL)"
             isEnabled = "YES">
          </EnvironmentVariable>
       </EnvironmentVariables>

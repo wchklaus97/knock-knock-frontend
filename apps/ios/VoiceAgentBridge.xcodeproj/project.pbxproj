@@ -32,6 +32,7 @@
 		9FA19755096A4E54EBA5098E /* SpeechAnalyzerOnDeviceTranscriber.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47773DB941E7546B7E4FB446 /* SpeechAnalyzerOnDeviceTranscriber.swift */; };
 		A17DC2B4DBF67D961CE4EBDE /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D395F5693E39802D84A2DE0 /* AppStore.swift */; };
 		A4F7B8446C4AAAC4DE5C5037 /* NotificationDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A3102CC0FD64B33E8C6512 /* NotificationDiagnostics.swift */; };
+		A6730194242F0374BE749B32 /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = 94BBAA039F1A9BFC35848D66 /* WhisperKit */; };
 		AB4332BD6D136A8495BEBB90 /* BackgroundRemoteNotificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CB02D354785B86D2132126E /* BackgroundRemoteNotificationTests.swift */; };
 		B008650A594C298E52098E25 /* VoiceActivityDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F323B1159699C0C4BA9C7B7 /* VoiceActivityDetectorTests.swift */; };
 		B049614B0D5B76A5CAEFD5FC /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3B75AF8190D9C92C0C3CD6F /* RootView.swift */; };
@@ -39,6 +40,7 @@
 		B54A196A01253803D329A965 /* BackendCommandPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFB5EA120329E5E293186C82 /* BackendCommandPresentationTests.swift */; };
 		C0C08D2DE6E9A140CC5C3D0D /* VoiceAgentBridgeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19C24F29A3BD81FEBD216B85 /* VoiceAgentBridgeApp.swift */; };
 		D15FBECCAEF15DBCDA8518FD /* CommandEnvelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81C6F2A72F342A9A5510EDCC /* CommandEnvelope.swift */; };
+		D32B077633354D357C3C3AF8 /* WhisperKitQualificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9946ACC48829045060CACA6F /* WhisperKitQualificationTests.swift */; };
 		D67A0D02BDB75DA24BC6B8DE /* LocalVoiceCommandController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A99A0C0747DF715EF6BCBDAB /* LocalVoiceCommandController.swift */; };
 		DD38742C3FF1E2A935E168AE /* BackendCommandPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F8290B1E64F0BF7AD39B005 /* BackendCommandPresentation.swift */; };
 		E34883AB45A105A7E6650CE4 /* ModelArtifactStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74BA2D4358CF12E52878DF32 /* ModelArtifactStore.swift */; };
@@ -50,6 +52,13 @@
 
 /* Begin PBXContainerItemProxy section */
 		42EB5A437F9FF069E18830A5 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 04D5438232F1B050E05FECD4 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 95B2F73CA8EAD5AB4E6FF270;
+			remoteInfo = VoiceAgentBridge;
+		};
+		65F0A792E8704568C11FFDD4 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 04D5438232F1B050E05FECD4 /* Project object */;
 			proxyType = 1;
@@ -69,6 +78,7 @@
 		013445EAA35AD08B39780F35 /* LiteRTLM */ = {isa = PBXFileReference; lastKnownFileType = folder; name = LiteRTLM; path = ThirdParty/LiteRTLM; sourceTree = SOURCE_ROOT; };
 		149CAFF91FDC8612C25406DD /* ModelManifest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelManifest.swift; sourceTree = "<group>"; };
 		19C24F29A3BD81FEBD216B85 /* VoiceAgentBridgeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceAgentBridgeApp.swift; sourceTree = "<group>"; };
+		20FF6A0939A6A79A392FE1B3 /* VoiceAgentBridgeWhisperKitTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = VoiceAgentBridgeWhisperKitTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		21A90A73DCC95DB21B1ACFAB /* PushToTalkVoiceCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushToTalkVoiceCapture.swift; sourceTree = "<group>"; };
 		2CB02D354785B86D2132126E /* BackgroundRemoteNotificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundRemoteNotificationTests.swift; sourceTree = "<group>"; };
 		2E57AE4EFF7BDE36581D6F5B /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
@@ -91,6 +101,7 @@
 		8BEAF2F2CA23A5162A99B79E /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		8FDA15A7F3CE1EA8C3074C86 /* ModelArtifactStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelArtifactStoreTests.swift; sourceTree = "<group>"; };
 		9321642D5AEBE9EEEB69A6AF /* LocalVoiceAdapters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalVoiceAdapters.swift; sourceTree = "<group>"; };
+		9946ACC48829045060CACA6F /* WhisperKitQualificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperKitQualificationTests.swift; sourceTree = "<group>"; };
 		9C1D1AD3C4D5FC05095BE5A6 /* CommandEnvelopeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandEnvelopeTests.swift; sourceTree = "<group>"; };
 		9D0AFE1014DA172AD7A6CBB1 /* LocalCommandEnvelopeCanonicalizerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalCommandEnvelopeCanonicalizerTests.swift; sourceTree = "<group>"; };
 		9F323B1159699C0C4BA9C7B7 /* VoiceActivityDetectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceActivityDetectorTests.swift; sourceTree = "<group>"; };
@@ -113,6 +124,14 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		DF0C32AE1649CCBB2CAE89E6 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A6730194242F0374BE749B32 /* WhisperKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		EA22C1F5CB60EC7BDC19362B /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -131,6 +150,7 @@
 				2B954E283BFA591894598998 /* VoiceAgentBridge */,
 				2A70FF0079F783B3E78FA5A2 /* VoiceAgentBridgeTests */,
 				95B01F585F4E19FD6A9213E0 /* VoiceAgentBridgeUITests */,
+				89D9FA8FA7B7B271D050B054 /* VoiceAgentBridgeWhisperKitTests */,
 				FF7EB3BAB2C0E30249C42E67 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -204,6 +224,14 @@
 			name = Packages;
 			sourceTree = "<group>";
 		};
+		89D9FA8FA7B7B271D050B054 /* VoiceAgentBridgeWhisperKitTests */ = {
+			isa = PBXGroup;
+			children = (
+				9946ACC48829045060CACA6F /* WhisperKitQualificationTests.swift */,
+			);
+			path = VoiceAgentBridgeWhisperKitTests;
+			sourceTree = "<group>";
+		};
 		95B01F585F4E19FD6A9213E0 /* VoiceAgentBridgeUITests */ = {
 			isa = PBXGroup;
 			children = (
@@ -226,6 +254,7 @@
 				FB51484FA608CC2A692E7A0B /* VoiceAgentBridge.app */,
 				32DC4074DC9D2EA6A41D3174 /* VoiceAgentBridgeTests.xctest */,
 				7C7AD1AA432BE939E245DA12 /* VoiceAgentBridgeUITests.xctest */,
+				20FF6A0939A6A79A392FE1B3 /* VoiceAgentBridgeWhisperKitTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -250,6 +279,26 @@
 			productName = VoiceAgentBridgeUITests;
 			productReference = 7C7AD1AA432BE939E245DA12 /* VoiceAgentBridgeUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		8B56757D033D5873FB4CC7EA /* VoiceAgentBridgeWhisperKitTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D61A9F379FFEAF22BB849FE8 /* Build configuration list for PBXNativeTarget "VoiceAgentBridgeWhisperKitTests" */;
+			buildPhases = (
+				61A6D70BB0DF8BD5BF8A4B19 /* Sources */,
+				DF0C32AE1649CCBB2CAE89E6 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				C5D41CE68E91922364B4BEFD /* PBXTargetDependency */,
+			);
+			name = VoiceAgentBridgeWhisperKitTests;
+			packageProductDependencies = (
+				94BBAA039F1A9BFC35848D66 /* WhisperKit */,
+			);
+			productName = VoiceAgentBridgeWhisperKitTests;
+			productReference = 20FF6A0939A6A79A392FE1B3 /* VoiceAgentBridgeWhisperKitTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
 		};
 		95B2F73CA8EAD5AB4E6FF270 /* VoiceAgentBridge */ = {
 			isa = PBXNativeTarget;
@@ -305,6 +354,10 @@
 						ProvisioningStyle = Automatic;
 						TestTargetID = 95B2F73CA8EAD5AB4E6FF270;
 					};
+					8B56757D033D5873FB4CC7EA = {
+						DevelopmentTeam = TXKDW2YS44;
+						ProvisioningStyle = Automatic;
+					};
 					95B2F73CA8EAD5AB4E6FF270 = {
 						DevelopmentTeam = TXKDW2YS44;
 						ProvisioningStyle = Automatic;
@@ -325,6 +378,7 @@
 			mainGroup = 0468E8690A41473FE4548D43;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				76F9984E57857A8CFDCADB7C /* XCRemoteSwiftPackageReference "argmax-oss-swift" */,
 				EC84E6938DD4BD1E205AD2EB /* XCLocalSwiftPackageReference "ThirdParty/LiteRTLM" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -335,6 +389,7 @@
 				95B2F73CA8EAD5AB4E6FF270 /* VoiceAgentBridge */,
 				C1014640451ADE67F8E70780 /* VoiceAgentBridgeTests */,
 				88316352B2D23303A8BD9E7C /* VoiceAgentBridgeUITests */,
+				8B56757D033D5873FB4CC7EA /* VoiceAgentBridgeWhisperKitTests */,
 			);
 		};
 /* End PBXProject section */
@@ -401,6 +456,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		61A6D70BB0DF8BD5BF8A4B19 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D32B077633354D357C3C3AF8 /* WhisperKitQualificationTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		CDC1A2F54D008E423C8D5E36 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -451,6 +514,11 @@
 			target = 95B2F73CA8EAD5AB4E6FF270 /* VoiceAgentBridge */;
 			targetProxy = 42EB5A437F9FF069E18830A5 /* PBXContainerItemProxy */;
 		};
+		C5D41CE68E91922364B4BEFD /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 95B2F73CA8EAD5AB4E6FF270 /* VoiceAgentBridge */;
+			targetProxy = 65F0A792E8704568C11FFDD4 /* PBXContainerItemProxy */;
+		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
@@ -471,6 +539,25 @@
 				TEST_TARGET_NAME = VoiceAgentBridge;
 			};
 			name = Debug;
+		};
+		09505A72992029D6134694AF /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = TXKDW2YS44;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "hk.knockknock.app.whisperkit-tests";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/VoiceAgentBridge.app/VoiceAgentBridge";
+			};
+			name = Release;
 		};
 		1D25E5F448355487F4EB5331 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -680,6 +767,25 @@
 			};
 			name = Release;
 		};
+		6B16659D038B401BF43A84C8 /* Staging */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = TXKDW2YS44;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "hk.knockknock.app.whisperkit-tests";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/VoiceAgentBridge.app/VoiceAgentBridge";
+			};
+			name = Staging;
+		};
 		7AC039F50B4CD3CA6BBD5E80 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -789,6 +895,25 @@
 			};
 			name = Debug;
 		};
+		E142B21B97E78A3F5A30E778 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = TXKDW2YS44;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "hk.knockknock.app.whisperkit-tests";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/VoiceAgentBridge.app/VoiceAgentBridge";
+			};
+			name = Debug;
+		};
 		E53CFFB094B021C735CE97E4 /* Staging */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -871,6 +996,16 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
+		D61A9F379FFEAF22BB849FE8 /* Build configuration list for PBXNativeTarget "VoiceAgentBridgeWhisperKitTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E142B21B97E78A3F5A30E778 /* Debug */,
+				09505A72992029D6134694AF /* Release */,
+				6B16659D038B401BF43A84C8 /* Staging */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -880,10 +1015,26 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		76F9984E57857A8CFDCADB7C /* XCRemoteSwiftPackageReference "argmax-oss-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/argmaxinc/argmax-oss-swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		0B3495CAC37DE7BB71C40B44 /* LiteRTLM */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = LiteRTLM;
+		};
+		94BBAA039F1A9BFC35848D66 /* WhisperKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 76F9984E57857A8CFDCADB7C /* XCRemoteSwiftPackageReference "argmax-oss-swift" */;
+			productName = WhisperKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

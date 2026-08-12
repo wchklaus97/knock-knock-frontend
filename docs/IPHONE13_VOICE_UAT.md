@@ -48,6 +48,8 @@ results are supporting evidence only and must not be reported as physical voice 
 | SpeechAnalyzer 12-WAV physical STT | 12/12 final; English 37/37 (100%), Cantonese 65/75 (86.7%), Simplified Chinese 55/71 (77.5%); per-locale p95 405/482/354 ms | Failed per-locale accuracy gate |
 | SpeechAnalyzer 12-WAV physical pipeline | 3/9 commands exact, 3/3 clarifications, high-risk false executions 0, p95 STT 379 ms and p95 total 380 ms | Failed semantic gate; safe failure |
 | DictationTranscriber comparison | English 35/37 (94.6%), Cantonese 56/75 (74.7%), Simplified Chinese 51/71 (71.8%); per-locale p95 438/785/660 ms | Rejected; worse than SpeechTranscriber |
+| WhisperKit tiny comparison | English 94.6%, Cantonese 45.3%, Simplified Chinese 45.1%, p95 inference 278 ms | Rejected; multilingual accuracy failed |
+| WhisperKit base comparison | English 94.6%, Cantonese 45.3%, Simplified Chinese 47.9%, p95 inference 418 ms | Rejected; multilingual accuracy failed |
 | Full physical audio pipeline | All 144 profiles | Blocked by failed 12-WAV gate |
 | Live push-to-talk/VAD | Real microphone, stop/final transcript, clarification, confirmation, result/TTS | Pending |
 | Stability | memory, thermal, repeated commands, interruption/cancellation | Pending |
@@ -79,6 +81,11 @@ is iOS 15. Adopting it therefore requires an explicit deployment-floor decision 
 a separately isolated runtime target) before package integration. Local APFS free
 space was approximately 15 GiB during qualification, so model downloads and derived
 data must be budgeted and cleaned deliberately.
+
+An isolated iOS 16 test bundle subsequently qualified WhisperKit `tiny` and `base`
+without changing or linking the production iOS 15 app target. Both ran quickly but
+failed the multilingual accuracy gate, so neither advances to production. Full data
+and reproduction commands are recorded in `WHISPERKIT_IPHONE13_BENCHMARK.md`.
 
 The external package also has inconsistent provenance: `package_readme.md` says
 Mandarin and Cantonese were generated through MiniMax, while the signed manifest
