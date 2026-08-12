@@ -121,6 +121,11 @@
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
+            key = "KNOCK_VOICE_STT_BACKEND"
+            value = "$(KNOCK_VOICE_STT_BACKEND)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
             key = "KNOCK_VOICE_USE_GPU"
             value = "$(KNOCK_VOICE_USE_GPU)"
             isEnabled = "YES">
@@ -206,6 +211,11 @@
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
+            key = "KNOCK_VOICE_STT_BACKEND"
+            value = "$(KNOCK_VOICE_STT_BACKEND)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
             key = "KNOCK_VOICE_USE_GPU"
             value = "$(KNOCK_VOICE_USE_GPU)"
             isEnabled = "YES">
@@ -284,6 +294,11 @@
          <EnvironmentVariable
             key = "KNOCK_VOICE_RESULT_DEVICE"
             value = "$(KNOCK_VOICE_RESULT_DEVICE)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_STT_BACKEND"
+            value = "$(KNOCK_VOICE_STT_BACKEND)"
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable

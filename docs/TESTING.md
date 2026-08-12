@@ -230,7 +230,9 @@ scripts/ios-voice-audio-uat.sh \
   --dataset-root /absolute/path/to/repaired-output
 ```
 
-The opt-in STT gate feeds each WAV through `SystemOnDeviceSpeechTranscriber`; the full
+The opt-in STT gate feeds each WAV through `SystemOnDeviceSpeechTranscriber` by default;
+on iOS 26, `KNOCK_VOICE_STT_BACKEND=speech_analyzer` selects the file-only
+`SpeechAnalyzer` qualification adapter. The full
 Layer A gate then selects the same command runtime as production and applies the strict
 envelope policy. iPhone 13 Pro/Pro Max use the deterministic parser and do not require a
 staged model; newer Gemma devices require the staged signed artifact. The machine report
@@ -246,6 +248,7 @@ xcodebuild -project VoiceAgentBridge.xcodeproj -scheme VoiceAgentBridge \
   KNOCK_RUN_VOICE_AUDIO_STT_UAT=1 \
   KNOCK_VOICE_AUDIO_LIMIT=1 \
   KNOCK_VOICE_AUDIO_PROFILES=clean_normal \
+  KNOCK_VOICE_STT_BACKEND=speech_analyzer \
   KNOCK_VOICE_RESULT_DEVICE=iphone13-pro \
   test
 
@@ -253,10 +256,16 @@ xcodebuild -project VoiceAgentBridge.xcodeproj -scheme VoiceAgentBridge \
   -destination "platform=iOS,id=$KNOCK_DEVICE_UDID" \
   -only-testing:VoiceAgentBridgeTests/VoiceAudioPipelineEvaluationTests \
   KNOCK_RUN_VOICE_AUDIO_PIPELINE_UAT=1 \
+  KNOCK_VOICE_AUDIO_CORE_SUBSET=1 \
   KNOCK_VOICE_AUDIO_PROFILES=clean_normal,fast_phone,noise_snr15 \
+  KNOCK_VOICE_STT_BACKEND=speech_analyzer \
   KNOCK_VOICE_RESULT_DEVICE=iphone13-pro \
   test
 ```
+
+Use `speech_analyzer_dictation` only for a diagnostic A/B comparison. It is not an
+approved production backend. SpeechAnalyzer selection is strict and does not silently
+fall back to legacy Speech, so a report cannot mislabel the backend that produced it.
 
 Machine-readable STT and pipeline results are written below the staged package's
 `voice-golden-v2-generated/results/` directory. No test creates an API client or uploads

@@ -87,6 +87,7 @@ private struct VoiceAudioSTTResult: Codable {
 private struct VoiceAudioSTTReport: Codable {
     let schemaVersion: Int
     let device: String
+    let sttBackend: String
     let generatedAt: String
     let sampleCount: Int
     let successfulTranscriptions: Int
@@ -95,6 +96,7 @@ private struct VoiceAudioSTTReport: Codable {
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case device
+        case sttBackend = "stt_backend"
         case generatedAt = "generated_at"
         case sampleCount = "sample_count"
         case successfulTranscriptions = "successful_transcriptions"
@@ -670,7 +672,8 @@ final class VoiceAudioSTTEvaluationTests: XCTestCase {
             do {
                 let transcript = try await transcribe(
                     package.audioURL(for: row),
-                    locale: Locale(identifier: example.locale)
+                    locale: Locale(identifier: example.locale),
+                    backend: environment["KNOCK_VOICE_STT_BACKEND"] ?? "system_speech"
                 )
                 let elapsed = Int(((ProcessInfo.processInfo.systemUptime - started) * 1_000).rounded())
                 let comparison = transcriptionDistance(
@@ -743,7 +746,22 @@ final class VoiceAudioSTTEvaluationTests: XCTestCase {
             .sorted()
     }
 
-    private func transcribe(_ url: URL, locale: Locale) async throws -> String {
+    private func transcribe(_ url: URL, locale: Locale, backend: String) async throws -> String {
+#if compiler(>=6.2)
+        if backend == "speech_analyzer" || backend == "speech_analyzer_dictation" {
+            guard #available(iOS 26.0, *) else {
+                throw LocalVoiceAdapterError.speechRecognizerUnavailable
+            }
+            return try await SpeechAnalyzerOnDeviceTranscriber.transcribe(
+                audioFileURL: url,
+                locale: locale,
+                mode: backend == "speech_analyzer_dictation" ? .dictationTranscriber : .automatic
+            ).text
+        }
+#endif
+        guard backend == "system_speech" else {
+            throw LocalVoiceAdapterError.speechRecognizerUnavailable
+        }
         let transcriber = SystemOnDeviceSpeechTranscriber(locale: locale)
         try transcriber.reset()
         let file = try AVAudioFile(forReading: url)
@@ -828,6 +846,7 @@ final class VoiceAudioSTTEvaluationTests: XCTestCase {
         let report = VoiceAudioSTTReport(
             schemaVersion: 1,
             device: device,
+            sttBackend: environment["KNOCK_VOICE_STT_BACKEND"] ?? "system_speech",
             generatedAt: formatter.string(from: Date()),
             sampleCount: results.count,
             successfulTranscriptions: results.filter { $0.errorCategory == nil }.count,
@@ -886,6 +905,7 @@ private struct VoiceAudioPipelineResult: Codable {
 private struct VoiceAudioPipelineSummary: Codable {
     let schemaVersion: Int
     let device: String
+    let sttBackend: String
     let runtimeStrategy: String
     let runtimeVersion: String
     let sampleCount: Int
@@ -906,6 +926,7 @@ private struct VoiceAudioPipelineSummary: Codable {
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case device
+        case sttBackend = "stt_backend"
         case runtimeStrategy = "runtime_strategy"
         case runtimeVersion = "runtime_version"
         case sampleCount = "sample_count"
@@ -1032,7 +1053,8 @@ final class VoiceAudioPipelineEvaluationTests: XCTestCase {
                 do {
                     transcript = try await transcribe(
                         package.audioURL(for: row),
-                        locale: Locale(identifier: locale)
+                        locale: Locale(identifier: locale),
+                        backend: environment["KNOCK_VOICE_STT_BACKEND"] ?? "system_speech"
                     )
                 } catch {
                     let total = milliseconds(since: totalStart)
@@ -1092,6 +1114,7 @@ final class VoiceAudioPipelineEvaluationTests: XCTestCase {
         let summary = VoiceAudioPipelineSummary(
             schemaVersion: 1,
             device: environment["KNOCK_VOICE_RESULT_DEVICE"] ?? "unspecified-ios-device",
+            sttBackend: environment["KNOCK_VOICE_STT_BACKEND"] ?? "system_speech",
             runtimeStrategy: runtimeStrategy == .deterministicParser
                 ? "deterministic_parser"
                 : "signed_gemma",
@@ -1195,7 +1218,22 @@ final class VoiceAudioPipelineEvaluationTests: XCTestCase {
         }
     }
 
-    private func transcribe(_ url: URL, locale: Locale) async throws -> String {
+    private func transcribe(_ url: URL, locale: Locale, backend: String) async throws -> String {
+#if compiler(>=6.2)
+        if backend == "speech_analyzer" || backend == "speech_analyzer_dictation" {
+            guard #available(iOS 26.0, *) else {
+                throw LocalVoiceAdapterError.speechRecognizerUnavailable
+            }
+            return try await SpeechAnalyzerOnDeviceTranscriber.transcribe(
+                audioFileURL: url,
+                locale: locale,
+                mode: backend == "speech_analyzer_dictation" ? .dictationTranscriber : .automatic
+            ).text
+        }
+#endif
+        guard backend == "system_speech" else {
+            throw LocalVoiceAdapterError.speechRecognizerUnavailable
+        }
         let transcriber = SystemOnDeviceSpeechTranscriber(locale: locale)
         try transcriber.reset()
         let file = try AVAudioFile(forReading: url)

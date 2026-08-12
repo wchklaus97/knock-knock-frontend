@@ -41,9 +41,13 @@ results are supporting evidence only and must not be reported as physical voice 
 | arm64 iOS build | Generic physical-device Debug build | Passed |
 | Raw-audio privacy boundary | Capture requires on-device recognition, appends buffers directly to `SFSpeechAudioBufferRecognitionRequest`, has no file/network dependency, removes the input tap, ends audio, cancels recognition, and releases handlers during cleanup | Passed by source/runtime-boundary audit; physical observation still pending |
 | Backend authority | Command isolation, idempotency, confirmation, paging, and execution-time authority gates | Passed separately |
-| One-WAV physical STT | `clarify-en-01`, exact transcript, edit distance 0, 346 ms on iPhone 13 Pro / iOS 26.6 | Passed |
-| 12-WAV physical STT | 12/12 returned final transcripts; English 35/37 units correct, Cantonese 56/75, Simplified Chinese 14/71 | Failed accuracy gate |
-| 12-WAV physical pipeline | 2/9 commands exact, 3/3 clarifications, high-risk false executions 0, p95 total 577 ms | Failed semantic gate; safe failure |
+| Legacy one-WAV physical STT | `clarify-en-01`, exact transcript, edit distance 0, 346 ms on iPhone 13 Pro / iOS 26.6 | Passed |
+| Legacy 12-WAV physical STT | 12/12 returned final transcripts; English 35/37 units correct (94.6%), Cantonese 56/75 (74.7%), Simplified Chinese 14/71 (19.7%) | Failed accuracy gate |
+| Legacy 12-WAV physical pipeline | 2/9 commands exact, 3/3 clarifications, high-risk false executions 0, p95 total 577 ms | Failed semantic gate; safe failure |
+| SpeechAnalyzer one-WAV physical STT | `clarify-en-01`, exact transcript, edit distance 0, 605 ms | Passed |
+| SpeechAnalyzer 12-WAV physical STT | 12/12 final; English 37/37 (100%), Cantonese 65/75 (86.7%), Simplified Chinese 55/71 (77.5%); per-locale p95 405/482/354 ms | Failed per-locale accuracy gate |
+| SpeechAnalyzer 12-WAV physical pipeline | 3/9 commands exact, 3/3 clarifications, high-risk false executions 0, p95 STT 379 ms and p95 total 380 ms | Failed semantic gate; safe failure |
+| DictationTranscriber comparison | English 35/37 (94.6%), Cantonese 56/75 (74.7%), Simplified Chinese 51/71 (71.8%); per-locale p95 438/785/660 ms | Rejected; worse than SpeechTranscriber |
 | Full physical audio pipeline | All 144 profiles | Blocked by failed 12-WAV gate |
 | Live push-to-talk/VAD | Real microphone, stop/final transcript, clarification, confirmation, result/TTS | Pending |
 | Stability | memory, thermal, repeated commands, interruption/cancellation | Pending |
@@ -60,6 +64,21 @@ The 12-WAV run exposed a locale interoperability issue. Dataset locale identifie
 device. Production now resolves Simplified Mandarin to `zh-CN` and Hong Kong
 Cantonese to the first on-device-capable candidate among `yue-HK`, `yue-CN`, and
 `zh-HK`. This changes availability, not the accuracy gate.
+
+An iOS 26-only qualification adapter also exercised `SpeechAnalyzer` against the
+same physical files. Automatic mode selected `SpeechTranscriber` and improved both
+Chinese languages substantially, but still missed the 90% per-locale release gate
+and reached only 3/9 exact commands. Forced `DictationTranscriber` was slower and
+less accurate, including a one-time asset-install delay, so it is not a release
+candidate. The qualification adapter is deliberately file-only: it does not replace
+the live push-to-talk capture path, persist audio, or upload audio. Full 144-file and
+live migration work remain blocked until an STT backend passes the 12-file gate.
+
+The current official WhisperKit package requires iOS 16, while the frozen app floor
+is iOS 15. Adopting it therefore requires an explicit deployment-floor decision (or
+a separately isolated runtime target) before package integration. Local APFS free
+space was approximately 15 GiB during qualification, so model downloads and derived
+data must be budgeted and cleaned deliberately.
 
 The external package also has inconsistent provenance: `package_readme.md` says
 Mandarin and Cantonese were generated through MiniMax, while the signed manifest
