@@ -1014,6 +1014,7 @@ struct HomeVoiceDock: View {
                     controller.stop()
                 }
             }, perform: {})
+            .accessibilityElement(children: .ignore)
             .accessibilityLabel("Push to talk")
             .accessibilityHint("Hold to speak a command. Release to submit it for backend validation.")
             .accessibilityIdentifier("voice.dock")
