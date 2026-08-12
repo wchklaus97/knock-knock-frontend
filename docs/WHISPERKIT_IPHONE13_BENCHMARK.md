@@ -73,6 +73,27 @@ Cantonese transcription errors, so WhisperKit `base` remains rejected on both
 devices. This is an STT comparison only; Gemma 3 1B remains a separate intent
 parser for newer devices and was not used to alter these transcripts.
 
+### Matched real trilingual follow-up
+
+The same speaker subsequently recorded four English and four Simplified Mandarin
+utterances. Together with the four Cantonese recordings, this produced a matched
+12-recording set covering reminder, draft, high-risk message, and unsafe/unsupported
+clarification cases. The speaker self-reported limited English and Mandarin
+proficiency, so these numbers represent a realistic Hong Kong-accented user test,
+not a standard-accent population benchmark. The evaluation threshold was not
+lowered for accent.
+
+| Device | `en-HK` | `zh-Hans-HK` (Mandarin) | `yue-Hant-HK` | Overall p95 | Overall accuracy |
+|---|---:|---:|---:|---:|---:|
+| iPhone 13 Pro | 34.9% / 312 ms | 42.0% / 298 ms | 41.3% / 348 ms | 348 ms | 40.1% |
+| iPhone 17 Pro Max | 37.2% / 226 ms | 42.0% / 231 ms | 40.0% / 242 ms | 242 ms | 40.1% |
+
+Each language cell reports character/word-unit accuracy followed by that locale's
+p95 inference latency. iPhone 17 Pro Max reduced overall p95 by approximately 30%
+but did not improve overall accuracy. Errors included command verbs, `Alex`,
+`Orion`, amounts, and negation/safety wording. These transcripts therefore remain
+ineligible for semantic-model input or command execution.
+
 ## Reproduction
 
 Stage the validated Dataset v2 package first, then run one file:
