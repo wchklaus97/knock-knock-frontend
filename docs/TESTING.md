@@ -193,18 +193,20 @@ hashes, valid PCM signed 16-bit 16 kHz mono WAV data, matching hashes/durations,
 clipping, and the frozen safety gates.
 
 The received 2026-08-12 package had only 114 unique hashes because every English clean
-file shared one recording and every English fast-phone file shared another. Repair a
-normalized external copy without changing the original package:
+file shared one recording and every English fast-phone file shared another. Its manifest
+also declared only one voice ID for every locale. Regenerate a normalized external copy
+without changing the original package:
 
 ```bash
-scripts/regenerate-voice-dataset-v2-english.sh \
+scripts/regenerate-voice-dataset-v2-local.sh \
   /absolute/path/to/normalized-input \
   /absolute/path/to/new-repaired-output
 ```
 
-The repair uses alternating Apple `Daniel` and `Karen` English voices and records the
-exact macOS/FFmpeg provenance and transforms in the manifest. Validate the external
-package on Simulator:
+The local generator uses two native voices for English and Mandarin. macOS currently
+exposes only `Sinji` as a native Hong Kong Cantonese voice, so every Cantonese manifest
+row records that explicit provider-limitation exception. The exact macOS/FFmpeg provenance
+and transforms are recorded in the manifest. Validate the external package on Simulator:
 
 ```bash
 cd apps/ios

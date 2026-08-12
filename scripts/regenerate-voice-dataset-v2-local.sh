@@ -35,29 +35,38 @@ done
 mkdir -p "$output_root"
 cp -R "$source_root/." "$output_root/"
 
-temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/knock-knock-voice-en.XXXXXX")
+temporary_root=$(mktemp -d "${TMPDIR:-/tmp}/knock-knock-voice-local.XXXXXX")
 cleanup() {
   find "$temporary_root" -depth -delete
 }
 trap cleanup EXIT
 
 dataset_path="$output_root/$dataset_name"
-audio_root="$output_root/$generated_name/audio/en-HK"
-mkdir -p "$audio_root"
-
 index=0
-while IFS=$'\t' read -r example_id encoded_text; do
+while IFS=$'\t' read -r example_id locale encoded_text; do
   text=$(printf '%s' "$encoded_text" | base64 --decode)
-  if (( index % 2 == 0 )); then
-    clean_voice="Daniel"
-    fast_voice="Karen"
-  else
-    clean_voice="Karen"
-    fast_voice="Daniel"
-  fi
+  case "$locale" in
+    en-HK)
+      voices=("Daniel" "Karen")
+      ;;
+    zh-Hans-HK)
+      voices=("Tingting" "Eddy (Chinese (China mainland))")
+      ;;
+    yue-Hant-HK)
+      voices=("Sinji" "Sinji")
+      ;;
+    *)
+      echo "unsupported locale: $locale" >&2
+      exit 65
+      ;;
+  esac
+  clean_voice=${voices[$((index % 2))]}
+  fast_voice=${voices[$(((index + 1) % 2))]}
 
   clean_aiff="$temporary_root/${example_id}-clean.aiff"
   fast_aiff="$temporary_root/${example_id}-fast.aiff"
+  audio_root="$output_root/$generated_name/audio/$locale"
+  mkdir -p "$audio_root"
   clean_wav="$audio_root/${example_id}__clean_normal.wav"
   fast_wav="$audio_root/${example_id}__fast_phone.wav"
   noise_wav="$audio_root/${example_id}__noise_snr15.wav"
@@ -82,12 +91,12 @@ while IFS=$'\t' read -r example_id encoded_text; do
 
   index=$((index + 1))
 done < <(
-  jq -r '.examples[] | select(.locale == "en-HK") | [.id, (.text | @base64)] | @tsv' \
+  jq -r '.examples[] | [.id, .locale, (.text | @base64)] | @tsv' \
     "$dataset_path"
 )
 
-[[ $index -eq 16 ]] || {
-  echo "expected 16 English examples, generated $index" >&2
+[[ $index -eq 48 ]] || {
+  echo "expected 48 examples, generated $index" >&2
   exit 65
 }
 
@@ -98,17 +107,30 @@ engine="Apple say macOS $(sw_vers -productVersion); $(ffmpeg -version | sed -n '
 while IFS= read -r row; do
   relative_path=$(jq -r '.relative_path' <<<"$row")
   case "$relative_path" in
-    audio/en-HK/*)
+    audio/*)
       example_id=$(jq -r '.example_id' <<<"$row")
       profile=$(jq -r '.profile' <<<"$row")
+      locale=$(jq -r --arg id "$example_id" '.examples[] | select(.id == $id) | .locale' "$dataset_path")
       example_index=$(jq -r --arg id "$example_id" '.examples | map(.id) | index($id)' "$dataset_path")
-      if (( example_index % 2 == 0 )); then
-        clean_voice="Daniel"
-        fast_voice="Karen"
-      else
-        clean_voice="Karen"
-        fast_voice="Daniel"
-      fi
+      rotation_exception=""
+      case "$locale" in
+        en-HK)
+          voices=("Daniel" "Karen")
+          ;;
+        zh-Hans-HK)
+          voices=("Tingting" "Eddy (Chinese (China mainland))")
+          ;;
+        yue-Hant-HK)
+          voices=("Sinji" "Sinji")
+          rotation_exception="macOS 26.6 exposes one native zh_HK Cantonese voice"
+          ;;
+        *)
+          echo "unexpected locale in manifest: $locale" >&2
+          exit 65
+          ;;
+      esac
+      clean_voice=${voices[$((example_index % 2))]}
+      fast_voice=${voices[$(((example_index + 1) % 2))]}
       case "$profile" in
         clean_normal)
           voice_id="$clean_voice"
@@ -123,7 +145,7 @@ while IFS= read -r row; do
           transform="clean_normal plus deterministic pink non-speech noise at 15 dB SNR; limiter 0.95"
           ;;
         *)
-          echo "unexpected English profile: $profile" >&2
+          echo "unexpected profile: $profile" >&2
           exit 65
           ;;
       esac
@@ -136,6 +158,8 @@ while IFS= read -r row; do
         --arg engine "$engine" \
         --arg voice_id "$voice_id" \
         --arg transform "$transform" \
+        --arg locale "$locale" \
+        --arg rotation_exception "$rotation_exception" \
         --argjson duration_ms "$duration_milliseconds" \
         '.sha256 = $sha256
           | .duration_ms = $duration_ms
@@ -144,7 +168,10 @@ while IFS= read -r row; do
           | .source_type = "synthetic"
           | .tts_engine = $engine
           | .voice_id = $voice_id
-          | .transform = $transform' <<<"$row" >>"$updated_manifest"
+          | .transform = $transform
+          | .locale = $locale
+          | if $rotation_exception == "" then del(.voice_rotation_exception)
+            else .voice_rotation_exception = $rotation_exception end' <<<"$row" >>"$updated_manifest"
       ;;
     *)
       printf '%s\n' "$row" >>"$updated_manifest"
@@ -162,4 +189,4 @@ wav_count=$(find "$output_root/$generated_name/audio" -type f -name '*.wav' | wc
   exit 65
 }
 
-echo "English voice dataset repaired: rows=$row_count wav=$wav_count unique_hashes=$unique_hash_count"
+echo "Local voice dataset regenerated: rows=$row_count wav=$wav_count unique_hashes=$unique_hash_count"

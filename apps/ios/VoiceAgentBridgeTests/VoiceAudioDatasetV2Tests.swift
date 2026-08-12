@@ -113,6 +113,8 @@ private struct VoiceAudioManifestRow: Decodable {
     let sourceType: String
     let ttsEngine: String
     let voiceID: String
+    let locale: String?
+    let voiceRotationException: String?
 
     enum CodingKeys: String, CodingKey {
         case exampleID = "example_id"
@@ -125,6 +127,8 @@ private struct VoiceAudioManifestRow: Decodable {
         case sourceType = "source_type"
         case ttsEngine = "tts_engine"
         case voiceID = "voice_id"
+        case locale
+        case voiceRotationException = "voice_rotation_exception"
     }
 }
 
@@ -244,6 +248,28 @@ final class VoiceAudioDatasetV2Tests: XCTestCase {
 
         let examplesByID = Dictionary(uniqueKeysWithValues: dataset.examples.map { ($0.id, $0) })
         let profiles = Set(["clean_normal", "fast_phone", "noise_snr15"])
+        for locale in Set(dataset.examples.map(\.locale)) {
+            let localeIDs = Set(dataset.examples.filter { $0.locale == locale }.map(\.id))
+            let localeRows = manifest.filter { localeIDs.contains($0.exampleID) }
+            let voices = Set(localeRows.map(\.voiceID))
+            let documentedExceptions = Set(
+                localeRows.compactMap(\.voiceRotationException)
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            )
+            expect(
+                voices.count >= 2 || documentedExceptions.count == 1,
+                "\(locale) must rotate at least two native voices or document one provider limitation",
+                failures: &failures
+            )
+            if voices.count < 2 {
+                expect(
+                    localeRows.allSatisfy { $0.voiceRotationException != nil },
+                    "\(locale) voice-rotation exception must cover every manifest row",
+                    failures: &failures
+                )
+            }
+        }
         for example in dataset.examples {
             let rows = manifest.filter { $0.exampleID == example.id }
             expect(Set(rows.map(\.profile)) == profiles, "\(example.id) must have all three profiles", failures: &failures)
@@ -259,6 +285,9 @@ final class VoiceAudioDatasetV2Tests: XCTestCase {
             expect(row.sourceType == "synthetic", "\(row.exampleID) must be synthetic", failures: &failures)
             expect(!row.ttsEngine.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "\(row.exampleID) is missing tts_engine", failures: &failures)
             expect(!row.voiceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "\(row.exampleID) is missing voice_id", failures: &failures)
+            if let locale = row.locale {
+                expect(locale == examplesByID[row.exampleID]?.locale, "\(row.exampleID) manifest locale mismatch", failures: &failures)
+            }
 
             let audioURL = package.audioURL(for: row)
             guard let data = try? Data(contentsOf: audioURL) else {
