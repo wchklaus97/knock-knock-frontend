@@ -212,6 +212,9 @@ final class VoiceAgentBridgeUITests: XCTestCase {
     private func dismissKnockIfPresent(_ app: XCUIApplication) {
         let later = app.buttons["knock.later"]
         let deadline = Date().addingTimeInterval(15)
+        // The fixture is delivered asynchronously. Keep watching after the
+        // workspace first appears so a late SSE/REST reconciliation cannot
+        // place the full-screen knock overlay over the next assertion.
         while Date() < deadline {
             if later.exists {
                 later.tap()
@@ -237,6 +240,9 @@ final class VoiceAgentBridgeUITests: XCTestCase {
     private func launchForIsolatedFixture(suppressKnockOverlay: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["KNOCK_UI_TEST_RESET_AUTH"] = "1"
+        // Avoid simulator notification banners interrupting drawer/settings
+        // taps. In-app knock overlay behavior remains covered by the first
+        // UI test, while APNs/banner behavior is validated separately.
         app.launchEnvironment["KNOCK_UI_TEST_SUPPRESS_LOCAL_BANNER"] = "1"
         if suppressKnockOverlay {
             app.launchEnvironment["KNOCK_UI_TEST_SUPPRESS_KNOCK_OVERLAY"] = "1"
