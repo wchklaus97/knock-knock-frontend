@@ -57,6 +57,7 @@ final class CommandResponseTests: XCTestCase {
         }
         XCTAssertEqual(result["kind"], .string("history_search"))
         XCTAssertNil(response.error)
+        XCTAssertNil(response.serverAuthorizedUndoCommandID)
     }
 
     func testCommandResponseErrorDecodesRetryability() throws {
@@ -75,5 +76,26 @@ final class CommandResponseTests: XCTestCase {
         let response = try JSONDecoder().decode(CommandResponse.self, from: data)
         XCTAssertEqual(response.error?.code, "executor_unavailable")
         XCTAssertTrue(response.error?.retryable == true)
+    }
+
+    func testAbsentUndoCommandIDDecodesWithoutManufacturingAuthority() throws {
+        let data = Data(#"""
+        {
+          "command_id": "cmd_absent_undo",
+          "state": "succeeded",
+          "action": {
+            "title": "Create reminder",
+            "risk": "low",
+            "confirm_required": false,
+            "reversible": true
+          },
+          "result": {"kind": "reminder"},
+          "version": 4
+        }
+        """#.utf8)
+
+        let response = try JSONDecoder().decode(CommandResponse.self, from: data)
+        XCTAssertNil(response.undo_command_id)
+        XCTAssertNil(response.serverAuthorizedUndoCommandID)
     }
 }

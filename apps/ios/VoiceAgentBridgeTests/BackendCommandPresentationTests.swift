@@ -1138,3 +1138,113 @@ final class AppStoreVoiceLifecycleTests: XCTestCase {
         XCTAssertEqual(synthesizer.stopCount, stopsBeforeTransition + 1)
     }
 }
+
+@MainActor
+final class AppStoreServerOwnedUndoTests: XCTestCase {
+    func testReversibleSuccessWithoutServerAuthorizationClearsStaleUndo() {
+        withStore { store in
+            store.consumeCommandApplication(.init(
+                response: response(undoCommandID: "cmd_undo", version: 7),
+                outcome: .applied
+            ))
+            XCTAssertEqual(store.undoableCommandID, "cmd_undo")
+
+            store.consumeCommandApplication(.init(
+                response: response(undoCommandID: nil, version: 8),
+                outcome: .applied
+            ))
+
+            XCTAssertNil(store.undoableCommandID)
+        }
+    }
+
+    func testExactServerAuthorizedUndoAppearsAndSurvivesIdempotentReplay() {
+        withStore { store in
+            let authorized = response(undoCommandID: "cmd_undo", version: 7)
+            store.consumeCommandApplication(.init(response: authorized, outcome: .applied))
+            XCTAssertEqual(store.undoableCommandID, "cmd_undo")
+
+            store.consumeCommandApplication(.init(response: authorized, outcome: .idempotent))
+            XCTAssertEqual(store.undoableCommandID, "cmd_undo")
+
+            let mismatched = response(undoCommandID: "cmd_other", version: 8)
+            store.consumeCommandApplication(.init(response: mismatched, outcome: .applied))
+            XCTAssertNil(store.undoableCommandID)
+        }
+    }
+
+    func testSameVersionExpiryAndUndoResultTransitionClearAuthorization() {
+        withStore { store in
+            store.consumeCommandApplication(.init(
+                response: response(undoCommandID: "cmd_undo", version: 7),
+                outcome: .applied
+            ))
+
+            // The backend's TTL is evaluated at response time and can expire
+            // without incrementing the command version.
+            store.consumeCommandApplication(.init(
+                response: response(undoCommandID: nil, version: 7),
+                outcome: .idempotent
+            ))
+            XCTAssertNil(store.undoableCommandID)
+
+            store.consumeCommandApplication(.init(
+                response: response(undoCommandID: "cmd_undo", version: 8),
+                outcome: .applied
+            ))
+            store.consumeCommandApplication(.init(
+                response: response(
+                    result: .object([
+                        "kind": .string("reminder"),
+                        "undo": .object(["status": .string("cancelled")]),
+                    ]),
+                    undoCommandID: nil,
+                    version: 9
+                ),
+                outcome: .applied
+            ))
+            XCTAssertNil(store.undoableCommandID)
+        }
+    }
+
+    private func withStore(_ body: (AppStore) -> Void) {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knock-knock-server-undo-\(UUID().uuidString).sqlite")
+        defer {
+            for suffix in ["", "-wal", "-shm"] {
+                try? FileManager.default.removeItem(atPath: url.path + suffix)
+            }
+        }
+        body(AppStore(
+            localStore: SQLiteStore(databaseURL: url),
+            commandSynthesizer: RecordingVoiceSynthesizer(),
+            backgroundReconciliationDispatcher: BackgroundReconciliationDispatcher()
+        ))
+    }
+
+    private func response(
+        result: JSONValue? = .object(["kind": .string("reminder")]),
+        undoCommandID: String?,
+        version: Int
+    ) -> CommandResponse {
+        CommandResponse(
+            command_id: "cmd_undo",
+            state: "succeeded",
+            command: nil,
+            action: CommandActionMetadata(
+                title: "Create reminder",
+                risk: "low",
+                confirm_required: false,
+                reversible: true
+            ),
+            presentation: nil,
+            confirmation_token: nil,
+            result: result,
+            error: nil,
+            undo_command_id: undoCommandID,
+            version: version,
+            created_at: nil,
+            updated_at: nil
+        )
+    }
+}
