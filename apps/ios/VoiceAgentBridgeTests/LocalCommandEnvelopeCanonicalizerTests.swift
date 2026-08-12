@@ -22,6 +22,32 @@ final class LocalCommandEnvelopeCanonicalizerTests: XCTestCase {
         )
     }
 
+    func testSpeechLocaleFallbackKeepsMandarinAndCantoneseSeparated() {
+        XCTAssertEqual(
+            OnDeviceSpeechRecognizerFactory.fallbackIdentifiers(
+                for: Locale(identifier: "zh-Hans-HK")
+            ),
+            ["zh-CN", "zh-HK", "zh-TW"]
+        )
+        XCTAssertEqual(
+            OnDeviceSpeechRecognizerFactory.fallbackIdentifiers(
+                for: Locale(identifier: "zh-Hant-HK")
+            ),
+            ["zh-HK", "zh-TW", "zh-CN"]
+        )
+        XCTAssertEqual(
+            OnDeviceSpeechRecognizerFactory.fallbackIdentifiers(
+                for: Locale(identifier: "yue-Hant-HK")
+            ),
+            ["yue-HK", "yue-CN", "zh-HK"]
+        )
+        XCTAssertTrue(
+            OnDeviceSpeechRecognizerFactory.fallbackIdentifiers(
+                for: Locale(identifier: "en-HK")
+            ).isEmpty
+        )
+    }
+
     func testDeterministicParserProducesSafeEnvelopeAndClarifiesMissingRecipient() throws {
         let reference = try XCTUnwrap(
             LocalReminderDueAt.parseMilliseconds("2026-08-12T09:15:00+08:00")

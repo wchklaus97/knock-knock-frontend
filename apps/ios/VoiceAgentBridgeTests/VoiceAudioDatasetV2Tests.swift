@@ -702,7 +702,7 @@ final class VoiceAudioSTTEvaluationTests: XCTestCase {
                         relativePath: row.relativePath,
                         expectedText: example.text,
                         transcript: nil,
-                        errorCategory: "stt_failure",
+                        errorCategory: sttErrorCategory(error),
                         sttMilliseconds: elapsed,
                         editDistance: nil,
                         referenceUnitCount: nil
@@ -712,11 +712,35 @@ final class VoiceAudioSTTEvaluationTests: XCTestCase {
         }
 
         try writeReport(results, package: package, environment: environment)
+        let failureSummary = results.compactMap { result in
+            result.errorCategory.map { "\(result.exampleID)=\($0)" }
+        }.joined(separator: ", ")
+        let supportedLocales = supportedSpeechLocaleIdentifiers().joined(separator: ",")
         XCTAssertEqual(
             results.filter { $0.errorCategory == nil }.count,
             selectedRows.count,
-            "Every selected WAV must produce a final on-device transcript"
+            "Every selected WAV must produce a final on-device transcript. "
+                + "Failures: \(failureSummary); supported locales: \(supportedLocales)"
         )
+    }
+
+    private func sttErrorCategory(_ error: Error) -> String {
+        if let adapterError = error as? LocalVoiceAdapterError {
+            return String(describing: adapterError)
+        }
+        let nsError = error as NSError
+        return "\(nsError.domain):\(nsError.code)"
+    }
+
+    private func supportedSpeechLocaleIdentifiers() -> [String] {
+        SFSpeechRecognizer.supportedLocales()
+            .map(\.identifier)
+            .filter { identifier in
+                identifier.hasPrefix("en")
+                    || identifier.hasPrefix("zh")
+                    || identifier.hasPrefix("yue")
+            }
+            .sorted()
     }
 
     private func transcribe(_ url: URL, locale: Locale) async throws -> String {
@@ -958,7 +982,9 @@ final class VoiceAudioPipelineEvaluationTests: XCTestCase {
                 .split(separator: ",").map(String.init) ?? []
         )
         let ids = explicitIDs.isEmpty
-            ? Set(package.dataset.examples.map(\.id))
+            ? (environment["KNOCK_VOICE_AUDIO_HUMAN_SUBSET_ONLY"] == "1"
+                ? Set(package.dataset.humanRecordingSubset)
+                : Set(package.dataset.examples.map(\.id)))
             : explicitIDs
         let limit = Int(environment["KNOCK_VOICE_AUDIO_LIMIT"] ?? "")
         var rows = package.manifest.filter {

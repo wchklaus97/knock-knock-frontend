@@ -61,6 +61,57 @@ enum LocalVoiceAdapterError: Error, Equatable {
     case speechRecognizerUnavailable
 }
 
+enum OnDeviceSpeechRecognizerFactory {
+    static func make(locale requestedLocale: Locale) -> SFSpeechRecognizer? {
+        let supportedIdentifiers = Set(
+            SFSpeechRecognizer.supportedLocales().map { normalized($0.identifier) }
+        )
+        let requestedIdentifier = normalized(requestedLocale.identifier)
+        let requiresExplicitSupport = requestedIdentifier == "zh"
+            || requestedIdentifier.hasPrefix("zh-")
+            || requestedIdentifier == "yue"
+            || requestedIdentifier.hasPrefix("yue-")
+        if (!requiresExplicitSupport || supportedIdentifiers.contains(requestedIdentifier)),
+           let requestedRecognizer = SFSpeechRecognizer(locale: requestedLocale),
+           requestedRecognizer.supportsOnDeviceRecognition
+        {
+            return requestedRecognizer
+        }
+
+        for identifier in fallbackIdentifiers(for: requestedLocale) {
+            guard supportedIdentifiers.contains(normalized(identifier)),
+                  let recognizer = SFSpeechRecognizer(locale: Locale(identifier: identifier)),
+                  recognizer.supportsOnDeviceRecognition
+            else { continue }
+            return recognizer
+        }
+        return nil
+    }
+
+    static func fallbackIdentifiers(for locale: Locale) -> [String] {
+        let identifier = normalized(locale.identifier)
+        if identifier.hasPrefix("yue-") || identifier == "yue" {
+            // Apple devices may expose offline Hong Kong Cantonese through
+            // zh-HK even when yue-CN is listed but has no on-device asset.
+            return ["yue-HK", "yue-CN", "zh-HK"]
+        }
+        if identifier.hasPrefix("zh-") || identifier == "zh" {
+            if identifier.contains("-hant-") || identifier.hasSuffix("-hant") {
+                return ["zh-HK", "zh-TW", "zh-CN"]
+            }
+            if identifier.contains("-hans-") || identifier.hasSuffix("-hans") {
+                return ["zh-CN", "zh-HK", "zh-TW"]
+            }
+            return ["zh-HK", "zh-CN", "zh-TW"]
+        }
+        return []
+    }
+
+    private static func normalized(_ identifier: String) -> String {
+        identifier.replacingOccurrences(of: "_", with: "-").lowercased()
+    }
+}
+
 enum LocalVoiceRuntimePolicy {
     enum Strategy: Equatable {
         case deterministicParser
@@ -1422,7 +1473,7 @@ final class SystemOnDeviceSpeechTranscriber: LocalSpeechTranscribing {
     private var didFinish = false
 
     init(locale: Locale = .current) {
-        recognizer = SFSpeechRecognizer(locale: locale)
+        recognizer = OnDeviceSpeechRecognizerFactory.make(locale: locale)
     }
 
     func reset() throws {
@@ -1443,6 +1494,7 @@ final class SystemOnDeviceSpeechTranscriber: LocalSpeechTranscribing {
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         request.requiresOnDeviceRecognition = true
+        request.taskHint = .dictation
         self.request = request
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
             guard let self, !self.didFinish else { return }
