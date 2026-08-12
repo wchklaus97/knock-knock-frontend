@@ -185,6 +185,75 @@ The test's success oracle is the final backend message, not a local queued or op
 state. Raw microphone buffers stay in memory and are appended only to the on-device speech
 request; the app has no audio upload API and does not write an audio recording.
 
+## Voice Dataset v2 deterministic UAT
+
+Keep the dataset and all generated audio outside Git. A configured package is rejected
+unless it contains 48 examples, 144 manifest rows, 144 unique paths, 144 unique content
+hashes, valid PCM signed 16-bit 16 kHz mono WAV data, matching hashes/durations, no hard
+clipping, and the frozen safety gates.
+
+The received 2026-08-12 package had only 114 unique hashes because every English clean
+file shared one recording and every English fast-phone file shared another. Repair a
+normalized external copy without changing the original package:
+
+```bash
+scripts/regenerate-voice-dataset-v2-english.sh \
+  /absolute/path/to/normalized-input \
+  /absolute/path/to/new-repaired-output
+```
+
+The repair uses alternating Apple `Daniel` and `Karen` English voices and records the
+exact macOS/FFmpeg provenance and transforms in the manifest. Validate the external
+package on Simulator:
+
+```bash
+cd apps/ios
+xcodegen generate
+KNOCK_VOICE_AUDIO_DATASET_ROOT=/absolute/path/to/repaired-output \
+xcodebuild -project VoiceAgentBridge.xcodeproj -scheme VoiceAgentBridge \
+  -destination 'platform=iOS Simulator,name=iPhone 17' \
+  -only-testing:VoiceAgentBridgeTests/VoiceAudioDatasetV2Tests \
+  test
+```
+
+Stage only the validated JSON, manifest, and WAV files to the app's test Documents
+directory on an unlocked iPhone:
+
+```bash
+scripts/ios-voice-audio-uat.sh \
+  --device "$KNOCK_DEVICE_UDID" \
+  --dataset-root /absolute/path/to/repaired-output
+```
+
+The opt-in STT gate feeds each WAV through `SystemOnDeviceSpeechTranscriber`; the full
+Layer A gate then uses the staged signed Gemma artifact and strict production envelope
+policy. Start with one clean sample, then the 12-ID human subset, then all profiles. Speech
+Recognition permission remains human-controlled and an unauthorized device fails closed.
+
+```bash
+cd apps/ios
+xcodebuild -project VoiceAgentBridge.xcodeproj -scheme VoiceAgentBridge \
+  -destination "platform=iOS,id=$KNOCK_DEVICE_UDID" \
+  -only-testing:VoiceAgentBridgeTests/VoiceAudioSTTEvaluationTests \
+  KNOCK_RUN_VOICE_AUDIO_STT_UAT=1 \
+  KNOCK_VOICE_AUDIO_LIMIT=1 \
+  KNOCK_VOICE_AUDIO_PROFILES=clean_normal \
+  KNOCK_VOICE_RESULT_DEVICE=iphone13-pro \
+  test
+
+xcodebuild -project VoiceAgentBridge.xcodeproj -scheme VoiceAgentBridge \
+  -destination "platform=iOS,id=$KNOCK_DEVICE_UDID" \
+  -only-testing:VoiceAgentBridgeTests/VoiceAudioPipelineEvaluationTests \
+  KNOCK_RUN_VOICE_AUDIO_PIPELINE_UAT=1 \
+  KNOCK_VOICE_AUDIO_PROFILES=clean_normal,fast_phone,noise_snr15 \
+  KNOCK_VOICE_RESULT_DEVICE=iphone13-pro \
+  test
+```
+
+Machine-readable STT and pipeline results are written below the staged package's
+`voice-golden-v2-generated/results/` directory. No test creates an API client or uploads
+audio. Backend idempotency and confirmation remain a separate Layer B gate.
+
 `pnpm test:canonical:codex:multiturn` creates two idempotent events, resumes the
 same session between them, and verifies two distinct action results with one
 `chat_id`. `pnpm test:ios` uses `scripts/ios-test-fixture.sh`; the fixture creates a
