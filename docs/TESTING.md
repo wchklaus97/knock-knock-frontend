@@ -152,6 +152,39 @@ pnpm signoff:phone:multiturn
 open docs/PAPERCLIP.md
 ```
 
+## Opt-in physical voice production path
+
+The real voice test is intentionally excluded from normal CI and Simulator runs. It
+requires a connected iPhone, a backend that reports `knock_knock_model_enabled 1`,
+and the public key for the backend's signed model manifest. It validates the production
+model manager, push-to-talk, on-device transcription/intent generation, REST/SSE
+reconciliation, and the exact backend-owned `history_search.completed` presentation.
+
+```bash
+./scripts/ios-physical-voice-e2e.sh \
+  --device 741C39D8-8BFE-5E63-A06A-E194F3E0E5A2 \
+  --api-base https://knock-knock-backend-staging.wch-klaus.workers.dev \
+  --public-key /absolute/path/public-key.base64
+```
+
+For an explicit local Worker started with `--test-scheduled`, add only a loopback
+scheduled endpoint:
+
+```bash
+  --scheduled-url http://127.0.0.1:8787/__scheduled
+```
+
+The script never deploys or changes backend configuration. It fails before building when
+the model is disabled. When the test prints `SPEAK NOW`, say **“Show me what happened
+today”**, keep holding through at least one second of silence, and then confirm that the
+phone audibly says **“History search completed.”** First-use microphone and Speech
+Recognition permission prompts remain human-controlled. The retained `.xcresult` contains
+the model-ready and backend-result screenshots; DerivedData is removed automatically.
+
+The test's success oracle is the final backend message, not a local queued or optimistic
+state. Raw microphone buffers stay in memory and are appended only to the on-device speech
+request; the app has no audio upload API and does not write an audio recording.
+
 `pnpm test:canonical:codex:multiturn` creates two idempotent events, resumes the
 same session between them, and verifies two distinct action results with one
 `chat_id`. `pnpm test:ios` uses `scripts/ios-test-fixture.sh`; the fixture creates a

@@ -66,6 +66,16 @@
       </CommandLineArguments>
       <EnvironmentVariables>
          <EnvironmentVariable
+            key = "KNOCK_PHYSICAL_VOICE_COUNTDOWN_SECONDS"
+            value = "$(KNOCK_PHYSICAL_VOICE_COUNTDOWN_SECONDS)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_RUN_PHYSICAL_VOICE_E2E"
+            value = "$(KNOCK_RUN_PHYSICAL_VOICE_E2E)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
             key = "KNOCK_UI_TEST_API_BASE_URL"
             value = "$(KNOCK_API_BASE_URL)"
             isEnabled = "YES">
@@ -96,6 +106,16 @@
       </CommandLineArguments>
       <EnvironmentVariables>
          <EnvironmentVariable
+            key = "KNOCK_PHYSICAL_VOICE_COUNTDOWN_SECONDS"
+            value = "$(KNOCK_PHYSICAL_VOICE_COUNTDOWN_SECONDS)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_RUN_PHYSICAL_VOICE_E2E"
+            value = "$(KNOCK_RUN_PHYSICAL_VOICE_E2E)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
             key = "KNOCK_UI_TEST_API_BASE_URL"
             value = "$(KNOCK_API_BASE_URL)"
             isEnabled = "YES">
@@ -121,6 +141,16 @@
       <CommandLineArguments>
       </CommandLineArguments>
       <EnvironmentVariables>
+         <EnvironmentVariable
+            key = "KNOCK_PHYSICAL_VOICE_COUNTDOWN_SECONDS"
+            value = "$(KNOCK_PHYSICAL_VOICE_COUNTDOWN_SECONDS)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_RUN_PHYSICAL_VOICE_E2E"
+            value = "$(KNOCK_RUN_PHYSICAL_VOICE_E2E)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
          <EnvironmentVariable
             key = "KNOCK_UI_TEST_API_BASE_URL"
             value = "$(KNOCK_API_BASE_URL)"

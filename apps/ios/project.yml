@@ -62,6 +62,8 @@ targets:
         - VoiceAgentBridgeUITests
       environmentVariables:
         KNOCK_UI_TEST_API_BASE_URL: "$(KNOCK_API_BASE_URL)"
+        KNOCK_RUN_PHYSICAL_VOICE_E2E: "$(KNOCK_RUN_PHYSICAL_VOICE_E2E)"
+        KNOCK_PHYSICAL_VOICE_COUNTDOWN_SECONDS: "$(KNOCK_PHYSICAL_VOICE_COUNTDOWN_SECONDS)"
 
   VoiceAgentBridgeTests:
     type: bundle.unit-test

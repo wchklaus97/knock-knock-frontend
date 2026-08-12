@@ -97,6 +97,10 @@ private final class UITestFixtureClient {
         return sessionID
     }
 
+    func prepareAccount() async throws {
+        _ = try await ensureAccount()
+    }
+
     private func ensureAccount() async throws -> String {
         let credentials = ["email": email, "password": password]
         let registration = try await request(
@@ -326,5 +330,97 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         XCTAssertTrue(app.buttons["drawer.home"].waitForExistence(timeout: 15))
         XCTAssertTrue(app.staticTexts["PINNED"].waitForExistence(timeout: 15))
         attachScreenshot(app, named: "drawer")
+    }
+
+    func testPhysicalVoiceProductionPath() async throws {
+        guard ProcessInfo.processInfo.environment["KNOCK_RUN_PHYSICAL_VOICE_E2E"] == "1" else {
+            throw XCTSkip("Opt-in physical voice UAT is disabled")
+        }
+        #if targetEnvironment(simulator)
+        throw XCTSkip("Physical microphone, signed-model, and TTS UAT requires an iPhone")
+        #else
+        try await UITestFixtureClient().prepareAccount()
+        let app = launchForIsolatedFixture()
+        signInIfNeeded(app)
+        dismissKnockIfPresent(app)
+
+        let menu = app.buttons["drawer.open"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 30))
+        menu.tap()
+
+        let settings = app.buttons["drawer.settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 15))
+        settings.tap()
+
+        let voice = app.buttons["settings.voice"]
+        XCTAssertTrue(voice.waitForExistence(timeout: 15))
+        voice.tap()
+
+        let ready = app.staticTexts.matching(
+            NSPredicate(
+                format: "label BEGINSWITH %@ AND NOT label CONTAINS %@",
+                "Ready · Gemma",
+                "Update failed"
+            )
+        ).firstMatch
+        let prepareOrRefresh = app.buttons.matching(
+            NSPredicate(
+                format: "label CONTAINS %@ OR label CONTAINS %@",
+                "Prepare voice model",
+                "Refresh voice model"
+            )
+        ).firstMatch
+        XCTAssertTrue(
+            prepareOrRefresh.waitForExistence(timeout: 10),
+            "The Voice settings panel must expose model preparation."
+        )
+        prepareOrRefresh.tap()
+        let preparing = app.staticTexts.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "Preparing")
+        ).firstMatch
+        _ = preparing.waitForExistence(timeout: 15)
+        XCTAssertTrue(
+            ready.waitForExistence(timeout: 240),
+            "The production model manager must download and verify a signed Gemma model."
+        )
+        XCTAssertFalse(
+            app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Update failed"))
+                .firstMatch.exists,
+            "A stale model must not hide a failed forced refresh."
+        )
+        attachScreenshot(app, named: "physical-voice-model-ready")
+
+        let panelDone = app.navigationBars["Voice"].buttons["Done"]
+        XCTAssertTrue(panelDone.waitForExistence(timeout: 10))
+        panelDone.tap()
+        let settingsDone = app.buttons["settings.done"]
+        XCTAssertTrue(settingsDone.waitForExistence(timeout: 10))
+        settingsDone.tap()
+
+        let dock = app.descendants(matching: .any)["voice.dock"]
+        XCTAssertTrue(dock.waitForExistence(timeout: 30))
+
+        let configuredCountdown = Int(
+            ProcessInfo.processInfo.environment["KNOCK_PHYSICAL_VOICE_COUNTDOWN_SECONDS"] ?? "5"
+        ) ?? 5
+        let countdown = min(max(configuredCountdown, 3), 30)
+        print("[physical-voice-uat] SPEAK NOW in \(countdown)s: Show me what happened today")
+        Thread.sleep(forTimeInterval: TimeInterval(countdown))
+        dock.press(forDuration: 6)
+
+        let terminal = app.descendants(matching: .any).matching(
+            NSPredicate(
+                format: "identifier == %@ AND label CONTAINS %@",
+                "voice.command.presentation",
+                "History search completed. Review the results on screen."
+            )
+        ).firstMatch
+        XCTAssertTrue(
+            terminal.waitForExistence(timeout: 120),
+            "Only the backend-owned history_search.completed presentation is a success oracle."
+        )
+        attachScreenshot(app, named: "physical-voice-backend-result")
+        print("[physical-voice-uat] Human must confirm that TTS said: History search completed.")
+        #endif
     }
 }
