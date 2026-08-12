@@ -940,10 +940,10 @@ final class AppStore: ObservableObject {
         UserDefaults.standard.set(email, forKey: "vab.email")
     }
 
-    /// Downloads and verifies the configured Gemma artifact on demand. The
-    /// model is never activated until the app's pinned public key verifies its
-    /// manifest and bytes; if the release has not configured a model, the UI
-    /// reports that explicitly and the voice button remains unavailable.
+    /// Selects the approved local command runtime. iPhone 13 Pro-class devices
+    /// use the fail-closed deterministic parser; other supported devices fetch
+    /// Gemma on demand and never activate it until the pinned public key and
+    /// native runtime probe both succeed.
     func prepareLocalVoiceModel(forceRefresh: Bool = false) async {
         guard let scope = localVoiceWorkScope else {
             voiceModelStatus = "Sign in before preparing voice"
@@ -975,6 +975,21 @@ final class AppStore: ObservableObject {
         scope: LocalVoiceWorkScope
     ) async {
         guard localVoiceScopeIsCurrent(scope) else { return }
+        if LocalVoiceRuntimePolicy.strategy() == .deterministicParser {
+            let previousController = voiceController
+            let replacement = makeVoiceController(
+                generator: DeterministicCommandGenerator(deviceID: scope.deviceID),
+                scope: scope
+            )
+            guard localVoiceScopeIsCurrent(scope) else {
+                replacement.abort()
+                return
+            }
+            previousController?.abort()
+            voiceController = replacement
+            voiceModelStatus = "Ready · Safe parser"
+            return
+        }
         voiceModelStatus = "Preparing on-device voice model…"
         let previousController = voiceController
         var modelBeforeAttempt: InstalledModel?
@@ -1079,6 +1094,13 @@ final class AppStore: ObservableObject {
         scope: LocalVoiceWorkScope
     ) throws -> LocalVoiceCommandController {
         let generator = try manager.makeCommandGenerator(deviceID: scope.deviceID)
+        return makeVoiceController(generator: generator, scope: scope)
+    }
+
+    private func makeVoiceController(
+        generator: LocalCommandGenerating,
+        scope: LocalVoiceWorkScope
+    ) -> LocalVoiceCommandController {
         return LocalVoiceCommandController(
             generator: generator,
             submit: { [weak self] envelope in

@@ -259,6 +259,20 @@ Machine-readable STT and pipeline results are written below the staged package's
 `voice-golden-v2-generated/results/` directory. No test creates an API client or uploads
 audio. Backend idempotency and confirmation remain a separate Layer B gate.
 
+### iPhone 13 runtime policy
+
+`iPhone14,2` (iPhone 13 Pro) and `iPhone14,3` (iPhone 13 Pro Max) use the
+fail-closed `DeterministicCommandGenerator`. The rejected 270M model is never loaded on
+these devices. The parser recognizes only the four allowlisted command shapes, grounds
+arguments in the transcript, and emits the same strict `CommandEnvelope` used by the
+signed Gemma path. Unsupported, incomplete, negated, compound, or policy-override
+utterances require clarification. Newer supported devices continue to use the signed,
+runtime-probed Gemma artifact.
+
+The transcript-level Dataset v2 gate validates all 48 commands against this iPhone 13
+policy. Physical WAV UAT remains separate because it also measures Apple's local STT,
+latency, device temperature, memory pressure, and the complete push-to-talk lifecycle.
+
 `pnpm test:canonical:codex:multiturn` creates two idempotent events, resumes the
 same session between them, and verifies two distinct action results with one
 `chat_id`. `pnpm test:ios` uses `scripts/ios-test-fixture.sh`; the fixture creates a

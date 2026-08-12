@@ -1,4 +1,5 @@
 import AVFoundation
+import Darwin
 import Foundation
 import Speech
 
@@ -58,6 +59,37 @@ enum LocalVoiceAdapterError: Error, Equatable {
     case modelArtifactMissing
     case invalidModelOutput
     case speechRecognizerUnavailable
+}
+
+enum LocalVoiceRuntimePolicy {
+    enum Strategy: Equatable {
+        case deterministicParser
+        case signedGemma
+    }
+
+    static func strategy(machineIdentifier: String = currentMachineIdentifier()) -> Strategy {
+        switch machineIdentifier {
+        case "iPhone14,2", "iPhone14,3":
+            return .deterministicParser
+        default:
+            return .signedGemma
+        }
+    }
+
+    private static func currentMachineIdentifier() -> String {
+        if let simulated = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"],
+           !simulated.isEmpty
+        {
+            return simulated
+        }
+        var systemInfo = utsname()
+        guard uname(&systemInfo) == 0 else { return "unknown" }
+        return withUnsafePointer(to: &systemInfo.machine) { pointer in
+            pointer.withMemoryRebound(to: CChar.self, capacity: 1) {
+                String(cString: $0)
+            }
+        }
+    }
 }
 
 enum LocalCommandPrompt {
@@ -522,7 +554,8 @@ enum LocalVoiceArgumentGrounder {
                 modelArguments,
                 keys: ["recipient", "to", "body", "content", "message"]
             )
-            guard let recipient = string(modelArguments, aliases: ["recipient", "to"]),
+            guard let recipient = recipient(from: transcript)
+                ?? string(modelArguments, aliases: ["recipient", "to"]),
                   isGrounded(recipient, in: transcript)
             else {
                 throw clarification()
@@ -674,6 +707,23 @@ enum LocalVoiceArgumentGrounder {
         return nil
     }
 
+    private static func recipient(from transcript: String) -> String? {
+        let patterns = [
+            #"(?i)^\s*(?:please\s+|can you\s+|could you\s+|would you\s+)?send\s+([\p{L}\p{M}.'’-]+)\s+(?:a\s+)?message\b"#,
+            #"(?i)^\s*(?:please\s+|can you\s+|could you\s+|would you\s+)?(?:message|text|tell)\s+([\p{L}\p{M}.'’-]+)\b"#,
+            #"^\s*(?:请|請|麻烦|麻煩|帮我|幫我)?\s*(?:发消息给|發消息給|发送消息给|發送消息給|告诉|告訴)\s*([^\s，,。.!?]+)"#,
+            #"(?i)^\s*send\s+(?:個|个)?\s*(?:訊息|消息)\s*(?:畀|俾|给|給)\s*([^\s，,。.!?]+)"#,
+            #"^\s*(?:話畀|话畀|話俾|话俾|話給|话给)\s*([^\s，,。.!?]+)"#,
+        ]
+        for pattern in patterns {
+            if let value = firstCapture(pattern: pattern, in: transcript) {
+                let candidate = trimmed(value)
+                if !candidate.isEmpty { return candidate }
+            }
+        }
+        return nil
+    }
+
     private static func normalized(_ value: String) -> String {
         trimmed(value)
             .lowercased()
@@ -701,6 +751,76 @@ enum LocalVoiceArgumentGrounder {
 
     private static func clarification() -> LocalCommandEnvelopeCanonicalizerError {
         .clarificationRequired(.invalidModelOutput)
+    }
+}
+
+/// A fail-closed command parser for iPhone 13-class devices. It recognizes
+/// only the four allowlisted command shapes, grounds every argument in the
+/// transcript, and asks for clarification whenever a required slot is absent.
+/// It never executes directly; its output still crosses the strict envelope
+/// and authenticated backend boundaries used by the signed-model path.
+final class DeterministicCommandGenerator: LocalCommandGenerating {
+    static let version = "deterministic-rules-1.0.0"
+
+    private let envelopeContext: LocalCommandEnvelopeContext
+    private let canonicalizer: LocalCommandEnvelopeCanonicalizer
+    private let nowMilliseconds: () -> Int64
+
+    init(
+        locale: Locale = .current,
+        timezone: TimeZone = .current,
+        deviceID: String? = nil,
+        sessionID: String? = nil,
+        identifierFactory: @escaping () -> String = { UUID().uuidString.lowercased() },
+        nowMilliseconds: @escaping () -> Int64 = LocalCommandClock.currentMilliseconds
+    ) {
+        envelopeContext = LocalCommandEnvelopeContext(
+            modelVersion: Self.version,
+            locale: locale,
+            timezone: timezone,
+            deviceID: deviceID,
+            sessionID: sessionID
+        )
+        canonicalizer = LocalCommandEnvelopeCanonicalizer(makeIdentifier: identifierFactory)
+        self.nowMilliseconds = nowMilliseconds
+    }
+
+    func generateCommand(
+        for transcript: String,
+        completion: @escaping (Result<Data, Error>) -> Void
+    ) {
+        let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            guard let intent = try LocalVoiceUtterancePreflight.intentHint(for: trimmed),
+                  let timezone = TimeZone(identifier: envelopeContext.timezone)
+            else {
+                throw LocalCommandEnvelopeCanonicalizerError.clarificationRequired(
+                    .unsupportedIntent
+                )
+            }
+            let arguments = try LocalVoiceArgumentGrounder.arguments(
+                for: intent,
+                modelArguments: [:],
+                transcript: trimmed,
+                referenceMilliseconds: nowMilliseconds(),
+                timezone: timezone
+            )
+            let modelOutput = try JSONSerialization.data(
+                withJSONObject: [
+                    "intent": intent,
+                    "args": arguments,
+                    "confidence": 1.0,
+                ],
+                options: [.sortedKeys]
+            )
+            completion(.success(try canonicalizer.canonicalize(
+                modelOutput: modelOutput,
+                context: envelopeContext,
+                validationMilliseconds: nowMilliseconds()
+            )))
+        } catch {
+            completion(.failure(error))
+        }
     }
 }
 

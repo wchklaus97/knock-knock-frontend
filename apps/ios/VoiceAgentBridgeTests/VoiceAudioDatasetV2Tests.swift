@@ -415,6 +415,108 @@ final class VoiceAudioDatasetV2Tests: XCTestCase {
     }
 }
 
+final class VoiceAudioDeterministicParserEvaluationTests: XCTestCase {
+    func testConfiguredGoldenTranscriptsMeetIPhone13CommandSafetyGates() throws {
+        guard let package = try VoiceAudioDatasetV2Package.resolve() else {
+            throw XCTSkip("Voice Dataset v2 is not configured for this test run")
+        }
+        let dataset = package.dataset
+        let referenceMilliseconds = try XCTUnwrap(
+            LocalReminderDueAt.parseMilliseconds(dataset.referenceNow)
+        )
+        let timezone = try XCTUnwrap(TimeZone(identifier: dataset.timezone))
+        var commandCount = 0
+        var correctCommands = 0
+        var clarificationCount = 0
+        var correctClarifications = 0
+        var highRiskFalseExecutions = 0
+        var localeCorrect: [String: Int] = [:]
+        var localeTotal: [String: Int] = [:]
+        var failures: [String] = []
+
+        for example in dataset.examples {
+            let generator = DeterministicCommandGenerator(
+                locale: Locale(identifier: example.locale),
+                timezone: timezone,
+                deviceID: "iphone13-pro",
+                identifierFactory: { example.id },
+                nowMilliseconds: { referenceMilliseconds }
+            )
+            var generated: Result<Data, Error>?
+            generator.generateCommand(for: example.text) { generated = $0 }
+
+            if example.expectedOutcome == "clarification" {
+                clarificationCount += 1
+                do {
+                    let data = try XCTUnwrap(generated).get()
+                    let envelope = try CommandEnvelope.decodeStrict(from: data)
+                    if envelope.riskLevel == .high { highRiskFalseExecutions += 1 }
+                    failures.append("\(example.id) executed \(envelope.intent) instead of clarifying")
+                } catch {
+                    if LocalVoiceCommandErrorPolicy.requiresClarification(error) {
+                        correctClarifications += 1
+                    } else {
+                        failures.append("\(example.id) failed without clarification: \(error)")
+                    }
+                }
+                continue
+            }
+
+            commandCount += 1
+            localeTotal[example.locale, default: 0] += 1
+            do {
+                let envelope = try CommandEnvelope.decodeStrict(
+                    from: try XCTUnwrap(generated).get()
+                )
+                let expectedArguments = example.expectedArguments?.mapValues(JSONValue.string) ?? [:]
+                let isCorrect = envelope.intent == example.expectedIntent
+                    && envelope.args == expectedArguments
+                    && envelope.modelVersion == DeterministicCommandGenerator.version
+                    && (envelope.intent != "send_message"
+                        || (envelope.riskLevel == .high && envelope.needsConfirmation))
+                if isCorrect {
+                    correctCommands += 1
+                    localeCorrect[example.locale, default: 0] += 1
+                } else {
+                    failures.append(
+                        "\(example.id) mismatch: intent=\(envelope.intent) args=\(envelope.args)"
+                    )
+                }
+            } catch {
+                failures.append("\(example.id) unexpectedly clarified or failed: \(error)")
+            }
+        }
+
+        let commandAccuracy = Double(correctCommands) / Double(max(1, commandCount))
+        let clarificationRecall = Double(correctClarifications)
+            / Double(max(1, clarificationCount))
+        XCTAssertGreaterThanOrEqual(
+            commandAccuracy,
+            dataset.releaseGates.minimumEndToEndCommandSemanticAccuracy,
+            failures.joined(separator: "\n")
+        )
+        for (locale, total) in localeTotal {
+            let accuracy = Double(localeCorrect[locale, default: 0]) / Double(total)
+            XCTAssertGreaterThanOrEqual(
+                accuracy,
+                dataset.releaseGates.minimumAccuracyPerLocale,
+                "\(locale) transcript accuracy \(accuracy)\n\(failures.joined(separator: "\n"))"
+            )
+        }
+        XCTAssertGreaterThanOrEqual(
+            clarificationRecall,
+            dataset.releaseGates.minimumClarificationRecall,
+            failures.joined(separator: "\n")
+        )
+        XCTAssertEqual(
+            highRiskFalseExecutions,
+            dataset.releaseGates.maximumHighRiskFalseExecutions,
+            failures.joined(separator: "\n")
+        )
+        XCTAssertTrue(failures.isEmpty, failures.joined(separator: "\n"))
+    }
+}
+
 /// Opt-in Layer A entry point. The WAV bytes are decoded with AVAudioFile and
 /// fed into the same SystemOnDeviceSpeechTranscriber used by push-to-talk.
 /// It deliberately refuses to run if package integrity fails first.
