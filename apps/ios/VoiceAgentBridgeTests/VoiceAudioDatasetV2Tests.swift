@@ -102,6 +102,42 @@ private struct VoiceAudioSTTReport: Codable {
     }
 }
 
+private struct VoiceTranscriptPolicyReport: Codable {
+    let schemaVersion: Int
+    let evidenceLevel: String
+    let targetDevice: String
+    let runtimeStrategy: String
+    let runtimeVersion: String
+    let sampleCount: Int
+    let commandCorrect: Int
+    let commandCount: Int
+    let clarificationCorrect: Int
+    let clarificationCount: Int
+    let highRiskFalseExecutions: Int
+    let commandAccuracyByLocale: [String: Double]
+    let intentP50Microseconds: Int
+    let intentP95Microseconds: Int
+    let failedExampleIDs: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case evidenceLevel = "evidence_level"
+        case targetDevice = "target_device"
+        case runtimeStrategy = "runtime_strategy"
+        case runtimeVersion = "runtime_version"
+        case sampleCount = "sample_count"
+        case commandCorrect = "command_correct"
+        case commandCount = "command_count"
+        case clarificationCorrect = "clarification_correct"
+        case clarificationCount = "clarification_count"
+        case highRiskFalseExecutions = "high_risk_false_executions"
+        case commandAccuracyByLocale = "command_accuracy_by_locale"
+        case intentP50Microseconds = "intent_p50_us"
+        case intentP95Microseconds = "intent_p95_us"
+        case failedExampleIDs = "failed_example_ids"
+    }
+}
+
 private struct VoiceAudioManifestRow: Decodable {
     let exampleID: String
     let profile: String
@@ -433,6 +469,8 @@ final class VoiceAudioDeterministicParserEvaluationTests: XCTestCase {
         var localeCorrect: [String: Int] = [:]
         var localeTotal: [String: Int] = [:]
         var failures: [String] = []
+        var failedExampleIDs: [String] = []
+        var intentMicroseconds: [Int] = []
 
         for example in dataset.examples {
             let generator = DeterministicCommandGenerator(
@@ -443,7 +481,10 @@ final class VoiceAudioDeterministicParserEvaluationTests: XCTestCase {
                 nowMilliseconds: { referenceMilliseconds }
             )
             var generated: Result<Data, Error>?
+            let generationStart = DispatchTime.now().uptimeNanoseconds
             generator.generateCommand(for: example.text) { generated = $0 }
+            let elapsedNanoseconds = DispatchTime.now().uptimeNanoseconds - generationStart
+            intentMicroseconds.append(Int(elapsedNanoseconds / 1_000))
 
             if example.expectedOutcome == "clarification" {
                 clarificationCount += 1
@@ -451,11 +492,13 @@ final class VoiceAudioDeterministicParserEvaluationTests: XCTestCase {
                     let data = try XCTUnwrap(generated).get()
                     let envelope = try CommandEnvelope.decodeStrict(from: data)
                     if envelope.riskLevel == .high { highRiskFalseExecutions += 1 }
+                    failedExampleIDs.append(example.id)
                     failures.append("\(example.id) executed \(envelope.intent) instead of clarifying")
                 } catch {
                     if LocalVoiceCommandErrorPolicy.requiresClarification(error) {
                         correctClarifications += 1
                     } else {
+                        failedExampleIDs.append(example.id)
                         failures.append("\(example.id) failed without clarification: \(error)")
                     }
                 }
@@ -478,11 +521,13 @@ final class VoiceAudioDeterministicParserEvaluationTests: XCTestCase {
                     correctCommands += 1
                     localeCorrect[example.locale, default: 0] += 1
                 } else {
+                    failedExampleIDs.append(example.id)
                     failures.append(
                         "\(example.id) mismatch: intent=\(envelope.intent) args=\(envelope.args)"
                     )
                 }
             } catch {
+                failedExampleIDs.append(example.id)
                 failures.append("\(example.id) unexpectedly clarified or failed: \(error)")
             }
         }
@@ -490,6 +535,53 @@ final class VoiceAudioDeterministicParserEvaluationTests: XCTestCase {
         let commandAccuracy = Double(correctCommands) / Double(max(1, commandCount))
         let clarificationRecall = Double(correctClarifications)
             / Double(max(1, clarificationCount))
+        let accuracyByLocale = Dictionary(uniqueKeysWithValues: localeTotal.map { locale, total in
+            (locale, Double(localeCorrect[locale, default: 0]) / Double(max(1, total)))
+        })
+        let orderedTimings = intentMicroseconds.sorted()
+        func timingPercentile(_ percentile: Double) -> Int {
+            guard !orderedTimings.isEmpty else { return 0 }
+            let index = max(
+                0,
+                min(
+                    orderedTimings.count - 1,
+                    Int(ceil(Double(orderedTimings.count) * percentile)) - 1
+                )
+            )
+            return orderedTimings[index]
+        }
+        let report = VoiceTranscriptPolicyReport(
+            schemaVersion: 1,
+            evidenceLevel: "synthetic_transcript_policy_simulation",
+            targetDevice: "iphone13-pro",
+            runtimeStrategy: "deterministic_parser",
+            runtimeVersion: DeterministicCommandGenerator.version,
+            sampleCount: dataset.examples.count,
+            commandCorrect: correctCommands,
+            commandCount: commandCount,
+            clarificationCorrect: correctClarifications,
+            clarificationCount: clarificationCount,
+            highRiskFalseExecutions: highRiskFalseExecutions,
+            commandAccuracyByLocale: accuracyByLocale,
+            intentP50Microseconds: timingPercentile(0.50),
+            intentP95Microseconds: timingPercentile(0.95),
+            failedExampleIDs: failedExampleIDs
+        )
+        let reportDirectory = package.rootURL
+            .appendingPathComponent("voice-golden-v2-generated", isDirectory: true)
+            .appendingPathComponent("results", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: reportDirectory,
+            withIntermediateDirectories: true
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(report).write(
+            to: reportDirectory.appendingPathComponent(
+                "iphone13-pro-transcript-policy-results.json"
+            ),
+            options: .atomic
+        )
         XCTAssertGreaterThanOrEqual(
             commandAccuracy,
             dataset.releaseGates.minimumEndToEndCommandSemanticAccuracy,
@@ -770,6 +862,8 @@ private struct VoiceAudioPipelineResult: Codable {
 private struct VoiceAudioPipelineSummary: Codable {
     let schemaVersion: Int
     let device: String
+    let runtimeStrategy: String
+    let runtimeVersion: String
     let sampleCount: Int
     let commandCorrect: Int
     let commandCount: Int
@@ -788,6 +882,8 @@ private struct VoiceAudioPipelineSummary: Codable {
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case device
+        case runtimeStrategy = "runtime_strategy"
+        case runtimeVersion = "runtime_version"
         case sampleCount = "sample_count"
         case commandCorrect = "command_correct"
         case commandCount = "command_count"
@@ -806,7 +902,8 @@ private struct VoiceAudioPipelineSummary: Codable {
 }
 
 /// Opt-in complete deterministic Layer A gate:
-/// WAV -> production on-device STT -> signed Gemma -> strict envelope policy.
+/// WAV -> production on-device STT -> production-selected command runtime ->
+/// strict envelope policy.
 /// It never creates an API client, so clarification samples cannot submit.
 final class VoiceAudioPipelineEvaluationTests: XCTestCase {
     func testConfiguredAudioMeetsSemanticAndSafetyGates() async throws {
@@ -829,21 +926,28 @@ final class VoiceAudioPipelineEvaluationTests: XCTestCase {
             XCTFail("Speech recognition permission must be authorized before Layer A UAT")
             return
         }
-        let documents = try XCTUnwrap(
-            FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-        )
-        guard let modelInputs = try VoiceModelUATInputResolver().resolve(
-            environment: environment,
-            documentsDirectory: documents
-        ) else {
-            XCTFail("A signed staged model is required for Layer A UAT")
-            return
+        let runtimeStrategy = LocalVoiceRuntimePolicy.strategy()
+        var modelInputs: VoiceModelUATInputs?
+        var modelManifest: ModelManifest?
+        if runtimeStrategy == .signedGemma {
+            let documents = try XCTUnwrap(
+                FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            )
+            guard let resolvedInputs = try VoiceModelUATInputResolver().resolve(
+                environment: environment,
+                documentsDirectory: documents
+            ) else {
+                XCTFail("A signed staged model is required for signed-Gemma Layer A UAT")
+                return
+            }
+            let resolvedManifest = try ModelManifest.decodeStrict(
+                from: Data(contentsOf: resolvedInputs.manifestURL)
+            )
+            try Ed25519ModelArtifactVerifier(publicKeyRawRepresentation: resolvedInputs.publicKey)
+                .verifyArtifact(at: resolvedInputs.artifactURL, against: resolvedManifest)
+            modelInputs = resolvedInputs
+            modelManifest = resolvedManifest
         }
-        let modelManifest = try ModelManifest.decodeStrict(
-            from: Data(contentsOf: modelInputs.manifestURL)
-        )
-        try Ed25519ModelArtifactVerifier(publicKeyRawRepresentation: modelInputs.publicKey)
-            .verifyArtifact(at: modelInputs.artifactURL, against: modelManifest)
 
         let profiles = Set(
             environment["KNOCK_VOICE_AUDIO_PROFILES"]?
@@ -873,14 +977,27 @@ final class VoiceAudioPipelineEvaluationTests: XCTestCase {
         var results: [VoiceAudioPipelineResult] = []
 
         for locale in Set(rows.compactMap { examples[$0.exampleID]?.locale }).sorted() {
-            let generator = try GemmaCommandGenerator(
-                modelURL: modelInputs.artifactURL,
-                modelVersion: modelManifest.modelVersion,
-                useGPU: environment["KNOCK_VOICE_USE_GPU"] == "1",
-                locale: Locale(identifier: locale),
-                timezone: timezone,
-                nowMilliseconds: { referenceMilliseconds }
-            )
+            let generator: LocalCommandGenerating
+            switch runtimeStrategy {
+            case .deterministicParser:
+                generator = DeterministicCommandGenerator(
+                    locale: Locale(identifier: locale),
+                    timezone: timezone,
+                    deviceID: "iphone13-pro",
+                    nowMilliseconds: { referenceMilliseconds }
+                )
+            case .signedGemma:
+                let inputs = try XCTUnwrap(modelInputs)
+                let manifest = try XCTUnwrap(modelManifest)
+                generator = try GemmaCommandGenerator(
+                    modelURL: inputs.artifactURL,
+                    modelVersion: manifest.modelVersion,
+                    useGPU: environment["KNOCK_VOICE_USE_GPU"] == "1",
+                    locale: Locale(identifier: locale),
+                    timezone: timezone,
+                    nowMilliseconds: { referenceMilliseconds }
+                )
+            }
             for row in rows where examples[row.exampleID]?.locale == locale {
                 let example = try XCTUnwrap(examples[row.exampleID])
                 let totalStart = ProcessInfo.processInfo.systemUptime
@@ -949,6 +1066,12 @@ final class VoiceAudioPipelineEvaluationTests: XCTestCase {
         let summary = VoiceAudioPipelineSummary(
             schemaVersion: 1,
             device: environment["KNOCK_VOICE_RESULT_DEVICE"] ?? "unspecified-ios-device",
+            runtimeStrategy: runtimeStrategy == .deterministicParser
+                ? "deterministic_parser"
+                : "signed_gemma",
+            runtimeVersion: runtimeStrategy == .deterministicParser
+                ? DeterministicCommandGenerator.version
+                : try XCTUnwrap(modelManifest).modelVersion,
             sampleCount: results.count,
             commandCorrect: commandCorrect,
             commandCount: commandResults.count,

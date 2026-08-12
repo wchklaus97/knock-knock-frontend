@@ -231,9 +231,12 @@ scripts/ios-voice-audio-uat.sh \
 ```
 
 The opt-in STT gate feeds each WAV through `SystemOnDeviceSpeechTranscriber`; the full
-Layer A gate then uses the staged signed Gemma artifact and strict production envelope
-policy. Start with one clean sample, then the 12-ID human subset, then all profiles. Speech
-Recognition permission remains human-controlled and an unauthorized device fails closed.
+Layer A gate then selects the same command runtime as production and applies the strict
+envelope policy. iPhone 13 Pro/Pro Max use the deterministic parser and do not require a
+staged model; newer Gemma devices require the staged signed artifact. The machine report
+records the selected runtime and version. Start with one clean sample, then the 12-ID human
+subset, then all profiles. Speech Recognition permission remains human-controlled and an
+unauthorized device fails closed.
 
 ```bash
 cd apps/ios
