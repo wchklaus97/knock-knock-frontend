@@ -158,6 +158,7 @@ final class LocalVoiceCommandController: ObservableObject {
     private let generator: LocalCommandGenerating
     private let submit: @Sendable (CommandEnvelope) async throws -> CommandResponse
     private let synthesizer: VoiceSynthesizing
+    private let operationIsAllowed: () -> Bool
     private let permissionsAreGranted: PermissionStatusProvider
     private let requestPermissions: PermissionRequester
 
@@ -172,6 +173,7 @@ final class LocalVoiceCommandController: ObservableObject {
         submit: @escaping @Sendable (CommandEnvelope) async throws -> CommandResponse,
         capture: PushToTalkVoiceCapturing = PushToTalkVoiceCapture(),
         synthesizer: VoiceSynthesizing = SystemVoiceSynthesizer(),
+        operationIsAllowed: @escaping () -> Bool = { true },
         permissionsAreGranted: @escaping PermissionStatusProvider = {
             SFSpeechRecognizer.authorizationStatus() == .authorized
                 && AVAudioSession.sharedInstance().recordPermission == .granted
@@ -184,6 +186,7 @@ final class LocalVoiceCommandController: ObservableObject {
         self.generator = generator
         self.submit = submit
         self.synthesizer = synthesizer
+        self.operationIsAllowed = operationIsAllowed
         self.permissionsAreGranted = permissionsAreGranted
         self.requestPermissions = requestPermissions
     }
@@ -391,10 +394,11 @@ final class LocalVoiceCommandController: ObservableObject {
     }
 
     private func isCurrent(_ sessionID: UInt64) -> Bool {
-        activeSessionID == sessionID
+        activeSessionID == sessionID && operationIsAllowed()
     }
 
     private var canStart: Bool {
+        guard operationIsAllowed() else { return false }
         switch state {
         case .idle, .clarificationRequired, .submitted, .failed:
             return true

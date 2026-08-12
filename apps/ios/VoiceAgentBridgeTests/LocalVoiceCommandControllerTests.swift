@@ -80,8 +80,12 @@ private final class RecordingVoiceSynthesizer: VoiceSynthesizing {
     private(set) var spoken: [String] = []
     private(set) var stopCount = 0
 
-    func speak(_ text: String) {
+    func speak(
+        _ text: String,
+        completion: @escaping (VoiceSynthesisResult) -> Void
+    ) {
         spoken.append(text)
+        completion(.finished)
     }
 
     func stop() {
@@ -243,6 +247,43 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
         generator.completeNext(with: .success(Self.envelopeData(query: "search history")))
         await drainTasks()
 
+        XCTAssertEqual(controller.state, .idle)
+        XCTAssertFalse(submitted.value)
+    }
+
+    func testInvalidatedScopeCannotRestartRetainedControllerOrSubmitLateInference() async {
+        let capture = ControlledVoiceCapture()
+        let generator = ControlledCommandGenerator()
+        let submitted = VoiceTestBox(false)
+        var operationIsAllowed = true
+        let controller = LocalVoiceCommandController(
+            generator: generator,
+            submit: { _ in
+                submitted.value = true
+                return try Self.response()
+            },
+            capture: capture,
+            synthesizer: RecordingVoiceSynthesizer(),
+            operationIsAllowed: { operationIsAllowed },
+            permissionsAreGranted: { true },
+            requestPermissions: { _ in
+                XCTFail("Permissions should not be requested in this test")
+            }
+        )
+
+        controller.start()
+        capture.emitTranscript("search old account history", isFinal: true)
+        capture.emitStop(.finalTranscript)
+        await drainTasks()
+        XCTAssertEqual(generator.transcripts, ["search old account history"])
+
+        operationIsAllowed = false
+        controller.abort()
+        controller.start()
+        generator.completeNext(with: .success(Self.envelopeData(query: "old account history")))
+        await drainTasks()
+
+        XCTAssertEqual(capture.startCount, 1)
         XCTAssertEqual(controller.state, .idle)
         XCTAssertFalse(submitted.value)
     }

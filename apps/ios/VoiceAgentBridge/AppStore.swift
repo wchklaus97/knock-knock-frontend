@@ -39,6 +39,12 @@ final class AppStore: ObservableObject {
     private static let userIDKey = "vab.userID"
 
     @Published var token: String? {
+        willSet {
+            guard !isApplyingAuthenticationScopeMutation,
+                  newValue != token
+            else { return }
+            invalidateLocalVoiceWork()
+        }
         didSet {
             client.token = token
             if let token {
@@ -115,6 +121,17 @@ final class AppStore: ObservableObject {
     private var pendingSessionToOpen: String?
     private var voiceModelManager: LocalVoiceModelManager?
     private var voiceModelPreparationTask: Task<Void, Never>?
+    private var voiceModelPreparationGeneration: UInt64?
+    private var isApplyingAuthenticationScopeMutation = false
+    private(set) var localVoiceScopeGeneration: UInt64 = 0
+
+    private struct LocalVoiceWorkScope: Equatable, Sendable {
+        let generation: UInt64
+        let apiBaseURL: URL
+        let accessToken: String
+        let ownerUserID: String
+        let deviceID: String
+    }
 
     struct KnockAlert: Identifiable, Equatable {
         let id: String
@@ -276,6 +293,13 @@ final class AppStore: ObservableObject {
         if let url = URL(string: apiBase), url.host != nil {
             client.baseURL = url
         }
+        activeCommandCoordinator.onAnnouncementStateChange = { [weak self] error in
+            guard let self else { return }
+            self.publishActiveCommandState()
+            if let error {
+                self.errorMessage = error.localizedDescription
+            }
+        }
         restoreActiveCommandCheckpoint()
         backgroundReconciliationDispatcher.bind { [weak self] request in
             Task { @MainActor [weak self] in
@@ -290,6 +314,110 @@ final class AppStore: ObservableObject {
 
     private var activeCommandScope: ActiveCommandScope? {
         ActiveCommandScope(backendURL: client.baseURL, ownerUserID: currentUserID)
+    }
+
+    private var localVoiceWorkScope: LocalVoiceWorkScope? {
+        guard let apiBaseURL = client.baseURL,
+              let accessToken = token,
+              let ownerUserID = currentUserID
+        else { return nil }
+        return LocalVoiceWorkScope(
+            generation: localVoiceScopeGeneration,
+            apiBaseURL: apiBaseURL,
+            accessToken: accessToken,
+            ownerUserID: ownerUserID,
+            deviceID: client.currentDeviceID
+        )
+    }
+
+    private func localVoiceScopeIsCurrent(_ scope: LocalVoiceWorkScope) -> Bool {
+        localVoiceScopeGeneration == scope.generation
+            && client.baseURL == scope.apiBaseURL
+            && token == scope.accessToken
+            && currentUserID == scope.ownerUserID
+    }
+
+    private func makeLocalVoiceRequest(
+        path: String,
+        method: String,
+        body: Data? = nil,
+        scope: LocalVoiceWorkScope
+    ) throws -> URLRequest {
+        guard let url = URL(string: path, relativeTo: scope.apiBaseURL)?.absoluteURL else {
+            throw APIClientError.invalidBaseURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = 15
+        request.setValue("Bearer \(scope.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue(scope.deviceID, forHTTPHeaderField: "X-Device-ID")
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = body
+        }
+        return request
+    }
+
+    private func performLocalVoiceRequest<Response: Decodable>(
+        _ request: URLRequest,
+        as responseType: Response.Type = Response.self
+    ) async throws -> Response {
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch let error as URLError {
+            if Task.isCancelled { throw CancellationError() }
+            throw APIClientError.network(error.localizedDescription)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw APIClientError.network(error.localizedDescription)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw APIClientError.network("The server response was not HTTP.")
+        }
+        let status = http.statusCode
+        guard (200 ..< 300).contains(status) else {
+            let fallback = String(data: data, encoding: .utf8) ?? "Request failed"
+            let decoded = try? JSONDecoder().decode(APIErrorBody.self, from: data)
+            throw APIClientError.badStatus(
+                status,
+                decoded?.message ?? fallback,
+                APIErrorMetadata(
+                    retryable: decoded?.retryable
+                        ?? (status == 408 || status == 425 || status == 429 || status >= 500),
+                    retryAfter: decoded?.retry_after
+                        ?? Int(http.value(forHTTPHeaderField: "Retry-After") ?? ""),
+                    requestID: decoded?.request_id
+                        ?? http.value(forHTTPHeaderField: "X-Request-ID"),
+                    errorCode: decoded?.error
+                )
+            )
+        }
+        do {
+            return try JSONDecoder().decode(responseType, from: data)
+        } catch {
+            throw APIClientError.decoding
+        }
+    }
+
+    /// Invalidates every controller and asynchronous preparation before its
+    /// authentication or backend inputs can change. Cancellation is only a
+    /// signal, so every continuation also checks the monotonically increasing
+    /// generation before it can publish or submit anything.
+    private func invalidateLocalVoiceWork() {
+        localVoiceScopeGeneration += 1
+        voiceModelPreparationTask?.cancel()
+        voiceModelPreparationTask = nil
+        voiceModelPreparationGeneration = nil
+        if let voiceController {
+            voiceController.abort()
+        } else {
+            commandSynthesizer.stop()
+        }
+        voiceController = nil
+        voiceModelStatus = "Not prepared"
     }
 
     private func restoreActiveCommandCheckpoint() {
@@ -489,6 +617,9 @@ final class AppStore: ObservableObject {
         }
         let previousOrigin = ActiveCommandScope.origin(for: client.baseURL)
         let nextOrigin = ActiveCommandScope.origin(for: url)
+        if client.baseURL != url {
+            invalidateLocalVoiceWork()
+        }
         if previousOrigin != nextOrigin {
             do {
                 try clearActiveCommandForScopeChange()
@@ -788,12 +919,19 @@ final class AppStore: ObservableObject {
     }
 
     private func applyAuth(_ auth: AuthResponse) throws {
-        if currentUserID != nil, currentUserID != auth.user_id {
+        let accountWillChange = currentUserID != auth.user_id
+        let accessTokenWillChange = token != auth.token
+        if accountWillChange || accessTokenWillChange {
+            invalidateLocalVoiceWork()
+        }
+        if currentUserID != nil, accountWillChange {
             try clearActiveCommandForScopeChange()
         }
+        isApplyingAuthenticationScopeMutation = true
         currentUserID = auth.user_id
         UserDefaults.standard.set(auth.user_id, forKey: Self.userIDKey)
         token = auth.token
+        isApplyingAuthenticationScopeMutation = false
         if let nextRefresh = auth.refresh_token {
             refreshToken = nextRefresh
             client.refreshToken = nextRefresh
@@ -807,24 +945,36 @@ final class AppStore: ObservableObject {
     /// manifest and bytes; if the release has not configured a model, the UI
     /// reports that explicitly and the voice button remains unavailable.
     func prepareLocalVoiceModel(forceRefresh: Bool = false) async {
-        if let voiceModelPreparationTask {
+        guard let scope = localVoiceWorkScope else {
+            voiceModelStatus = "Sign in before preparing voice"
+            return
+        }
+        if let voiceModelPreparationTask,
+           voiceModelPreparationGeneration == scope.generation
+        {
             await voiceModelPreparationTask.value
             return
         }
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.performLocalVoiceModelPreparation(forceRefresh: forceRefresh)
+            await self.performLocalVoiceModelPreparation(
+                forceRefresh: forceRefresh,
+                scope: scope
+            )
         }
         voiceModelPreparationTask = task
+        voiceModelPreparationGeneration = scope.generation
         await task.value
+        guard voiceModelPreparationGeneration == scope.generation else { return }
         voiceModelPreparationTask = nil
+        voiceModelPreparationGeneration = nil
     }
 
-    private func performLocalVoiceModelPreparation(forceRefresh: Bool) async {
-        guard token != nil else {
-            voiceModelStatus = "Sign in before preparing voice"
-            return
-        }
+    private func performLocalVoiceModelPreparation(
+        forceRefresh: Bool,
+        scope: LocalVoiceWorkScope
+    ) async {
+        guard localVoiceScopeIsCurrent(scope) else { return }
         voiceModelStatus = "Preparing on-device voice model…"
         let previousController = voiceController
         var modelBeforeAttempt: InstalledModel?
@@ -835,6 +985,7 @@ final class AppStore: ObservableObject {
             } else {
                 manager = try LocalVoiceModelManager()
             }
+            guard localVoiceScopeIsCurrent(scope) else { throw CancellationError() }
             voiceModelManager = manager
             let previousModel = manager.activeModel
             modelBeforeAttempt = previousModel
@@ -842,17 +993,29 @@ final class AppStore: ObservableObject {
                 forceRefresh: forceRefresh,
                 activeModelAvailable: previousModel != nil
             ) {
-                let descriptor = try await client.getModelArtifactDescriptor(
-                    modelID: LocalVoiceModelManager.defaultModelID
+                let descriptorRequest = try makeLocalVoiceRequest(
+                    path: "/v1/phone/models/\(LocalVoiceModelManager.defaultModelID)",
+                    method: "GET",
+                    scope: scope
                 )
+                let descriptor: ModelArtifactDescriptorResponse = try await performLocalVoiceRequest(
+                    descriptorRequest
+                )
+                try Task.checkCancellation()
+                guard localVoiceScopeIsCurrent(scope) else { throw CancellationError() }
                 _ = try await manager.install(
                     descriptor,
-                    authorizationToken: token,
-                    trustedAPIBaseURL: client.baseURL
+                    authorizationToken: scope.accessToken,
+                    trustedAPIBaseURL: scope.apiBaseURL
                 )
             }
             try Task.checkCancellation()
-            let replacement = try makeVoiceController(using: manager)
+            guard localVoiceScopeIsCurrent(scope) else { throw CancellationError() }
+            let replacement = try makeVoiceController(using: manager, scope: scope)
+            guard localVoiceScopeIsCurrent(scope) else {
+                replacement.abort()
+                throw CancellationError()
+            }
             previousController?.abort()
             voiceController = replacement
             if let model = manager.activeModel {
@@ -861,7 +1024,7 @@ final class AppStore: ObservableObject {
                 voiceModelStatus = "Model not installed"
             }
         } catch {
-            if error is CancellationError { return }
+            if error is CancellationError || !localVoiceScopeIsCurrent(scope) { return }
             let message = Self.voicePreparationErrorMessage(for: error)
             if let manager = voiceModelManager,
                let previousController,
@@ -896,23 +1059,35 @@ final class AppStore: ObservableObject {
     }
 
     private func makeVoiceController(
-        using manager: LocalVoiceModelManager
+        using manager: LocalVoiceModelManager,
+        scope: LocalVoiceWorkScope
     ) throws -> LocalVoiceCommandController {
-        let generator = try manager.makeCommandGenerator(deviceID: client.currentDeviceID)
+        let generator = try manager.makeCommandGenerator(deviceID: scope.deviceID)
         return LocalVoiceCommandController(
             generator: generator,
             submit: { [weak self] envelope in
                 guard let self else {
                     throw APIClientError.network("Knock Knock is no longer available")
                 }
-                return try await self.submitLocalCommand(envelope)
+                return try await self.submitLocalCommand(envelope, scope: scope)
             },
-            synthesizer: commandSynthesizer
+            synthesizer: commandSynthesizer,
+            operationIsAllowed: { [weak self] in
+                self?.localVoiceScopeIsCurrent(scope) == true
+            }
         )
     }
 
-    private func submitLocalCommand(_ envelope: CommandEnvelope) async throws -> CommandResponse {
-        guard let activeCommandScope else { throw APIClientError.noToken }
+    private func submitLocalCommand(
+        _ envelope: CommandEnvelope,
+        scope: LocalVoiceWorkScope
+    ) async throws -> CommandResponse {
+        try Task.checkCancellation()
+        guard localVoiceScopeIsCurrent(scope),
+              let activeCommandScope,
+              activeCommandScope.backendOrigin == ActiveCommandScope.origin(for: scope.apiBaseURL),
+              activeCommandScope.ownerUserID == scope.ownerUserID
+        else { throw CancellationError() }
         let application: ActiveCommandApplication
         do {
             application = try await activeCommandCoordinator.submit(
@@ -921,8 +1096,24 @@ final class AppStore: ObservableObject {
                 onBegan: { [weak self] in
                     self?.publishActiveCommandState()
                 }
-            ) { [client] canonicalEnvelope in
-                try await client.createCommand(canonicalEnvelope)
+            ) { [weak self] canonicalEnvelope in
+                guard let self else { throw CancellationError() }
+                try Task.checkCancellation()
+                guard self.localVoiceScopeIsCurrent(scope) else {
+                    throw CancellationError()
+                }
+                let request = try self.makeLocalVoiceRequest(
+                    path: "/v1/phone/commands",
+                    method: "POST",
+                    body: JSONEncoder().encode(canonicalEnvelope),
+                    scope: scope
+                )
+                let response: CommandResponse = try await self.performLocalVoiceRequest(request)
+                try Task.checkCancellation()
+                guard self.localVoiceScopeIsCurrent(scope) else {
+                    throw CancellationError()
+                }
+                return response
             }
         } catch {
             if Self.commandSubmissionDefinitelyRejected(error) {
@@ -933,14 +1124,28 @@ final class AppStore: ObservableObject {
             }
             throw error
         }
+        try Task.checkCancellation()
+        guard localVoiceScopeIsCurrent(scope) else { throw CancellationError() }
         consumeCommandApplication(application)
 
         // Read back the server-owned state before presenting it. The create
         // response is useful for degraded connectivity, but GET is the
         // canonical source for risk, confirmation, and lifecycle state.
-        guard let canonical = try? await client.getCommand(commandID: envelope.commandID) else {
+        let canonical: CommandResponse
+        do {
+            let request = try makeLocalVoiceRequest(
+                path: "/v1/phone/commands/\(envelope.commandID)",
+                method: "GET",
+                scope: scope
+            )
+            canonical = try await performLocalVoiceRequest(request)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
             return application.response
         }
+        try Task.checkCancellation()
+        guard localVoiceScopeIsCurrent(scope) else { throw CancellationError() }
         if let canonicalApplication = try activeCommandCoordinator.accept(
             response: canonical,
             expectedCommandID: envelope.commandID
@@ -1075,15 +1280,18 @@ final class AppStore: ObservableObject {
     }
 
     func logout() {
+        invalidateLocalVoiceWork()
         if let refreshToken {
             let client = self.client
             Task { try? await client.logout(refreshToken: refreshToken) }
         }
         stopEventStream()
         stopReconciliation()
+        isApplyingAuthenticationScopeMutation = true
         token = nil
         refreshToken = nil
         currentUserID = nil
+        isApplyingAuthenticationScopeMutation = false
         client.refreshToken = nil
         KeychainStore.delete(account: "refresh-token")
         UserDefaults.standard.removeObject(forKey: Self.userIDKey)
@@ -1105,10 +1313,6 @@ final class AppStore: ObservableObject {
         latestCommandResponse = nil
         activeCommandPresentation = nil
         undoableCommandID = nil
-        voiceController = nil
-        voiceModelPreparationTask?.cancel()
-        voiceModelPreparationTask = nil
-        voiceModelStatus = "Not prepared"
         localStore.clearUserData()
         activeCommandCoordinator.discardInMemory()
         lastSpoken = nil

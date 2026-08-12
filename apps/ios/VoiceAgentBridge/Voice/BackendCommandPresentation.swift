@@ -56,6 +56,7 @@ enum ActiveCommandCheckpointReducer {
         case responseCommandMismatch
         case missingVersion
         case lowerVersion
+        case divergentEqualVersion
         case invalidResponse
 
         var description: String {
@@ -65,6 +66,7 @@ enum ActiveCommandCheckpointReducer {
             case .responseCommandMismatch: return "wrong command id"
             case .missingVersion: return "missing command version"
             case .lowerVersion: return "lower command version"
+            case .divergentEqualVersion: return "divergent equal command version"
             case .invalidResponse: return "invalid command state"
             }
         }
@@ -129,11 +131,6 @@ enum ActiveCommandCheckpointReducer {
         guard let version = response.version, version >= 0 else {
             return .rejected(.missingVersion)
         }
-        if let currentVersion = current.backendVersion {
-            if version < currentVersion { return .rejected(.lowerVersion) }
-            if version == currentVersion { return .idempotent }
-        }
-
         let confirmation = pendingConfirmation(from: response)
         if current.phase == .submitting,
            response.state == "awaiting_confirmation",
@@ -145,16 +142,35 @@ enum ActiveCommandCheckpointReducer {
             return .rejected(.invalidResponse)
         }
         let terminal = CommandLifecycle.isTerminal(response.state)
+        let nextPhase: ActiveCommandCheckpoint.Phase = terminal
+            ? .terminalPendingPresentation
+            : .acknowledged
+        let validatedPresentation = response.presentation?.validated(for: response.state)
+        let nextConfirmation = response.state == "awaiting_confirmation"
+            ? confirmation
+            : nil
+        if let currentVersion = current.backendVersion {
+            if version < currentVersion { return .rejected(.lowerVersion) }
+            if version == currentVersion {
+                guard current.phase == nextPhase,
+                      current.backendState == response.state,
+                      current.validatedPresentation == validatedPresentation,
+                      current.pendingConfirmation == nextConfirmation
+                else {
+                    return .rejected(.divergentEqualVersion)
+                }
+                return .idempotent
+            }
+        }
+
         let next = ActiveCommandCheckpoint(
-            phase: terminal ? .terminalPendingPresentation : .acknowledged,
+            phase: nextPhase,
             commandID: current.commandID,
             backendState: response.state,
             backendVersion: version,
             envelope: nil,
-            validatedPresentation: response.presentation?.validated(for: response.state),
-            pendingConfirmation: response.state == "awaiting_confirmation"
-                ? confirmation
-                : nil,
+            validatedPresentation: validatedPresentation,
+            pendingConfirmation: nextConfirmation,
             lastPresentedVersion: current.lastPresentedVersion,
             lastAnnouncedVersion: current.lastAnnouncedVersion,
             backendOrigin: current.backendOrigin,
@@ -311,6 +327,13 @@ struct ActiveCommandApplication {
 /// Every write happens before the corresponding POST or announcement.
 @MainActor
 final class ActiveCommandCheckpointCoordinator {
+    private struct ActiveAnnouncement: Equatable {
+        let id: UInt64
+        let commandID: String
+        let version: Int
+        let voiceScript: String
+    }
+
     private let store: SQLiteStore
     private let synthesizer: VoiceSynthesizing
     private let isSpeechAllowed: () -> Bool
@@ -318,6 +341,10 @@ final class ActiveCommandCheckpointCoordinator {
     private(set) var checkpoint: ActiveCommandCheckpoint?
     private(set) var presentation: BackendCommandPresentation?
     private(set) var lastSpoken: String?
+    var onAnnouncementStateChange: ((ActiveCommandCheckpointError?) -> Void)?
+
+    private var nextAnnouncementID: UInt64 = 0
+    private var activeAnnouncement: ActiveAnnouncement?
 
     init(
         store: SQLiteStore,
@@ -542,6 +569,7 @@ final class ActiveCommandCheckpointCoordinator {
         // changes API/account scope, refreshes the model, or starts a new voice
         // capture. Stop it before dropping the ownership checkpoint so private
         // text cannot continue across that boundary.
+        activeAnnouncement = nil
         synthesizer.stop()
         checkpoint = nil
         presentation = nil
@@ -573,23 +601,68 @@ final class ActiveCommandCheckpointCoordinator {
     }
 
     private func announceIfNeeded() throws {
-        guard var checkpoint,
+        guard let checkpoint,
               let presentation,
               let voiceScript = presentation.voiceScript,
               checkpoint.lastAnnouncedVersion != presentation.version,
               isSpeechAllowed()
         else { return }
-        checkpoint.lastAnnouncedVersion = presentation.version
+        if let activeAnnouncement,
+           activeAnnouncement.commandID == presentation.commandID,
+           activeAnnouncement.version == presentation.version
+        {
+            return
+        }
+
+        activeAnnouncement = nil
+        synthesizer.stop()
+        nextAnnouncementID += 1
+        let announcement = ActiveAnnouncement(
+            id: nextAnnouncementID,
+            commandID: presentation.commandID,
+            version: presentation.version,
+            voiceScript: voiceScript
+        )
+        activeAnnouncement = announcement
+        synthesizer.speak(voiceScript) { [weak self] result in
+            self?.completeAnnouncement(announcement, result: result)
+        }
+    }
+
+    private func completeAnnouncement(
+        _ announcement: ActiveAnnouncement,
+        result: VoiceSynthesisResult
+    ) {
+        guard activeAnnouncement == announcement else { return }
+        activeAnnouncement = nil
+        guard result == .finished,
+              var checkpoint,
+              checkpoint.commandID == announcement.commandID,
+              checkpoint.backendVersion == announcement.version,
+              let presentation,
+              presentation.commandID == announcement.commandID,
+              presentation.version == announcement.version,
+              presentation.voiceScript == announcement.voiceScript,
+              checkpoint.lastAnnouncedVersion != announcement.version
+        else { return }
+
+        checkpoint.lastAnnouncedVersion = announcement.version
         guard checkpoint.isStructurallyValid,
               store.saveActiveCommandCheckpoint(checkpoint)
         else {
-            throw ActiveCommandCheckpointError.persistenceFailed
+            onAnnouncementStateChange?(.persistenceFailed)
+            return
         }
         self.checkpoint = checkpoint
-        synthesizer.stop()
-        synthesizer.speak(voiceScript)
-        lastSpoken = voiceScript
-        try clearDurableCheckpointIfDelivered()
+        lastSpoken = announcement.voiceScript
+        do {
+            try clearDurableCheckpointIfDelivered()
+            onAnnouncementStateChange?(nil)
+        } catch let error as ActiveCommandCheckpointError {
+            onAnnouncementStateChange?(error)
+        } catch {
+            onAnnouncementStateChange?(.persistenceFailed)
+        }
     }
 
     private func clearDurableCheckpointIfDelivered() throws {

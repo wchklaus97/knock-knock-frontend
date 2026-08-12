@@ -4,13 +4,45 @@ import XCTest
 private final class RecordingVoiceSynthesizer: VoiceSynthesizing {
     private(set) var spoken: [String] = []
     private(set) var stopCount = 0
+    private(set) var pendingCompletionCount = 0
+    private let automaticallyCompletes: Bool
+    private var completions: [(VoiceSynthesisResult) -> Void] = []
+    var onStop: (() -> Void)?
 
-    func speak(_ text: String) {
+    init(automaticallyCompletes: Bool = true) {
+        self.automaticallyCompletes = automaticallyCompletes
+    }
+
+    func speak(
+        _ text: String,
+        completion: @escaping (VoiceSynthesisResult) -> Void
+    ) {
         spoken.append(text)
+        if automaticallyCompletes {
+            completion(.finished)
+        } else {
+            completions.append(completion)
+            pendingCompletionCount = completions.count
+        }
     }
 
     func stop() {
         stopCount += 1
+        onStop?()
+        let pending = completions
+        completions.removeAll()
+        pendingCompletionCount = 0
+        pending.forEach { $0(.cancelled) }
+    }
+
+    func finishNext() {
+        guard !completions.isEmpty else {
+            XCTFail("No pending synthesis")
+            return
+        }
+        let completion = completions.removeFirst()
+        pendingCompletionCount = completions.count
+        completion(.finished)
     }
 }
 
@@ -152,7 +184,7 @@ final class BackendCommandPresentationTests: XCTestCase {
         }
     }
 
-    func testReducerRejectsWrongIDAndLowerVersionAndMakesEqualVersionIdempotent() throws {
+    func testReducerOnlyTreatsIdenticalEqualVersionSnapshotAsIdempotent() throws {
         let current = Self.checkpoint(
             phase: .acknowledged,
             commandID: "cmd_current",
@@ -186,11 +218,36 @@ final class BackendCommandPresentationTests: XCTestCase {
         )
         XCTAssertEqual(
             ActiveCommandCheckpointReducer.apply(
-                response: try Self.response(commandID: "cmd_current", state: "failed", result: nil, version: 8),
+                response: try Self.response(commandID: "cmd_current", state: "running", result: nil, version: 8),
                 expectedCommandID: "cmd_current",
                 current: current
             ),
             .idempotent
+        )
+        XCTAssertEqual(
+            ActiveCommandCheckpointReducer.apply(
+                response: try Self.response(commandID: "cmd_current", state: "failed", result: nil, version: 8),
+                expectedCommandID: "cmd_current",
+                current: current
+            ),
+            .rejected(.divergentEqualVersion)
+        )
+        XCTAssertEqual(
+            ActiveCommandCheckpointReducer.apply(
+                response: try Self.response(
+                    commandID: "cmd_current",
+                    state: "running",
+                    result: nil,
+                    presentation: Self.presentation(
+                        displayText: "A divergent same-version snapshot.",
+                        terminal: false
+                    ),
+                    version: 8
+                ),
+                expectedCommandID: "cmd_current",
+                current: current
+            ),
+            .rejected(.divergentEqualVersion)
         )
     }
 
@@ -875,6 +932,100 @@ final class BackendCommandPresentationTests: XCTestCase {
         XCTAssertNil(store.loadActiveCommandCheckpoint())
     }
 
+    func testAnnouncementVersionIsRecordedOnlyAfterSynthesisFinishes() throws {
+        let url = Self.temporarySQLiteURL("speech-completion")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let store = SQLiteStore(databaseURL: url)
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        XCTAssertTrue(store.saveActiveCommandCheckpoint(Self.checkpoint(
+            phase: .terminalPendingPresentation,
+            commandID: "cmd_speech_completion",
+            state: "succeeded",
+            version: 10,
+            presentation: Self.presentation(
+                displayText: "The command completed.",
+                voiceScript: "Completion must be observed.",
+                terminal: true
+            )
+        )))
+
+        let synthesizer = RecordingVoiceSynthesizer(automaticallyCompletes: false)
+        let coordinator = ActiveCommandCheckpointCoordinator(
+            store: store,
+            synthesizer: synthesizer
+        )
+        _ = try XCTUnwrap(coordinator.restore(scope: scope))
+        try coordinator.announceDeferredIfNeeded()
+
+        XCTAssertEqual(synthesizer.spoken, ["Completion must be observed."])
+        XCTAssertEqual(synthesizer.pendingCompletionCount, 1)
+        XCTAssertNil(store.loadActiveCommandCheckpoint()?.lastAnnouncedVersion)
+        XCTAssertNil(coordinator.lastSpoken)
+
+        synthesizer.finishNext()
+        try coordinator.announceDeferredIfNeeded()
+
+        XCTAssertEqual(synthesizer.spoken, ["Completion must be observed."])
+        XCTAssertEqual(store.loadActiveCommandCheckpoint()?.lastAnnouncedVersion, 10)
+        XCTAssertEqual(coordinator.lastSpoken, "Completion must be observed.")
+    }
+
+    func testCancelledAnnouncementRemainsPendingAndReplaysExactlyOnce() throws {
+        let url = Self.temporarySQLiteURL("speech-cancellation")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let store = SQLiteStore(databaseURL: url)
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        XCTAssertTrue(store.saveActiveCommandCheckpoint(Self.checkpoint(
+            phase: .terminalPendingPresentation,
+            commandID: "cmd_speech_cancellation",
+            state: "succeeded",
+            version: 11,
+            presentation: Self.presentation(
+                displayText: "The command completed.",
+                voiceScript: "Replay after interruption.",
+                terminal: true
+            )
+        )))
+
+        let synthesizer = RecordingVoiceSynthesizer(automaticallyCompletes: false)
+        let coordinator = ActiveCommandCheckpointCoordinator(
+            store: store,
+            synthesizer: synthesizer
+        )
+        _ = try XCTUnwrap(coordinator.restore(scope: scope))
+        try coordinator.markPresented(commandID: "cmd_speech_cancellation", version: 11)
+
+        synthesizer.stop()
+
+        XCTAssertNil(store.loadActiveCommandCheckpoint()?.lastAnnouncedVersion)
+        XCTAssertEqual(store.loadActiveCommandCheckpoint()?.lastPresentedVersion, 11)
+        XCTAssertNil(coordinator.lastSpoken)
+
+        try coordinator.announceDeferredIfNeeded()
+        try coordinator.announceDeferredIfNeeded()
+        XCTAssertEqual(
+            synthesizer.spoken,
+            ["Replay after interruption.", "Replay after interruption."]
+        )
+        XCTAssertEqual(synthesizer.pendingCompletionCount, 1)
+
+        synthesizer.finishNext()
+        try coordinator.announceDeferredIfNeeded()
+
+        XCTAssertNil(store.loadActiveCommandCheckpoint())
+        XCTAssertEqual(
+            synthesizer.spoken,
+            ["Replay after interruption.", "Replay after interruption."]
+        )
+        XCTAssertEqual(coordinator.lastSpoken, "Replay after interruption.")
+    }
+
     func testBackgroundPresentationDefersSpeechUntilForegroundExactlyOnce() throws {
         let url = Self.temporarySQLiteURL("deferred-speech")
         defer { Self.removeSQLiteArtifacts(at: url) }
@@ -1136,6 +1287,48 @@ final class AppStoreVoiceLifecycleTests: XCTestCase {
         store.suspendVoiceForSceneTransition()
 
         XCTAssertEqual(synthesizer.stopCount, stopsBeforeTransition + 1)
+    }
+
+    func testApiBaseChangeInvalidatesVoiceGenerationBeforeClientMutation() throws {
+        let defaults = UserDefaults.standard
+        let previousAPIBase = defaults.string(forKey: "vab.apiBase")
+        defer {
+            if let previousAPIBase {
+                defaults.set(previousAPIBase, forKey: "vab.apiBase")
+            } else {
+                defaults.removeObject(forKey: "vab.apiBase")
+            }
+        }
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("knock-knock-scope-\(UUID().uuidString).sqlite")
+        defer {
+            for suffix in ["", "-wal", "-shm"] {
+                try? FileManager.default.removeItem(atPath: url.path + suffix)
+            }
+        }
+        let synthesizer = RecordingVoiceSynthesizer()
+        let store = AppStore(
+            localStore: SQLiteStore(databaseURL: url),
+            commandSynthesizer: synthesizer,
+            backgroundReconciliationDispatcher: BackgroundReconciliationDispatcher()
+        )
+        let originalURL = store.client.baseURL
+        let originalGeneration = store.localVoiceScopeGeneration
+        var urlsObservedAtStop: [URL?] = []
+        synthesizer.onStop = { [weak store] in
+            urlsObservedAtStop.append(store?.client.baseURL)
+        }
+        store.apiBase = originalURL == URL(string: "http://127.0.0.1:39281")
+            ? "http://127.0.0.1:39282"
+            : "http://127.0.0.1:39281"
+        XCTAssertTrue(store.applyApiBase())
+
+        XCTAssertEqual(store.localVoiceScopeGeneration, originalGeneration + 1)
+        XCTAssertFalse(urlsObservedAtStop.isEmpty)
+        XCTAssertTrue(urlsObservedAtStop.allSatisfy { $0 == originalURL })
+        XCTAssertNil(store.voiceController)
+        XCTAssertEqual(store.voiceModelStatus, "Not prepared")
     }
 }
 

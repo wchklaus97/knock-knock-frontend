@@ -27,9 +27,26 @@ extension LocalCommandGenerating {
     func cancelGeneration() {}
 }
 
-protocol VoiceSynthesizing {
-    func speak(_ text: String)
+enum VoiceSynthesisResult: Equatable {
+    case finished
+    case cancelled
+}
+
+/// Completion is delivered exactly once for every non-empty utterance. `stop()`
+/// synchronously completes all outstanding utterances as cancelled so durable
+/// delivery owners can leave interrupted speech pending for a later retry.
+protocol VoiceSynthesizing: AnyObject {
+    func speak(
+        _ text: String,
+        completion: @escaping (VoiceSynthesisResult) -> Void
+    )
     func stop()
+}
+
+extension VoiceSynthesizing {
+    func speak(_ text: String) {
+        speak(text) { _ in }
+    }
 }
 
 enum LocalVoiceAdapterError: Error, Equatable {
@@ -1907,15 +1924,60 @@ struct GemmaCommandGeneratorPlaceholder: LocalCommandGenerating {
 
 /// Lightweight local TTS implementation using the system voice. It does not require
 /// or download a third-party speech model.
-final class SystemVoiceSynthesizer: VoiceSynthesizing {
+/// AppStore and both voice coordinators own this adapter on the main actor;
+/// AVFoundation does not annotate AVSpeechSynthesizer as Sendable.
+final class SystemVoiceSynthesizer: NSObject,
+    VoiceSynthesizing,
+    AVSpeechSynthesizerDelegate,
+    @unchecked Sendable
+{
     private let synthesizer = AVSpeechSynthesizer()
+    private var completions: [ObjectIdentifier: (VoiceSynthesisResult) -> Void] = [:]
 
-    func speak(_ text: String) {
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        synthesizer.speak(AVSpeechUtterance(string: text))
+    override init() {
+        super.init()
+        synthesizer.delegate = self
+    }
+
+    func speak(
+        _ text: String,
+        completion: @escaping (VoiceSynthesisResult) -> Void
+    ) {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            completion(.cancelled)
+            return
+        }
+        let utterance = AVSpeechUtterance(string: text)
+        completions[ObjectIdentifier(utterance)] = completion
+        synthesizer.speak(utterance)
     }
 
     func stop() {
+        let pending = Array(completions.values)
+        completions.removeAll()
         synthesizer.stopSpeaking(at: .immediate)
+        pending.forEach { $0(.cancelled) }
+    }
+
+    func speechSynthesizer(
+        _ synthesizer: AVSpeechSynthesizer,
+        didFinish utterance: AVSpeechUtterance
+    ) {
+        complete(utterance, with: .finished)
+    }
+
+    func speechSynthesizer(
+        _ synthesizer: AVSpeechSynthesizer,
+        didCancel utterance: AVSpeechUtterance
+    ) {
+        complete(utterance, with: .cancelled)
+    }
+
+    private func complete(
+        _ utterance: AVSpeechUtterance,
+        with result: VoiceSynthesisResult
+    ) {
+        let completion = completions.removeValue(forKey: ObjectIdentifier(utterance))
+        completion?(result)
     }
 }
