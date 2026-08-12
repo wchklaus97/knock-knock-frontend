@@ -401,6 +401,54 @@ final class ModelsDecodingTests: XCTestCase {
         )
     }
 
+    func testPermanentPendingFailureRemainsVisibleForRetryOrDiscard() {
+        let operation = PendingOperation(
+            idempotencyKey: "idem-visible-failure",
+            kind: .reply,
+            session_id: "ses_visible_failure",
+            action_key: "approve",
+            action_id: nil,
+            confirm: nil,
+            created_at: Date(),
+            status: .inFlight
+        )
+        let error = APIClientError.badStatus(
+            422,
+            "Invalid action",
+            APIErrorMetadata(retryable: false, retryAfter: nil, requestID: "req_visible")
+        )
+
+        let failed = AppStore.pendingOperationAfterPermanentFailure(operation, error: error)
+
+        XCTAssertEqual(failed.id, operation.id)
+        XCTAssertEqual(failed.status, .failed)
+        XCTAssertEqual(failed.failureCode, "http_422")
+        XCTAssertEqual(failed.lastError, error.localizedDescription)
+        XCTAssertFalse(failed.isPending)
+    }
+
+    func testPendingRetryCoordinatorQueuesManualRetryDuringActivePass() {
+        var coordinator = PendingRetryCoordinator()
+
+        XCTAssertTrue(coordinator.beginOrRequestRerun())
+        XCTAssertTrue(coordinator.isRunning)
+        XCTAssertFalse(coordinator.beginOrRequestRerun())
+        XCTAssertTrue(coordinator.rerunRequested)
+        XCTAssertTrue(coordinator.consumeRerun())
+        XCTAssertFalse(coordinator.consumeRerun())
+
+        coordinator.finish()
+        XCTAssertFalse(coordinator.isRunning)
+        XCTAssertTrue(coordinator.beginOrRequestRerun())
+    }
+
+    func testHistorySearchQueryMatchesOneToTwoHundredCharacterContract() {
+        XCTAssertEqual(AppStore.normalizedHistorySearchQuery(" x "), "x")
+        XCTAssertEqual(AppStore.normalizedHistorySearchQuery(" 家 "), "家")
+        XCTAssertNil(AppStore.normalizedHistorySearchQuery("   "))
+        XCTAssertNil(AppStore.normalizedHistorySearchQuery(String(repeating: "x", count: 201)))
+    }
+
     func testHistoryRetrievalAndPushReadModelsDecode() throws {
         let page = try decoder.decode(
             MessagePage.self,
@@ -584,6 +632,47 @@ final class ModelsDecodingTests: XCTestCase {
             XCTAssertEqual(recovered.idempotency_key, "idem_restart")
             XCTAssertEqual(recovered.status, .pending)
             XCTAssertTrue(recovered.isPending)
+        }
+    }
+
+    func testSQLiteStoreReopensAndClearsActiveCommandCheckpoint() throws {
+        let url = temporarySQLiteURL("active-command")
+        defer { removeSQLiteArtifacts(at: url) }
+        let envelope = try CommandEnvelope(
+            commandID: "cmd_voice_restart",
+            intent: "search_history",
+            args: ["q": .string("history")],
+            riskLevel: .low,
+            needsConfirmation: false,
+            idempotencyKey: "idem_voice_restart",
+            confidence: 0.97,
+            locale: "en-HK",
+            timezone: "Asia/Hong_Kong"
+        )
+        let checkpoint = ActiveCommandCheckpoint(
+            phase: .submitting,
+            commandID: envelope.commandID,
+            backendState: nil,
+            backendVersion: nil,
+            envelope: envelope,
+            validatedPresentation: nil,
+            lastAnnouncedVersion: nil,
+            backendOrigin: "https://api.example.com:443",
+            ownerUserID: "usr_restart",
+            createdAt: Date(timeIntervalSince1970: 4_100)
+        )
+
+        do {
+            let store = SQLiteStore(databaseURL: url)
+            XCTAssertTrue(store.saveActiveCommandCheckpoint(checkpoint))
+            XCTAssertEqual(store.loadActiveCommandCheckpoint(), checkpoint)
+        }
+
+        do {
+            let reopened = SQLiteStore(databaseURL: url)
+            XCTAssertEqual(reopened.loadActiveCommandCheckpoint(), checkpoint)
+            XCTAssertTrue(reopened.clearActiveCommandCheckpoint())
+            XCTAssertNil(reopened.loadActiveCommandCheckpoint())
         }
     }
 

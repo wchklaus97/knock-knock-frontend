@@ -2,13 +2,49 @@ import Foundation
 import Combine
 import Security
 import UserNotifications
+import UIKit
+
+struct PendingRetryCoordinator {
+    private(set) var isRunning = false
+    private(set) var rerunRequested = false
+
+    /// Starts a retry pass or records that the active pass must run once more.
+    mutating func beginOrRequestRerun() -> Bool {
+        guard !isRunning else {
+            rerunRequested = true
+            return false
+        }
+        isRunning = true
+        return true
+    }
+
+    /// Consumes one queued pass. Requests arriving during that pass can queue
+    /// the following pass without being overwritten.
+    mutating func consumeRerun() -> Bool {
+        let shouldRerun = rerunRequested
+        rerunRequested = false
+        return shouldRerun
+    }
+
+    mutating func finish() {
+        isRunning = false
+        rerunRequested = false
+    }
+}
 
 @MainActor
 final class AppStore: ObservableObject {
     private static let settingsSchemaVersion = 3
     private static let settingsSchemaKey = "vab.settingsSchemaVersion"
+    private static let userIDKey = "vab.userID"
 
     @Published var token: String? {
+        willSet {
+            guard !isApplyingAuthenticationScopeMutation,
+                  newValue != token
+            else { return }
+            invalidateLocalVoiceWork()
+        }
         didSet {
             client.token = token
             if let token {
@@ -47,6 +83,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var pendingOperations: [PendingOperation] = []
     @Published var pendingCommandConfirmation: PendingCommandConfirmation? = nil
     @Published private(set) var latestCommandResponse: CommandResponse? = nil
+    @Published private(set) var activeCommandPresentation: BackendCommandPresentation? = nil
     @Published private(set) var undoableCommandID: String? = nil
     @Published private(set) var voiceModelStatus = "Not prepared"
     @Published private(set) var voiceController: LocalVoiceCommandController?
@@ -54,9 +91,17 @@ final class AppStore: ObservableObject {
     @Published var openSessionId: String?
 
     let client = APIClient()
-    private let localStore = SQLiteStore.shared
+    private let localStore: SQLiteStore
+    /// One shared speaker owns both backend result announcements and local
+    /// clarification prompts. Push-to-talk can therefore stop any in-flight
+    /// speech before opening the microphone, and scope changes cannot leave a
+    /// previous account's announcement playing.
+    private let commandSynthesizer: VoiceSynthesizing
+    private let activeCommandCoordinator: ActiveCommandCheckpointCoordinator
+    private let backgroundReconciliationDispatcher: BackgroundReconciliationDispatcher
     private lazy var eventTransport = client.makeSessionEventTransport()
     private var refreshToken: String?
+    private var currentUserID: String?
     private var eventStreamTask: Task<Void, Never>?
     private var fallbackRefreshTask: Task<Void, Never>?
     private var reconciliationTask: Task<Void, Never>?
@@ -67,7 +112,7 @@ final class AppStore: ObservableObject {
     private var foregroundReconciliationIncludeAgents = true
     private var foregroundNeedsReconciliation = true
     private var pendingFullSync = false
-    private var pendingRetryInProgress = false
+    private var pendingRetryCoordinator = PendingRetryCoordinator()
     private var eventStreamGeneration = 0
     private var appliedCursor: String?
     private var knownPushIds = Set<String>()
@@ -75,6 +120,18 @@ final class AppStore: ObservableObject {
     private weak var appDelegate: AppDelegate?
     private var pendingSessionToOpen: String?
     private var voiceModelManager: LocalVoiceModelManager?
+    private var voiceModelPreparationTask: Task<Void, Never>?
+    private var voiceModelPreparationGeneration: UInt64?
+    private var isApplyingAuthenticationScopeMutation = false
+    private(set) var localVoiceScopeGeneration: UInt64 = 0
+
+    private struct LocalVoiceWorkScope: Equatable, Sendable {
+        let generation: UInt64
+        let apiBaseURL: URL
+        let accessToken: String
+        let ownerUserID: String
+        let deviceID: String
+    }
 
     struct KnockAlert: Identifiable, Equatable {
         let id: String
@@ -105,7 +162,60 @@ final class AppStore: ObservableObject {
             !reconciliationExists
     }
 
-    init() {
+    nonisolated static func voicePreparationErrorMessage(for error: Error) -> String {
+        if let modelError = error as? LocalVoiceModelManagerError {
+            return modelError.userFacingDescription
+        }
+        return "The signed voice model could not be prepared. Please try again later."
+    }
+
+    nonisolated static func shouldFetchVoiceModel(
+        forceRefresh: Bool,
+        activeModelAvailable: Bool
+    ) -> Bool {
+        forceRefresh || !activeModelAvailable
+    }
+
+    /// Only failures proving the POST was rejected before persistence may
+    /// release the durable submission fence. Status alone is insufficient:
+    /// unknown 4xx responses, timeouts, decoding failures, and conflicts keep
+    /// the exact idempotent envelope for recovery.
+    nonisolated static func commandSubmissionDefinitelyRejected(_ error: Error) -> Bool {
+        guard let apiError = error as? APIClientError else { return false }
+        switch apiError {
+        case .noToken, .invalidBaseURL:
+            return true
+        case let .badStatus(status, _, metadata):
+            guard !metadata.retryable else { return false }
+            switch (status, metadata.errorCode) {
+            case (400, "validation_error"),
+                 (401, "unauthorized"),
+                 (404, "not_found"),
+                 (422, "unsupported_intent"):
+                return true
+            default:
+                return false
+            }
+        case .network, .decoding:
+            return false
+        }
+    }
+
+    init(
+        localStore: SQLiteStore = .shared,
+        commandSynthesizer: VoiceSynthesizing = SystemVoiceSynthesizer(),
+        backgroundReconciliationDispatcher: BackgroundReconciliationDispatcher = .shared
+    ) {
+        self.localStore = localStore
+        self.commandSynthesizer = commandSynthesizer
+        self.backgroundReconciliationDispatcher = backgroundReconciliationDispatcher
+        activeCommandCoordinator = ActiveCommandCheckpointCoordinator(
+            store: localStore,
+            synthesizer: commandSynthesizer,
+            isSpeechAllowed: {
+                UIApplication.shared.applicationState == .active
+            }
+        )
         #if DEBUG
         // UI tests run repeatedly against isolated local Workers. Keychain
         // entries survive app reinstall, so an old access/refresh token can
@@ -119,11 +229,13 @@ final class AppStore: ObservableObject {
             UserDefaults.standard.removeObject(forKey: "vab.email")
             UserDefaults.standard.removeObject(forKey: "vab.apiBase")
             UserDefaults.standard.removeObject(forKey: "vab.selectedAgentId")
+            UserDefaults.standard.removeObject(forKey: Self.userIDKey)
             localStore.clearUserData()
         }
         #endif
         let storedToken = KeychainStore.read() ?? UserDefaults.standard.string(forKey: "vab.token")
         let storedRefreshToken = KeychainStore.read(account: "refresh-token")
+        currentUserID = UserDefaults.standard.string(forKey: Self.userIDKey)
         token = storedToken
         refreshToken = storedRefreshToken
         client.token = storedToken
@@ -181,6 +293,207 @@ final class AppStore: ObservableObject {
         if let url = URL(string: apiBase), url.host != nil {
             client.baseURL = url
         }
+        activeCommandCoordinator.onAnnouncementStateChange = { [weak self] error in
+            guard let self else { return }
+            self.publishActiveCommandState()
+            if let error {
+                self.errorMessage = error.localizedDescription
+            }
+        }
+        restoreActiveCommandCheckpoint()
+        backgroundReconciliationDispatcher.bind { [weak self] request in
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    request.complete(.failed)
+                    return
+                }
+                await self.handleBackgroundReconciliation(request)
+            }
+        }
+    }
+
+    private var activeCommandScope: ActiveCommandScope? {
+        ActiveCommandScope(backendURL: client.baseURL, ownerUserID: currentUserID)
+    }
+
+    private var localVoiceWorkScope: LocalVoiceWorkScope? {
+        guard let apiBaseURL = client.baseURL,
+              let accessToken = token,
+              let ownerUserID = currentUserID
+        else { return nil }
+        return LocalVoiceWorkScope(
+            generation: localVoiceScopeGeneration,
+            apiBaseURL: apiBaseURL,
+            accessToken: accessToken,
+            ownerUserID: ownerUserID,
+            deviceID: client.currentDeviceID
+        )
+    }
+
+    private func localVoiceScopeIsCurrent(_ scope: LocalVoiceWorkScope) -> Bool {
+        localVoiceScopeGeneration == scope.generation
+            && client.baseURL == scope.apiBaseURL
+            && token == scope.accessToken
+            && currentUserID == scope.ownerUserID
+    }
+
+    private func makeLocalVoiceRequest(
+        path: String,
+        method: String,
+        body: Data? = nil,
+        scope: LocalVoiceWorkScope
+    ) throws -> URLRequest {
+        guard let url = URL(string: path, relativeTo: scope.apiBaseURL)?.absoluteURL else {
+            throw APIClientError.invalidBaseURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = 15
+        request.setValue("Bearer \(scope.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue(scope.deviceID, forHTTPHeaderField: "X-Device-ID")
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = body
+        }
+        return request
+    }
+
+    private func performLocalVoiceRequest<Response: Decodable>(
+        _ request: URLRequest,
+        as responseType: Response.Type = Response.self
+    ) async throws -> Response {
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch let error as URLError {
+            if Task.isCancelled { throw CancellationError() }
+            throw APIClientError.network(error.localizedDescription)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw APIClientError.network(error.localizedDescription)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw APIClientError.network("The server response was not HTTP.")
+        }
+        let status = http.statusCode
+        guard (200 ..< 300).contains(status) else {
+            let fallback = String(data: data, encoding: .utf8) ?? "Request failed"
+            let decoded = try? JSONDecoder().decode(APIErrorBody.self, from: data)
+            throw APIClientError.badStatus(
+                status,
+                decoded?.message ?? fallback,
+                APIErrorMetadata(
+                    retryable: decoded?.retryable
+                        ?? (status == 408 || status == 425 || status == 429 || status >= 500),
+                    retryAfter: decoded?.retry_after
+                        ?? Int(http.value(forHTTPHeaderField: "Retry-After") ?? ""),
+                    requestID: decoded?.request_id
+                        ?? http.value(forHTTPHeaderField: "X-Request-ID"),
+                    errorCode: decoded?.error
+                )
+            )
+        }
+        do {
+            return try JSONDecoder().decode(responseType, from: data)
+        } catch {
+            throw APIClientError.decoding
+        }
+    }
+
+    /// Invalidates every controller and asynchronous preparation before its
+    /// authentication or backend inputs can change. Cancellation is only a
+    /// signal, so every continuation also checks the monotonically increasing
+    /// generation before it can publish or submit anything.
+    private func invalidateLocalVoiceWork() {
+        localVoiceScopeGeneration += 1
+        voiceModelPreparationTask?.cancel()
+        voiceModelPreparationTask = nil
+        voiceModelPreparationGeneration = nil
+        if let voiceController {
+            voiceController.abort()
+        } else {
+            commandSynthesizer.stop()
+        }
+        voiceController = nil
+        voiceModelStatus = "Not prepared"
+    }
+
+    private func restoreActiveCommandCheckpoint() {
+        guard token != nil, let activeCommandScope else {
+            if localStore.loadActiveCommandCheckpoint() != nil {
+                do {
+                    try activeCommandCoordinator.clearForScopeChange()
+                } catch {
+                    activeCommandCoordinator.discardInMemory()
+                    errorMessage = error.localizedDescription
+                }
+            }
+            return
+        }
+        do {
+            activeCommandPresentation = try activeCommandCoordinator.restore(scope: activeCommandScope)
+            if let durableConfirmation = activeCommandCoordinator.durablePendingConfirmation {
+                pendingCommandConfirmation = durableConfirmation
+                localStore.savePendingCommandConfirmation(durableConfirmation)
+            }
+            if let spoken = activeCommandCoordinator.lastSpoken {
+                lastSpoken = spoken
+            }
+        } catch {
+            activeCommandCoordinator.discardInMemory()
+            activeCommandPresentation = nil
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func publishActiveCommandState() {
+        activeCommandPresentation = activeCommandCoordinator.presentation
+        if let durableConfirmation = activeCommandCoordinator.durablePendingConfirmation {
+            pendingCommandConfirmation = durableConfirmation
+            localStore.savePendingCommandConfirmation(durableConfirmation)
+        }
+        if let spoken = activeCommandCoordinator.lastSpoken {
+            lastSpoken = spoken
+        }
+    }
+
+    private func clearActiveCommandForScopeChange() throws {
+        try activeCommandCoordinator.clearForScopeChange()
+        activeCommandPresentation = nil
+        latestCommandResponse = nil
+        undoableCommandID = nil
+        pendingCommandConfirmation = nil
+        localStore.clearPendingCommandConfirmation()
+    }
+
+    func markActiveCommandPresented(commandID: String, version: Int) {
+        do {
+            try activeCommandCoordinator.markPresented(commandID: commandID, version: version)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Delivers a canonical backend announcement that was intentionally kept
+    /// silent while the app was inactive or running background reconciliation.
+    func resumeDeferredCommandAnnouncement() {
+        do {
+            try activeCommandCoordinator.announceDeferredIfNeeded()
+            publishActiveCommandState()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Stops both push-to-talk work and the shared backend/local speaker when
+    /// the scene leaves the foreground. The direct stop is intentional: the
+    /// shared synthesizer may be speaking even before a voice controller has
+    /// been prepared.
+    func suspendVoiceForSceneTransition() {
+        voiceController?.abort()
+        commandSynthesizer.stop()
     }
 
     func bindPush(_ appDelegate: AppDelegate) {
@@ -238,6 +551,56 @@ final class AppStore: ObservableObject {
         }
     }
 
+    private func handleBackgroundReconciliation(
+        _ request: BackgroundReconciliationRequest
+    ) async {
+        guard request.claim() else { return }
+        guard token != nil else {
+            request.complete(.noData)
+            return
+        }
+
+        let previousCursor = appliedCursor
+        let previousRefreshAt = lastRefreshAt
+        await refresh(includeAgents: false)
+
+        // A wake can arrive while a foreground/manual refresh is already
+        // running. Wait for that owner and any queued reconciliation instead
+        // of reporting success before authenticated REST has completed.
+        var refreshWaitAttempts = 0
+        while isRefreshing && refreshWaitAttempts < 200 {
+            refreshWaitAttempts += 1
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        if let foregroundReconciliationTask {
+            await foregroundReconciliationTask.value
+        }
+        if let reconciliationTask {
+            await reconciliationTask.value
+        }
+
+        guard token != nil else {
+            request.complete(.noData)
+            return
+        }
+        let refreshCompleted = lastRefreshAt != nil && lastRefreshAt != previousRefreshAt
+        request.complete(Self.backgroundFetchResult(
+            authenticated: true,
+            refreshCompleted: refreshCompleted,
+            cursorChanged: appliedCursor != previousCursor
+        ))
+    }
+
+    nonisolated static func backgroundFetchResult(
+        authenticated: Bool,
+        refreshCompleted: Bool,
+        cursorChanged: Bool
+    ) -> UIBackgroundFetchResult {
+        guard authenticated else { return .noData }
+        guard refreshCompleted else { return .failed }
+        return cursorChanged ? .newData : .noData
+    }
+
     @discardableResult
     func applyApiBase() -> Bool {
         let trimmed = apiBase.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -251,6 +614,19 @@ final class AppStore: ObservableObject {
         else {
             errorMessage = APIClientError.invalidBaseURL.localizedDescription
             return false
+        }
+        let previousOrigin = ActiveCommandScope.origin(for: client.baseURL)
+        let nextOrigin = ActiveCommandScope.origin(for: url)
+        if client.baseURL != url {
+            invalidateLocalVoiceWork()
+        }
+        if previousOrigin != nextOrigin {
+            do {
+                try clearActiveCommandForScopeChange()
+            } catch {
+                errorMessage = error.localizedDescription
+                return false
+            }
         }
         apiBase = trimmed
         UserDefaults.standard.set(trimmed, forKey: "vab.apiBase")
@@ -432,12 +808,22 @@ final class AppStore: ObservableObject {
     }
 
     func searchHistory(_ query: String) async -> SearchResponse? {
+        guard let query = Self.normalizedHistorySearchQuery(query) else {
+            errorMessage = "Search must contain between 1 and 200 characters."
+            return nil
+        }
         do {
             return try await client.search(query: query)
         } catch {
             errorMessage = error.localizedDescription
             return nil
         }
+    }
+
+    nonisolated static func normalizedHistorySearchQuery(_ query: String) -> String? {
+        let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty, normalized.count <= 200 else { return nil }
+        return normalized
     }
 
     func exportSession(_ sessionId: String) async -> SessionExportResponse? {
@@ -473,7 +859,7 @@ final class AppStore: ObservableObject {
     }
 
     private func finishAuthentication(_ auth: AuthResponse) async throws {
-        applyAuth(auth)
+        try applyAuth(auth)
         // Device registration enables system delivery, but it must not
         // block the in-app decision surface. Simulators can lack a real
         // APNs entitlement, and a temporary registration outage should
@@ -532,8 +918,20 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func applyAuth(_ auth: AuthResponse) {
+    private func applyAuth(_ auth: AuthResponse) throws {
+        let accountWillChange = currentUserID != auth.user_id
+        let accessTokenWillChange = token != auth.token
+        if accountWillChange || accessTokenWillChange {
+            invalidateLocalVoiceWork()
+        }
+        if currentUserID != nil, accountWillChange {
+            try clearActiveCommandForScopeChange()
+        }
+        isApplyingAuthenticationScopeMutation = true
+        currentUserID = auth.user_id
+        UserDefaults.standard.set(auth.user_id, forKey: Self.userIDKey)
         token = auth.token
+        isApplyingAuthenticationScopeMutation = false
         if let nextRefresh = auth.refresh_token {
             refreshToken = nextRefresh
             client.refreshToken = nextRefresh
@@ -546,12 +944,40 @@ final class AppStore: ObservableObject {
     /// model is never activated until the app's pinned public key verifies its
     /// manifest and bytes; if the release has not configured a model, the UI
     /// reports that explicitly and the voice button remains unavailable.
-    func prepareLocalVoiceModel() async {
-        guard token != nil else {
+    func prepareLocalVoiceModel(forceRefresh: Bool = false) async {
+        guard let scope = localVoiceWorkScope else {
             voiceModelStatus = "Sign in before preparing voice"
             return
         }
+        if let voiceModelPreparationTask,
+           voiceModelPreparationGeneration == scope.generation
+        {
+            await voiceModelPreparationTask.value
+            return
+        }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performLocalVoiceModelPreparation(
+                forceRefresh: forceRefresh,
+                scope: scope
+            )
+        }
+        voiceModelPreparationTask = task
+        voiceModelPreparationGeneration = scope.generation
+        await task.value
+        guard voiceModelPreparationGeneration == scope.generation else { return }
+        voiceModelPreparationTask = nil
+        voiceModelPreparationGeneration = nil
+    }
+
+    private func performLocalVoiceModelPreparation(
+        forceRefresh: Bool,
+        scope: LocalVoiceWorkScope
+    ) async {
+        guard localVoiceScopeIsCurrent(scope) else { return }
         voiceModelStatus = "Preparing on-device voice model…"
+        let previousController = voiceController
+        var modelBeforeAttempt: InstalledModel?
         do {
             let manager: LocalVoiceModelManager
             if let existing = voiceModelManager {
@@ -559,51 +985,222 @@ final class AppStore: ObservableObject {
             } else {
                 manager = try LocalVoiceModelManager()
             }
+            guard localVoiceScopeIsCurrent(scope) else { throw CancellationError() }
             voiceModelManager = manager
-            if manager.activeModel == nil {
-                let descriptor = try await client.getModelArtifactDescriptor(
-                    modelID: LocalVoiceModelManager.defaultModelID
+            let previousModel = manager.activeModel
+            modelBeforeAttempt = previousModel
+            if Self.shouldFetchVoiceModel(
+                forceRefresh: forceRefresh,
+                activeModelAvailable: previousModel != nil
+            ) {
+                let descriptorRequest = try makeLocalVoiceRequest(
+                    path: "/v1/phone/models/\(LocalVoiceModelManager.defaultModelID)",
+                    method: "GET",
+                    scope: scope
                 )
-                _ = try await manager.install(descriptor)
+                let descriptor: ModelArtifactDescriptorResponse = try await performLocalVoiceRequest(
+                    descriptorRequest
+                )
+                try Task.checkCancellation()
+                guard localVoiceScopeIsCurrent(scope) else { throw CancellationError() }
+                _ = try await manager.install(
+                    descriptor,
+                    authorizationToken: scope.accessToken,
+                    trustedAPIBaseURL: scope.apiBaseURL
+                )
             }
-            let generator = try manager.makeCommandGenerator()
-            voiceController = LocalVoiceCommandController(generator: generator) { [weak self] envelope in
-                guard let self else {
-                    throw APIClientError.network("Knock Knock is no longer available")
-                }
-                return try await self.submitLocalCommand(envelope)
+            try Task.checkCancellation()
+            guard localVoiceScopeIsCurrent(scope) else { throw CancellationError() }
+            // Signature/hash verification proves provenance, not that the
+            // container can actually initialize on this device. Probe before
+            // replacing the controller or reporting Ready.
+            try await manager.validateActiveModelRuntime()
+            try Task.checkCancellation()
+            guard localVoiceScopeIsCurrent(scope) else { throw CancellationError() }
+            let replacement = try makeVoiceController(using: manager, scope: scope)
+            guard localVoiceScopeIsCurrent(scope) else {
+                replacement.abort()
+                throw CancellationError()
             }
+            previousController?.abort()
+            voiceController = replacement
             if let model = manager.activeModel {
                 voiceModelStatus = "Ready · Gemma \(model.manifest.modelVersion)"
             } else {
                 voiceModelStatus = "Model not installed"
             }
         } catch {
-            voiceController = nil
-            voiceModelStatus = "Unavailable · \(error.localizedDescription)"
-            errorMessage = "On-device voice is not ready: \(error.localizedDescription)"
+            if error is CancellationError || !localVoiceScopeIsCurrent(scope) { return }
+            let message = Self.voicePreparationErrorMessage(for: error)
+            if let manager = voiceModelManager,
+               let previousController,
+               let previousModel = modelBeforeAttempt
+            {
+                // A download/descriptor failure must not disable the last
+                // verified runtime. If a newly activated artifact cannot open,
+                // roll back to the persisted predecessor before retaining the
+                // old controller.
+                var previousSelectionRestored = manager.activeModel == previousModel
+                if !previousSelectionRestored,
+                   manager.rollbackModel == previousModel,
+                   (try? manager.rejectActiveModelAfterRuntimeFailure(
+                       restoring: previousModel
+                   )) != nil
+                {
+                    previousSelectionRestored = manager.activeModel == previousModel
+                }
+                if previousSelectionRestored {
+                    voiceController = previousController
+                    voiceModelStatus = "Ready · Gemma \(previousModel.manifest.modelVersion) · Update failed"
+                    errorMessage = "Voice model update failed; the previous verified model is still active. \(message)"
+                } else {
+                    voiceController = nil
+                    voiceModelStatus = "Unavailable · Update and rollback failed"
+                    errorMessage = "The voice model update failed and the previous verified model could not be restored. \(message)"
+                }
+            } else {
+                // A first installation has no predecessor to roll back to.
+                // Quarantine an unloadable artifact so relaunch cannot select
+                // it again merely because its signature remains valid.
+                if let manager = voiceModelManager,
+                   error as? LocalVoiceAdapterError == .gemmaRuntimeInitializationFailed
+                {
+                    try? manager.rejectActiveModelAfterRuntimeFailure(restoring: nil)
+                }
+                voiceController = nil
+                voiceModelStatus = "Unavailable · \(message)"
+                errorMessage = "On-device voice is not ready: \(message)"
+            }
         }
     }
 
-    private func submitLocalCommand(_ envelope: CommandEnvelope) async throws -> CommandResponse {
-        let created = try await client.createCommand(envelope)
-        handleCommandResponse(created)
+    private func makeVoiceController(
+        using manager: LocalVoiceModelManager,
+        scope: LocalVoiceWorkScope
+    ) throws -> LocalVoiceCommandController {
+        let generator = try manager.makeCommandGenerator(deviceID: scope.deviceID)
+        return LocalVoiceCommandController(
+            generator: generator,
+            submit: { [weak self] envelope in
+                guard let self else {
+                    throw APIClientError.network("Knock Knock is no longer available")
+                }
+                return try await self.submitLocalCommand(envelope, scope: scope)
+            },
+            synthesizer: commandSynthesizer,
+            operationIsAllowed: { [weak self] in
+                self?.localVoiceScopeIsCurrent(scope) == true
+            }
+        )
+    }
+
+    private func submitLocalCommand(
+        _ envelope: CommandEnvelope,
+        scope: LocalVoiceWorkScope
+    ) async throws -> CommandResponse {
+        try Task.checkCancellation()
+        guard localVoiceScopeIsCurrent(scope),
+              let activeCommandScope,
+              activeCommandScope.backendOrigin == ActiveCommandScope.origin(for: scope.apiBaseURL),
+              activeCommandScope.ownerUserID == scope.ownerUserID
+        else { throw CancellationError() }
+        let application: ActiveCommandApplication
+        do {
+            application = try await activeCommandCoordinator.submit(
+                envelope: envelope,
+                scope: activeCommandScope,
+                onBegan: { [weak self] in
+                    self?.publishActiveCommandState()
+                }
+            ) { [weak self] canonicalEnvelope in
+                guard let self else { throw CancellationError() }
+                try Task.checkCancellation()
+                guard self.localVoiceScopeIsCurrent(scope) else {
+                    throw CancellationError()
+                }
+                let request = try self.makeLocalVoiceRequest(
+                    path: "/v1/phone/commands",
+                    method: "POST",
+                    body: JSONEncoder().encode(canonicalEnvelope),
+                    scope: scope
+                )
+                let response: CommandResponse = try await self.performLocalVoiceRequest(request)
+                try Task.checkCancellation()
+                guard self.localVoiceScopeIsCurrent(scope) else {
+                    throw CancellationError()
+                }
+                return response
+            }
+        } catch {
+            if Self.commandSubmissionDefinitelyRejected(error) {
+                try activeCommandCoordinator.abandonUnacknowledgedSubmission(
+                    expectedCommandID: envelope.commandID
+                )
+                publishActiveCommandState()
+            }
+            throw error
+        }
+        try Task.checkCancellation()
+        guard localVoiceScopeIsCurrent(scope) else { throw CancellationError() }
+        consumeCommandApplication(application)
 
         // Read back the server-owned state before presenting it. The create
         // response is useful for degraded connectivity, but GET is the
         // canonical source for risk, confirmation, and lifecycle state.
-        guard let canonical = try? await client.getCommand(commandID: created.command_id) else {
-            return created
+        let canonical: CommandResponse
+        do {
+            let request = try makeLocalVoiceRequest(
+                path: "/v1/phone/commands/\(envelope.commandID)",
+                method: "GET",
+                scope: scope
+            )
+            canonical = try await performLocalVoiceRequest(request)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return application.response
         }
-        handleCommandResponse(canonical)
+        try Task.checkCancellation()
+        guard localVoiceScopeIsCurrent(scope) else { throw CancellationError() }
+        if let canonicalApplication = try activeCommandCoordinator.accept(
+            response: canonical,
+            expectedCommandID: envelope.commandID
+        ) {
+            consumeCommandApplication(canonicalApplication)
+        }
         return canonical
     }
 
-    private func handleCommandResponse(_ response: CommandResponse) {
+    @discardableResult
+    private func handleCommandResponse(
+        _ response: CommandResponse,
+        expectedCommandID: String
+    ) throws -> Bool {
+        guard let application = try activeCommandCoordinator.accept(
+            response: response,
+            expectedCommandID: expectedCommandID
+        ) else { return false }
+        consumeCommandApplication(application)
+        return true
+    }
+
+    /// Consumes only responses already fenced by `ActiveCommandCheckpointCoordinator`.
+    /// Internal visibility keeps the server-owned UI transition deterministic in tests.
+    func consumeCommandApplication(_ application: ActiveCommandApplication) {
+        publishActiveCommandState()
+        let response = application.response
+        // Eligibility can expire without a command version change, so consume
+        // this field for idempotent reconciliation responses as well as newer
+        // lifecycle versions. A missing, null, or malformed value clears Undo.
+        undoableCommandID = response.serverAuthorizedUndoCommandID
+        guard application.outcome == .applied else { return }
         latestCommandResponse = response
-        undoableCommandID = response.state == "succeeded" && response.action?.reversible == true
-            ? response.command_id
-            : nil
+        if response.state != "awaiting_confirmation",
+           pendingCommandConfirmation?.command_id == response.command_id
+        {
+            pendingCommandConfirmation = nil
+            localStore.clearPendingCommandConfirmation()
+        }
         guard response.state == "awaiting_confirmation" else { return }
         guard let action = response.action,
               action.confirm_required
@@ -613,13 +1210,15 @@ final class AppStore: ObservableObject {
             errorMessage = "This command needs server confirmation metadata before it can run."
             return
         }
-        let token = response.confirmation_token
-            ?? pendingCommandConfirmation
-                .flatMap { $0.command_id == response.command_id ? $0.confirmation_token : nil }
+        let token = activeCommandCoordinator.durablePendingConfirmation
+            .flatMap { $0.command_id == response.command_id ? $0.confirmation_token : nil }
         guard let token else {
             // GET intentionally does not repeat a one-time token. If the
-            // create response was lost before persistence, fail closed and
-            // require a new command instead of inventing or reusing a token.
+            // backend version advanced because another replay rotated the
+            // authority, discard any older UI copy rather than offering a
+            // token which can no longer confirm this command.
+            pendingCommandConfirmation = nil
+            localStore.clearPendingCommandConfirmation()
             errorMessage = "This command needs a fresh confirmation token before it can run."
             return
         }
@@ -650,8 +1249,11 @@ final class AppStore: ObservableObject {
                 confirmationToken: confirmation.confirmation_token
             )
             let canonical = (try? await client.getCommand(commandID: confirmation.command_id)) ?? response
-            handleCommandResponse(canonical)
-            if canonical.state != "awaiting_confirmation" {
+            let accepted = try handleCommandResponse(
+                canonical,
+                expectedCommandID: confirmation.command_id
+            )
+            if accepted, canonical.state != "awaiting_confirmation" {
                 pendingCommandConfirmation = nil
                 localStore.clearPendingCommandConfirmation()
                 await refresh()
@@ -667,10 +1269,14 @@ final class AppStore: ObservableObject {
         do {
             let response = try await client.cancelCommand(commandID: confirmation.command_id)
             let canonical = (try? await client.getCommand(commandID: confirmation.command_id)) ?? response
-            latestCommandResponse = canonical
-            pendingCommandConfirmation = nil
-            localStore.clearPendingCommandConfirmation()
-            await refresh()
+            if try handleCommandResponse(
+                canonical,
+                expectedCommandID: confirmation.command_id
+            ) {
+                pendingCommandConfirmation = nil
+                localStore.clearPendingCommandConfirmation()
+                await refresh()
+            }
         } catch {
             errorMessage = "The command was not cancelled. (\(error.localizedDescription))"
         }
@@ -680,25 +1286,31 @@ final class AppStore: ObservableObject {
         errorMessage = nil
         do {
             let response = try await client.undoCommand(commandID: commandID)
-            latestCommandResponse = (try? await client.getCommand(commandID: commandID)) ?? response
-            undoableCommandID = nil
-            await refresh()
+            let canonical = (try? await client.getCommand(commandID: commandID)) ?? response
+            if try handleCommandResponse(canonical, expectedCommandID: commandID) {
+                await refresh()
+            }
         } catch {
             errorMessage = "Undo was not completed. (\(error.localizedDescription))"
         }
     }
 
     func logout() {
+        invalidateLocalVoiceWork()
         if let refreshToken {
             let client = self.client
             Task { try? await client.logout(refreshToken: refreshToken) }
         }
         stopEventStream()
         stopReconciliation()
+        isApplyingAuthenticationScopeMutation = true
         token = nil
         refreshToken = nil
+        currentUserID = nil
+        isApplyingAuthenticationScopeMutation = false
         client.refreshToken = nil
         KeychainStore.delete(account: "refresh-token")
+        UserDefaults.standard.removeObject(forKey: Self.userIDKey)
         sessions = []
         agents = []
         pushes = []
@@ -715,10 +1327,11 @@ final class AppStore: ObservableObject {
         pendingOperations = []
         pendingCommandConfirmation = nil
         latestCommandResponse = nil
+        activeCommandPresentation = nil
         undoableCommandID = nil
-        voiceController = nil
-        voiceModelStatus = "Not prepared"
         localStore.clearUserData()
+        activeCommandCoordinator.discardInMemory()
+        lastSpoken = nil
         pendingSessionToOpen = nil
         knownPushIds = []
         hasSeededPushIds = false
@@ -1250,6 +1863,22 @@ final class AppStore: ObservableObject {
     private func loadRemoteState(includeAgents: Bool, generation: Int? = nil) async throws {
         async let s = client.listSessions()
         async let p = client.listPushes()
+        let commandTask: Task<ActiveCommandApplication?, Error>? =
+            activeCommandCoordinator.commandIDForReconciliation == nil
+            ? nil
+            : Task { @MainActor [activeCommandCoordinator, client] in
+                try await activeCommandCoordinator.reconcileCurrent(
+                    get: { commandID in
+                        try await client.getCommand(commandID: commandID)
+                    },
+                    replay: { canonicalEnvelope in
+                        try await client.createCommand(canonicalEnvelope)
+                    },
+                    definitelyRejected: { error in
+                        Self.commandSubmissionDefinitelyRejected(error)
+                    }
+                )
+            }
         let agentsTask: Task<[Agent], Error>? = includeAgents
             ? Task { try await client.listAgents() }
             : nil
@@ -1260,6 +1889,10 @@ final class AppStore: ObservableObject {
             remoteAgents = try await agentsTask.value
         } else {
             remoteAgents = nil
+        }
+        var commandApplication: ActiveCommandApplication?
+        if let commandTask {
+            commandApplication = try await commandTask.value
         }
         if let generation,
            (generation != reconciliationGeneration || token == nil || Task.isCancelled)
@@ -1290,6 +1923,14 @@ final class AppStore: ObservableObject {
             lastSpoken = newest.voice_script ?? newest.body
         }
         pushes = newPushes
+        if let commandApplication {
+            consumeCommandApplication(commandApplication)
+        } else if commandTask != nil {
+            // A definitive replay rejection clears the coordinator's generic
+            // submitting presentation. Reflect that release in the UI so a
+            // later local command is not visually stuck behind the old fence.
+            publishActiveCommandState()
+        }
         localStore.cacheSessions(mergedSessions)
         localStore.cachePushes(newPushes)
         lastRefreshAt = Date()
@@ -1350,7 +1991,7 @@ final class AppStore: ObservableObject {
         guard let refreshToken else { return false }
         do {
             let auth = try await client.refreshAuth(refreshToken: refreshToken)
-            applyAuth(auth)
+            try applyAuth(auth)
             return true
         } catch {
             return false
@@ -1401,10 +2042,12 @@ final class AppStore: ObservableObject {
     private func presentKnock(_ push: DevPush) {
         // Home/settings UI tests create a needs_user fixture only to populate
         // the workspace. They opt out of the full-screen overlay explicitly;
-        // the destructive confirmation UI test leaves it enabled.
+        // the destructive confirmation test keeps the real overlay enabled.
+        #if DEBUG
         if ProcessInfo.processInfo.environment["KNOCK_UI_TEST_SUPPRESS_KNOCK_OVERLAY"] == "1" {
             return
         }
+        #endif
         knockAlert = KnockAlert(
             id: push.push_id,
             sessionId: push.session_id,
@@ -1412,13 +2055,13 @@ final class AppStore: ObservableObject {
             body: push.body
         )
         #if targetEnvironment(simulator)
-        // UI tests exercise the in-app decision surface. Disable the extra
-        // simulator notification banner when explicitly requested so a
-        // system-level banner cannot steal a tap during a transition. Real
-        // device/APNs validation does not set this flag.
+        #if DEBUG
         if ProcessInfo.processInfo.environment["KNOCK_UI_TEST_SUPPRESS_LOCAL_BANNER"] != "1" {
             scheduleLocalBanner(title: push.title, body: push.body, sessionId: push.session_id)
         }
+        #else
+        scheduleLocalBanner(title: push.title, body: push.body, sessionId: push.session_id)
+        #endif
         #endif
     }
 
@@ -1492,12 +2135,18 @@ final class AppStore: ObservableObject {
                 upsertPendingOperation(operation)
                 errorMessage = "Offline. Your choice is saved and will retry automatically."
             } else {
-                removePendingOperation(operation.id)
+                upsertPendingOperation(Self.pendingOperationAfterPermanentFailure(
+                    operation,
+                    error: error
+                ))
                 errorMessage = error.localizedDescription
             }
             return nil
         } catch {
-            removePendingOperation(operation.id)
+            upsertPendingOperation(Self.pendingOperationAfterPermanentFailure(
+                operation,
+                error: error
+            ))
             errorMessage = error.localizedDescription
             return nil
         }
@@ -1543,11 +2192,17 @@ final class AppStore: ObservableObject {
                 upsertPendingOperation(operation)
                 errorMessage = "Offline. Your decision is saved and will retry automatically."
             } else {
-                removePendingOperation(operation.id)
+                upsertPendingOperation(Self.pendingOperationAfterPermanentFailure(
+                    operation,
+                    error: error
+                ))
                 errorMessage = error.localizedDescription
             }
         } catch {
-            removePendingOperation(operation.id)
+            upsertPendingOperation(Self.pendingOperationAfterPermanentFailure(
+                operation,
+                error: error
+            ))
             errorMessage = error.localizedDescription
         }
     }
@@ -1588,22 +2243,23 @@ final class AppStore: ObservableObject {
     }
 
     private func retryPendingOperations(generation: Int? = nil) async {
-        guard !pendingOperations.isEmpty, !pendingRetryInProgress else { return }
-        pendingRetryInProgress = true
-        defer { pendingRetryInProgress = false }
+        guard !pendingOperations.isEmpty else { return }
+        guard pendingRetryCoordinator.beginOrRequestRerun() else { return }
+        defer { pendingRetryCoordinator.finish() }
         var completedAny = false
-        let operations = pendingOperations
-        for operation in operations {
-            if operation.status == .failed {
-                continue
-            }
-            var next = operation
-            next.status = .inFlight
-            next.lastError = nil
-            next.failureCode = nil
-            upsertPendingOperation(next)
-            do {
-                switch operation.kind {
+        repeat {
+            let operations = pendingOperations
+            for operation in operations {
+                if operation.status == .failed {
+                    continue
+                }
+                var next = operation
+                next.status = .inFlight
+                next.lastError = nil
+                next.failureCode = nil
+                upsertPendingOperation(next)
+                do {
+                    switch operation.kind {
                     case .reply:
                         guard let actionKey = operation.action_key else {
                             next.status = .failed
@@ -1632,44 +2288,45 @@ final class AppStore: ObservableObject {
                             confirm: confirm,
                             idempotencyKey: operation.id
                         )
-                }
-                guard Self.retryContextIsActive(generation: generation, currentGeneration: reconciliationGeneration, tokenAvailable: token != nil) else {
-                    return
-                }
-                removePendingOperation(operation.id)
-                completedAny = true
-            } catch let error as APIClientError {
-                guard Self.retryContextIsActive(generation: generation, currentGeneration: reconciliationGeneration, tokenAvailable: token != nil) else {
-                    return
-                }
-                if Self.shouldRetryPendingOperation(error) {
-                    if case let .badStatus(_, _, metadata) = error,
-                       let requestID = metadata.requestID
-                    {
-                        print("[pending] retryable request=\(requestID) retry_after=\(metadata.retryAfter ?? 0)")
                     }
-                    next.status = .pending
-                    next.lastError = nil
-                    next.failureCode = nil
-                    upsertPendingOperation(next)
-                } else {
-                    next.status = .failed
-                    next.lastError = error.localizedDescription
-                    next.failureCode = Self.pendingFailureCode(error)
-                    upsertPendingOperation(next)
+                    guard Self.retryContextIsActive(generation: generation, currentGeneration: reconciliationGeneration, tokenAvailable: token != nil) else {
+                        return
+                    }
+                    removePendingOperation(operation.id)
+                    completedAny = true
+                } catch let error as APIClientError {
+                    guard Self.retryContextIsActive(generation: generation, currentGeneration: reconciliationGeneration, tokenAvailable: token != nil) else {
+                        return
+                    }
+                    if Self.shouldRetryPendingOperation(error) {
+                        if case let .badStatus(_, _, metadata) = error,
+                           let requestID = metadata.requestID
+                        {
+                            print("[pending] retryable request=\(requestID) retry_after=\(metadata.retryAfter ?? 0)")
+                        }
+                        next.status = .pending
+                        next.lastError = nil
+                        next.failureCode = nil
+                        upsertPendingOperation(next)
+                    } else {
+                        upsertPendingOperation(Self.pendingOperationAfterPermanentFailure(
+                            operation,
+                            error: error
+                        ))
+                    }
+                } catch {
+                    // Permanent failures stay visible so the user can retry after
+                    // fixing the cause or explicitly discard the saved intent.
+                    guard Self.retryContextIsActive(generation: generation, currentGeneration: reconciliationGeneration, tokenAvailable: token != nil) else {
+                        return
+                    }
+                    upsertPendingOperation(Self.pendingOperationAfterPermanentFailure(
+                        operation,
+                        error: error
+                    ))
                 }
-            } catch {
-                // Permanent failures stay visible so the user can retry after
-                // fixing the cause or explicitly discard the saved intent.
-                guard Self.retryContextIsActive(generation: generation, currentGeneration: reconciliationGeneration, tokenAvailable: token != nil) else {
-                    return
-                }
-                next.status = .failed
-                next.lastError = error.localizedDescription
-                next.failureCode = "permanent_failure"
-                upsertPendingOperation(next)
             }
-        }
+        } while pendingRetryCoordinator.consumeRerun() && token != nil
         if completedAny {
             try? await loadRemoteState(includeAgents: false, generation: generation)
         }
@@ -1710,6 +2367,18 @@ final class AppStore: ObservableObject {
     nonisolated static func shouldRetryPendingOperation(_ error: Error) -> Bool {
         guard let error = error as? APIClientError else { return false }
         return isRetryableNetwork(error)
+    }
+
+    nonisolated static func pendingOperationAfterPermanentFailure(
+        _ operation: PendingOperation,
+        error: Error
+    ) -> PendingOperation {
+        var failed = operation
+        failed.status = .failed
+        failed.lastError = error.localizedDescription
+        failed.failureCode = (error as? APIClientError).map(pendingFailureCode)
+            ?? "permanent_failure"
+        return failed
     }
 
     nonisolated private static func pendingFailureCode(_ error: APIClientError) -> String {

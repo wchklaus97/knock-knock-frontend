@@ -68,6 +68,52 @@ final class CommandEnvelopeTests: XCTestCase {
         }
     }
 
+    func testDuplicateJSONKeysAreRejectedAtEveryObjectDepth() {
+        let duplicateIntent = validJSON.replacingOccurrences(
+            of: #""intent": "voice.cancel""#,
+            with: #""intent": "voice.cancel", "intent": "send_message""#
+        )
+        assertDuplicateKey(duplicateIntent, key: "intent")
+
+        let escapedDuplicateIntent = validJSON.replacingOccurrences(
+            of: #""intent": "voice.cancel""#,
+            with: #""intent": "voice.cancel", "in\u0074ent": "send_message""#
+        )
+        assertDuplicateKey(escapedDuplicateIntent, key: "intent")
+
+        let duplicateArgument = validJSON.replacingOccurrences(
+            of: #""args": {}"#,
+            with: #""args": {"q": "today", "q": "everything"}"#
+        )
+        assertDuplicateKey(duplicateArgument, key: "q")
+
+        let nestedDuplicate = validJSON.replacingOccurrences(
+            of: #""args": {}"#,
+            with: #""args": {"metadata": {"execute": false, "execute": true}}"#
+        )
+        assertDuplicateKey(nestedDuplicate, key: "execute")
+    }
+
+    private func assertDuplicateKey(
+        _ json: String,
+        key: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertThrowsError(
+            try CommandEnvelope.decodeStrict(from: Data(json.utf8)),
+            file: file,
+            line: line
+        ) { error in
+            XCTAssertEqual(
+                error as? CommandEnvelopeError,
+                .duplicateJSONKey(key),
+                file: file,
+                line: line
+            )
+        }
+    }
+
     private var validJSON: String {
         """
         {

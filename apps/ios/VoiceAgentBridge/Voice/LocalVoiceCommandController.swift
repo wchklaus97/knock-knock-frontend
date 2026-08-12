@@ -3,9 +3,139 @@ import Combine
 import Foundation
 import Speech
 
+final class VoiceGenerationWaiter: @unchecked Sendable {
+    private enum OperationPhase {
+        case idle
+        case starting
+        case started
+        case finished
+    }
+
+    private let lock = NSLock()
+    private let beforeStartingOperation: () -> Void
+    private var continuation: CheckedContinuation<Data, Error>?
+    private var pendingResult: Result<Data, Error>?
+    private var isResolved = false
+    private var operationPhase = OperationPhase.idle
+    private var cancellationRequested = false
+    private var cancellationAction: (() -> Void)?
+    private var cancellationActionInvoked = false
+
+    init(beforeStartingOperation: @escaping () -> Void = {}) {
+        self.beforeStartingOperation = beforeStartingOperation
+    }
+
+    func value(
+        starting operation: (@escaping (Result<Data, Error>) -> Void) -> Void,
+        onCancel cancellationAction: @escaping () -> Void
+    ) async throws -> Data {
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                var immediateResult: Result<Data, Error>?
+                var shouldStart = false
+
+                lock.lock()
+                if isResolved {
+                    immediateResult = pendingResult ?? .failure(CancellationError())
+                    pendingResult = nil
+                } else {
+                    self.continuation = continuation
+                    self.cancellationAction = cancellationAction
+                    operationPhase = .starting
+                    shouldStart = true
+                }
+                lock.unlock()
+
+                if let immediateResult {
+                    continuation.resume(with: immediateResult)
+                } else if shouldStart {
+                    beforeStartingOperation()
+                    operation { [weak self] result in
+                        self?.resolveFromOperation(result)
+                    }
+                    finishStartingOperation()
+                }
+            }
+        }, onCancel: { [weak self] in
+            self?.cancel()
+        })
+    }
+
+    func cancel() {
+        var actionToInvoke: (() -> Void)?
+        var continuationToResume: CheckedContinuation<Data, Error>?
+
+        lock.lock()
+        cancellationRequested = true
+        switch operationPhase {
+        case .idle:
+            operationPhase = .finished
+            cancellationAction = nil
+        case .starting:
+            break
+        case .started:
+            actionToInvoke = takeCancellationActionLocked()
+        case .finished:
+            break
+        }
+        continuationToResume = resolveLocked(.failure(CancellationError()))
+        lock.unlock()
+
+        actionToInvoke?()
+        continuationToResume?.resume(throwing: CancellationError())
+    }
+
+    private func finishStartingOperation() {
+        var actionToInvoke: (() -> Void)?
+
+        lock.lock()
+        if operationPhase == .starting {
+            operationPhase = .started
+            if cancellationRequested {
+                actionToInvoke = takeCancellationActionLocked()
+            }
+        }
+        lock.unlock()
+
+        actionToInvoke?()
+    }
+
+    private func resolveFromOperation(_ result: Result<Data, Error>) {
+        let continuationToResume: CheckedContinuation<Data, Error>?
+
+        lock.lock()
+        operationPhase = .finished
+        cancellationAction = nil
+        continuationToResume = resolveLocked(result)
+        lock.unlock()
+
+        continuationToResume?.resume(with: result)
+    }
+
+    private func takeCancellationActionLocked() -> (() -> Void)? {
+        guard !cancellationActionInvoked else { return nil }
+        cancellationActionInvoked = true
+        defer { cancellationAction = nil }
+        return cancellationAction
+    }
+
+    private func resolveLocked(
+        _ result: Result<Data, Error>
+    ) -> CheckedContinuation<Data, Error>? {
+        guard !isResolved else { return nil }
+        isResolved = true
+        if let continuation {
+            self.continuation = nil
+            return continuation
+        }
+        pendingResult = result
+        return nil
+    }
+}
+
 /// Main-thread coordinator for the user-visible push-to-talk flow. It owns no
 /// executable action: capture produces a transcript, the local model produces
-/// an envelope, and LocalVoiceCommandCoordinator submits only the strict draft.
+/// an envelope, and only a current, uncancelled operation may submit it.
 @MainActor
 final class LocalVoiceCommandController: ObservableObject {
     enum State: Equatable {
@@ -18,120 +148,257 @@ final class LocalVoiceCommandController: ObservableObject {
         case failed(String)
     }
 
+    typealias PermissionStatusProvider = () -> Bool
+    typealias PermissionRequester = (@escaping (Result<Void, PushToTalkVoiceCapture.CaptureError>) -> Void) -> Void
+
     @Published private(set) var state: State = .idle
     @Published private(set) var transcript = ""
 
-    private let capture: PushToTalkVoiceCapture
-    private let coordinator: LocalVoiceCommandCoordinator
+    private let capture: PushToTalkVoiceCapturing
+    private let generator: LocalCommandGenerating
+    private let submit: @Sendable (CommandEnvelope) async throws -> CommandResponse
     private let synthesizer: VoiceSynthesizing
+    private let operationIsAllowed: () -> Bool
+    private let permissionsAreGranted: PermissionStatusProvider
+    private let requestPermissions: PermissionRequester
+
     private var pressActive = false
+    private var nextSessionID: UInt64 = 0
+    private var activeSessionID: UInt64?
+    private var processingTask: Task<Void, Never>?
+    private var generationWaiter: VoiceGenerationWaiter?
 
     init(
         generator: LocalCommandGenerating,
         submit: @escaping @Sendable (CommandEnvelope) async throws -> CommandResponse,
-        capture: PushToTalkVoiceCapture = PushToTalkVoiceCapture(),
-        synthesizer: VoiceSynthesizing = SystemVoiceSynthesizer()
+        capture: PushToTalkVoiceCapturing = PushToTalkVoiceCapture(),
+        synthesizer: VoiceSynthesizing = SystemVoiceSynthesizer(),
+        operationIsAllowed: @escaping () -> Bool = { true },
+        permissionsAreGranted: @escaping PermissionStatusProvider = {
+            SFSpeechRecognizer.authorizationStatus() == .authorized
+                && AVAudioSession.sharedInstance().recordPermission == .granted
+        },
+        requestPermissions: @escaping PermissionRequester = { completion in
+            PushToTalkVoiceCapture.requestPermissions(completion: completion)
+        }
     ) {
         self.capture = capture
-        coordinator = LocalVoiceCommandCoordinator(generator: generator, submit: submit)
+        self.generator = generator
+        self.submit = submit
         self.synthesizer = synthesizer
+        self.operationIsAllowed = operationIsAllowed
+        self.permissionsAreGranted = permissionsAreGranted
+        self.requestPermissions = requestPermissions
     }
 
-    /// Begins a new recording. The app never keeps the microphone active in
-    /// the background; callers must invoke stop() when the press ends.
+    deinit {
+        generationWaiter?.cancel()
+        processingTask?.cancel()
+        capture.abort()
+        synthesizer.stop()
+    }
+
+    /// Begins a new recording. Speech output is stopped first so it cannot feed
+    /// the microphone or compete with the capture audio session.
     func start() {
         guard canStart else { return }
+        cancelProcessing()
+        capture.abort()
+        synthesizer.stop()
+
+        nextSessionID &+= 1
+        let sessionID = nextSessionID
+        activeSessionID = sessionID
         pressActive = true
         transcript = ""
-        if SFSpeechRecognizer.authorizationStatus() == .authorized,
-           AVAudioSession.sharedInstance().recordPermission == .granted
-        {
-            startCapture()
+
+        if permissionsAreGranted() {
+            startCapture(sessionID: sessionID)
             return
         }
-        state = .requestingPermissions
 
-        PushToTalkVoiceCapture.requestPermissions { [weak self] result in
+        state = .requestingPermissions
+        requestPermissions { [weak self] result in
             Task { @MainActor [weak self] in
-                guard let self, self.state == .requestingPermissions, self.pressActive else { return }
+                guard let self,
+                      self.isCurrent(sessionID),
+                      self.state == .requestingPermissions,
+                      self.pressActive
+                else { return }
+
                 switch result {
                 case .success:
-                    self.startCapture()
+                    self.startCapture(sessionID: sessionID)
                 case let .failure(error):
-                    self.fail(error)
+                    self.finishWithFailure(error, sessionID: sessionID)
                 }
             }
         }
     }
 
-    /// Ends recording and lets the latest transcript pass through the strict
-    /// model/API boundary. Empty or low-confidence drafts become clarification.
+    /// Gracefully ends recording. Capture owns the short final-transcript wait;
+    /// inference does not start until its stop callback arrives.
     func stop() {
         pressActive = false
-        guard state == .listening else { return }
-        capture.stop()
+        switch state {
+        case .listening:
+            capture.stop()
+        case .requestingPermissions:
+            abort()
+        default:
+            break
+        }
     }
 
     func cancel() {
+        abort()
+    }
+
+    /// Invalidates permission, capture, inference, and API work. All callbacks
+    /// carry a session ID, so even a non-cooperative dependency cannot submit or
+    /// publish state after this returns.
+    func abort() {
+        activeSessionID = nil
         pressActive = false
-        guard state == .listening else { return }
-        capture.stop()
+        cancelProcessing()
+        capture.abort()
+        synthesizer.stop()
         state = .idle
         transcript = ""
     }
 
-    private func startCapture() {
+    private func startCapture(sessionID: UInt64) {
+        guard isCurrent(sessionID), pressActive else { return }
+        state = .listening
         do {
             try capture.start(
                 onTranscript: { [weak self] partial in
-                    guard let self else { return }
+                    guard let self, self.isCurrent(sessionID), self.state == .listening else { return }
                     self.transcript = partial.text
                 },
                 onStop: { [weak self] _ in
                     guard let self else { return }
-                    self.processLatestTranscript()
+                    self.processLatestTranscript(sessionID: sessionID)
+                },
+                onAbort: { [weak self] _ in
+                    guard let self else { return }
+                    self.finishAfterCaptureAbort(sessionID: sessionID)
                 },
                 onError: { [weak self] error in
                     guard let self else { return }
-                    self.fail(error)
+                    self.finishWithFailure(error, sessionID: sessionID)
                 }
             )
-            state = .listening
         } catch {
-            fail(error)
+            finishWithFailure(error, sessionID: sessionID)
         }
     }
 
-    private func processLatestTranscript() {
-        guard state == .listening else { return }
+    private func processLatestTranscript(sessionID: UInt64) {
+        guard isCurrent(sessionID), state == .listening else { return }
+        pressActive = false
+
+        let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            finishWithClarification(sessionID: sessionID)
+            return
+        }
+
         state = .processing
-        let text = transcript
-        Task { @MainActor [weak self] in
-            guard let self else { return }
+        let waiter = VoiceGenerationWaiter()
+        generationWaiter = waiter
+        let generator = self.generator
+        let submit = self.submit
+
+        processingTask = Task { @MainActor [weak self] in
             do {
-                guard let response = try await coordinator.handleTranscript(text) else {
-                    state = .clarificationRequired
-                    synthesizer.speak("Could you clarify that?")
+                let data = try await waiter.value { completion in
+                    generator.generateCommand(for: text, completion: completion)
+                } onCancel: {
+                    generator.cancelGeneration()
+                }
+                self?.generationWaiter = nil
+                try Task.checkCancellation()
+                guard self?.isCurrent(sessionID) == true else { return }
+
+                let envelope: CommandEnvelope
+                do {
+                    let decoded = try CommandEnvelope.decodeStrict(from: data)
+                    envelope = try LocalVoiceCommandPolicy.authoritativeEnvelope(from: decoded)
+                } catch {
+                    self?.finishWithClarification(sessionID: sessionID)
                     return
                 }
-                state = .submitted(response.command_id)
-                if response.state == "awaiting_confirmation" {
-                    synthesizer.speak("Please confirm this action in Knock Knock.")
-                } else {
-                    synthesizer.speak("Your request was submitted.")
-                }
+
+                try Task.checkCancellation()
+                guard self?.isCurrent(sessionID) == true else { return }
+                let response = try await submit(envelope)
+                try Task.checkCancellation()
+                guard self?.isCurrent(sessionID) == true else { return }
+                self?.finishWithSubmission(response, sessionID: sessionID)
+            } catch is CancellationError {
+                return
             } catch {
-                fail(error)
+                guard self?.isCurrent(sessionID) == true else { return }
+                if LocalVoiceCommandErrorPolicy.requiresClarification(error) {
+                    self?.finishWithClarification(sessionID: sessionID)
+                } else {
+                    self?.finishWithFailure(error, sessionID: sessionID)
+                }
             }
         }
     }
 
-    private func fail(_ error: Error) {
+    private func finishWithClarification(sessionID: UInt64) {
+        guard isCurrent(sessionID) else { return }
+        activeSessionID = nil
+        processingTask = nil
+        generationWaiter = nil
+        state = .clarificationRequired
+        synthesizer.speak("Could you clarify that?")
+    }
+
+    private func finishWithSubmission(_ response: CommandResponse, sessionID: UInt64) {
+        guard isCurrent(sessionID) else { return }
+        activeSessionID = nil
+        processingTask = nil
+        generationWaiter = nil
+        state = .submitted(response.command_id)
+    }
+
+    private func finishWithFailure(_ error: Error, sessionID: UInt64) {
+        guard isCurrent(sessionID) else { return }
+        activeSessionID = nil
         pressActive = false
+        cancelProcessing()
+        capture.abort()
+        synthesizer.stop()
         state = .failed(error.localizedDescription)
     }
 
+    private func finishAfterCaptureAbort(sessionID: UInt64) {
+        guard isCurrent(sessionID) else { return }
+        activeSessionID = nil
+        pressActive = false
+        cancelProcessing()
+        synthesizer.stop()
+        state = .idle
+        transcript = ""
+    }
+
+    private func cancelProcessing() {
+        generationWaiter?.cancel()
+        processingTask?.cancel()
+        generationWaiter = nil
+        processingTask = nil
+    }
+
+    private func isCurrent(_ sessionID: UInt64) -> Bool {
+        activeSessionID == sessionID && operationIsAllowed()
+    }
+
     private var canStart: Bool {
+        guard operationIsAllowed() else { return false }
         switch state {
         case .idle, .clarificationRequired, .submitted, .failed:
             return true

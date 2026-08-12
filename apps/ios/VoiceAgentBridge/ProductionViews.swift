@@ -948,6 +948,37 @@ struct AgentHomeRow: View {
     }
 }
 
+struct HomeCommandPresentationCard: View {
+    let presentation: BackendCommandPresentation
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: presentation.isTerminal ? "checkmark.circle.fill" : "clock.fill")
+                .foregroundStyle(presentation.isTerminal ? KnockDesign.mint : KnockDesign.lavender)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(presentation.title)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(KnockDesign.ink)
+                Text(presentation.message)
+                    .font(.caption)
+                    .foregroundStyle(KnockDesign.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 4)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(KnockDesign.card)
+        .overlay {
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .stroke(KnockDesign.border, lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("voice.command.presentation")
+    }
+}
+
 struct HomeVoiceDock: View {
     @ObservedObject var controller: LocalVoiceCommandController
     let targetLabel: String?
@@ -1162,18 +1193,35 @@ struct ProductionHomeView: View {
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if let controller = store.voiceController {
-                    HomeVoiceDock(
-                        controller: controller,
-                        targetLabel: focusedAgentId.flatMap { id in
-                            store.agents.first { $0.agent_id == id }?.displayLabel
+                VStack(spacing: 8) {
+                    if let presentation = store.activeCommandPresentation {
+                        HomeCommandPresentationCard(presentation: presentation)
+                            .id("\(presentation.commandID):\(presentation.version)")
+                            .onAppear {
+                                store.markActiveCommandPresented(
+                                    commandID: presentation.commandID,
+                                    version: presentation.version
+                                )
+                            }
+                            .padding(.horizontal, 16)
+                    }
+                    if let controller = store.voiceController {
+                        HomeVoiceDock(
+                            controller: controller,
+                            targetLabel: focusedAgentId.flatMap { id in
+                                store.agents.first { $0.agent_id == id }?.displayLabel
+                            }
+                        )
+                    } else {
+                        HomeVoicePrepareDock {
+                            Task { await store.prepareLocalVoiceModel() }
                         }
-                    )
-                } else {
-                    HomeVoicePrepareDock {
-                        Task { await store.prepareLocalVoiceModel() }
+                        .padding(.horizontal, 16)
                     }
                 }
+                .padding(.top, 8)
+                .padding(.bottom, 8)
+                .background(KnockDesign.canvas.opacity(0.98))
             }
             .navigationViewStyle(.stack)
             .sheet(
@@ -3270,7 +3318,7 @@ struct ProductionSettingsView: View {
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(store.voiceController == nil ? KnockDesign.muted : KnockDesign.mint)
                                 Button {
-                                    Task { await store.prepareLocalVoiceModel() }
+                                    Task { await store.prepareLocalVoiceModel(forceRefresh: true) }
                                 } label: {
                                     HStack {
                                         if store.voiceModelStatus.hasPrefix("Preparing") { ProgressView() }
@@ -3677,7 +3725,7 @@ struct SettingsPanelView: View {
             }
         }
         Button {
-            Task { await store.prepareLocalVoiceModel() }
+            Task { await store.prepareLocalVoiceModel(forceRefresh: true) }
         } label: {
             HStack {
                 if store.voiceModelStatus.hasPrefix("Preparing") { ProgressView() }

@@ -9,11 +9,34 @@ The backend contract is the sole protocol source of truth. This iOS status docum
 - [Backend architecture decisions](https://github.com/wchklaus97/knock-knock-backend/blob/main/docs/ARCHITECTURE_DECISIONS.md) — canonical architecture decisions (cross-repo placeholder).
 - [Backend implementation roadmap](https://github.com/wchklaus97/knock-knock-backend/blob/main/docs/IMPLEMENTATION_ROADMAP.md) — canonical implementation sequencing (cross-repo placeholder).
 - [Backend OpenAPI contract](https://github.com/wchklaus97/knock-knock-backend/blob/main/contracts/openapi.yaml) — canonical REST, SSE, error, and `CommandEnvelope v1` contract.
+- [Voice model release runbook](https://github.com/wchklaus97/knock-knock-backend/blob/main/docs/VOICE_MODEL_RELEASE_RUNBOOK.md) — canonical artifact signing, staging, evaluation, and rollback procedure.
 
-The current Phase 4/5 iOS implementation is validated by 36 unit tests and a
-three-test UI suite against a fresh local Rust Worker/D1. Model publication,
-public-key configuration, deployed E2E fixtures, physical-device voice
-evaluation, and human release approval remain backend-canonical release gates.
+The current voice completion branch adds strict command canonicalization,
+backend-owned presentation, signed private-model delivery, and crash-safe
+SQLite command reconciliation. Foreground-only capture preflight,
+clarification routing, persistent failed offline operations, and silent APNs
+wake-to-REST reconciliation are also implemented. A process-level dispatcher
+now handles wakes received before SwiftUI views appear, reports an accurate
+background fetch result, and pending-operation Retry requests are queued when
+an automatic pass is already active. Command wakes contain no resource or
+business identifier. A newer awaiting-confirmation version invalidates any
+older local token, and History search is uniformly trimmed and bounded to
+1–200 characters. Exact test evidence is maintained in the
+backend release report. The UAT-signed Gemma 3 1B int4 model now passes the
+32-example semantic/safety gate and the 2-second latency gate on iPhone 17 Pro
+Max. iPhone 13 Pro passes semantic/safety checks but not the latency target.
+Production trust-key configuration, model publication, microphone/thermal
+voice UAT, APNs/two-device evaluation, and human release approval remain
+backend-canonical release gates.
+
+The app now has two independent model activation gates: provenance verification
+and a real LiteRT-LM startup probe. Runtime-incompatible updates are quarantined
+and the previously verified model is restored; a first-install failure cannot
+be reported as `Ready`. Release builds also fail when the pinned 32-byte
+Ed25519 public key is absent or invalid. The evaluated Gemma 3 270M q8 candidate
+is explicitly rejected: its best controlled 32-example result was 0.500
+semantic accuracy (command p95 1.533 seconds, zero high-risk false executions),
+below the 0.950 release threshold. It is not approved for iPhone 13 or staging.
 
 ## ProgressStatus — `update_progress` only / 仅进度
 
