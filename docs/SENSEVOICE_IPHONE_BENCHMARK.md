@@ -146,3 +146,14 @@ candidate is evaluated, prioritize a stronger Cantonese/English model and a
 larger multi-speaker dataset; iPhone 17 Pro Max may separately qualify Whisper
 large-v3. Every candidate must repeat the same offline, privacy, entity, safety,
 and physical-device gates before integration.
+
+## Public-corpus follow-up
+
+A later 120-clip, multi-speaker public benchmark showed that the original
+single-speaker recordings materially underestimated Mandarin and Cantonese
+recognition. SenseVoice reached 97.9% Mandarin accuracy and 90.6% Cantonese
+accuracy after script normalization, but only 71.8% Hong Kong English accuracy.
+The two devices produced identical transcripts. This does not reverse the
+unified-model rejection or the command-safety result; it narrows SenseVoice to a
+possible Mandarin/Cantonese routed adapter. Full provenance and methodology are
+recorded in `docs/PUBLIC_STT_BENCHMARK.md`.

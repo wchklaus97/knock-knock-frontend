@@ -11,7 +11,7 @@ final class SenseVoiceQualificationTests: XCTestCase {
             let id: String
             let locale: String
             let text: String
-            let expectedOutcome: String
+            let expectedOutcome: String?
             let expectedIntent: String?
             let expectedArguments: [String: String]?
 
@@ -140,6 +140,7 @@ final class SenseVoiceQualificationTests: XCTestCase {
         var localeTimes: [String: [Int]] = [:]
         var allTimes: [Int] = []
         var semanticCorrect = 0
+        var semanticExamples = 0
         var highRiskFalseExecutions = 0
         for example in selectedExamples {
             let fileName = try XCTUnwrap(requestedFilesByID[example.id])
@@ -158,9 +159,12 @@ final class SenseVoiceQualificationTests: XCTestCase {
             localeUnits[example.locale, default: 0] += comparison.referenceCount
             localeTimes[example.locale, default: []].append(inferenceMilliseconds)
             allTimes.append(inferenceMilliseconds)
-            let semantic = evaluateTranscript(transcript, for: example)
-            if semantic.correct { semanticCorrect += 1 }
-            if semantic.highRiskFalseExecution { highRiskFalseExecutions += 1 }
+            let semantic = example.expectedOutcome.map { _ in
+                evaluateTranscript(transcript, for: example)
+            }
+            if semantic != nil { semanticExamples += 1 }
+            if semantic?.correct == true { semanticCorrect += 1 }
+            if semantic?.highRiskFalseExecution == true { highRiskFalseExecutions += 1 }
             print(
                 "SENSEVOICE_SAMPLE language_mode=\(configuredLanguage) "
                     + "id=\(example.id) locale=\(example.locale) "
@@ -168,11 +172,13 @@ final class SenseVoiceQualificationTests: XCTestCase {
                     + "edits=\(comparison.distance) reference_units=\(comparison.referenceCount) "
                     + "transcript=\(transcript)"
             )
-            print(
-                "SENSEVOICE_SEMANTIC id=\(example.id) correct=\(semantic.correct) "
-                    + "high_risk_false_execution=\(semantic.highRiskFalseExecution) "
-                    + "outcome=\(semantic.outcome)"
-            )
+            if let semantic {
+                print(
+                    "SENSEVOICE_SEMANTIC id=\(example.id) correct=\(semantic.correct) "
+                        + "high_risk_false_execution=\(semantic.highRiskFalseExecution) "
+                        + "outcome=\(semantic.outcome)"
+                )
+            }
         }
 
         for locale in localeUnits.keys.sorted() {
@@ -184,14 +190,17 @@ final class SenseVoiceQualificationTests: XCTestCase {
                     + "units=\(units) p95_inference_ms=\(percentile95(localeTimes[locale] ?? []))"
             )
         }
+        let semanticAccuracy = semanticExamples == 0
+            ? 0
+            : Double(semanticCorrect) / Double(semanticExamples)
         print(
             "SENSEVOICE_SUMMARY language_mode=\(configuredLanguage) "
                 + "samples=\(selectedExamples.count) threads=\(threads) "
                 + "load_ms=\(loadMilliseconds) p95_inference_ms=\(percentile95(allTimes)) "
                 + "resident_before_bytes=\(memoryBeforeLoad) "
                 + "resident_after_load_bytes=\(memoryAfterLoad) "
-                + "semantic_correct=\(semanticCorrect) "
-                + "semantic_accuracy=\(Double(semanticCorrect) / Double(selectedExamples.count)) "
+                + "semantic_examples=\(semanticExamples) semantic_correct=\(semanticCorrect) "
+                + "semantic_accuracy=\(semanticAccuracy) "
                 + "high_risk_false_executions=\(highRiskFalseExecutions)"
         )
     }
