@@ -14,6 +14,22 @@ private final class StubCommandGenerator: LocalCommandGenerating {
     }
 }
 
+private final class FixedIntentClassifier: LocalIntentClassifying {
+    let candidate: LocalIntentCandidate
+
+    init(candidate: LocalIntentCandidate) {
+        self.candidate = candidate
+    }
+
+    func classifyIntent(
+        for transcript: String,
+        localeIdentifier: String,
+        completion: @escaping (Result<LocalIntentCandidate, Error>) -> Void
+    ) {
+        completion(.success(candidate))
+    }
+}
+
 private final class TestBox<Value>: @unchecked Sendable {
     var value: Value
 
@@ -28,6 +44,43 @@ private enum TestCoordinatorError: Error, Equatable {
 
 @MainActor
 final class LocalVoiceCommandCoordinatorTests: XCTestCase {
+    func testTranscriptThroughEmbeddingFallbackReachesBackendBoundaryAsStrictEnvelope() async throws {
+        let classifier = FixedIntentClassifier(candidate: LocalIntentCandidate(
+            intent: "search_history",
+            confidence: 0.97,
+            runnerUpConfidence: 0.30,
+            outOfDomainConfidence: 0.02,
+            source: .embedding,
+            modelVersion: "multilingual-embedding-test-v1"
+        ))
+        let generator = DeterministicCommandGenerator(
+            locale: Locale(identifier: "en-HK"),
+            timezone: try XCTUnwrap(TimeZone(identifier: "Asia/Hong_Kong")),
+            deviceID: "ios-device-1",
+            sessionID: "session-1",
+            identifierFactory: { "fixed" },
+            intentResolver: RuleFirstIntentResolver(mode: .fallback, classifier: classifier)
+        )
+        let received = TestBox<CommandEnvelope?>(nil)
+        let coordinator = LocalVoiceCommandCoordinator(generator: generator) { envelope in
+            received.value = envelope
+            return try Self.response(for: envelope)
+        }
+
+        let response = try await coordinator.handleTranscript("Find everything about John")
+
+        XCTAssertEqual(response?.command_id, "cmd_voice_fixed")
+        XCTAssertEqual(received.value?.intent, "search_history")
+        XCTAssertEqual(
+            received.value?.args,
+            ["q": .string("Find everything about John")]
+        )
+        XCTAssertEqual(received.value?.confidence, 0.97)
+        XCTAssertEqual(received.value?.riskLevel, .low)
+        XCTAssertFalse(received.value?.needsConfirmation == true)
+        XCTAssertEqual(coordinator.state, .submitted("cmd_voice_fixed"))
+    }
+
     func testEmptyTranscriptRequiresClarificationWithoutSubmission() async throws {
         let generator = StubCommandGenerator(
             result: .failure(LocalVoiceAdapterError.gemmaRuntimeNotLinked)
@@ -298,6 +351,23 @@ final class LocalVoiceCommandCoordinatorTests: XCTestCase {
             error: nil,
             undo_command_id: nil,
             version: 2,
+            created_at: nil,
+            updated_at: nil
+        )
+    }
+
+    private nonisolated static func response(for envelope: CommandEnvelope) throws -> CommandResponse {
+        CommandResponse(
+            command_id: envelope.commandID,
+            state: "queued",
+            command: envelope,
+            action: nil,
+            presentation: nil,
+            confirmation_token: nil,
+            result: nil,
+            error: nil,
+            undo_command_id: nil,
+            version: 1,
             created_at: nil,
             updated_at: nil
         )

@@ -454,6 +454,84 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
         XCTAssertEqual(received.value?.needsConfirmation, true)
     }
 
+    func testFinalTranscriptJournalsExactEnvelopeBeforePostAndPublishesBackendConfirmation() async throws {
+        let databaseURL = Self.temporarySQLiteURL("voice-whole-workflow")
+        defer { Self.removeSQLiteArtifacts(at: databaseURL) }
+        let store = SQLiteStore(databaseURL: databaseURL)
+        let checkpointCoordinator = ActiveCommandCheckpointCoordinator(
+            store: store,
+            synthesizer: RecordingVoiceSynthesizer()
+        )
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com/v1/phone/commands"),
+            ownerUserID: "usr_voice_workflow"
+        ))
+        let generator = DeterministicCommandGenerator(
+            locale: Locale(identifier: "en-HK"),
+            timezone: try XCTUnwrap(TimeZone(identifier: "Asia/Hong_Kong")),
+            deviceID: "iphone13-pro",
+            sessionID: "session-voice-workflow",
+            identifierFactory: { "fixed" }
+        )
+        let capture = ControlledVoiceCapture()
+        let submitted = expectation(description: "backend accepted journaled voice command")
+        let controller = LocalVoiceCommandController(
+            generator: generator,
+            submit: { envelope in
+                let application = try await checkpointCoordinator.submit(
+                    envelope: envelope,
+                    scope: scope,
+                    createdAt: Date(timeIntervalSince1970: 1_000)
+                ) { postedEnvelope in
+                    let journaled = try XCTUnwrap(store.loadActiveCommandCheckpoint())
+                    XCTAssertEqual(journaled.phase, .submitting)
+                    XCTAssertEqual(journaled.envelope, postedEnvelope)
+                    XCTAssertEqual(postedEnvelope.intent, "send_message")
+                    XCTAssertEqual(
+                        postedEnvelope.args,
+                        ["recipient": .string("John"), "body": .string("the build is ready")]
+                    )
+                    XCTAssertEqual(postedEnvelope.riskLevel, .high)
+                    XCTAssertTrue(postedEnvelope.needsConfirmation)
+                    return Self.awaitingConfirmationResponse(for: postedEnvelope)
+                }
+                submitted.fulfill()
+                return application.response
+            },
+            capture: capture,
+            synthesizer: RecordingVoiceSynthesizer(),
+            permissionsAreGranted: { true },
+            requestPermissions: { _ in
+                XCTFail("Permissions should not be requested in this test")
+            }
+        )
+
+        controller.start()
+        capture.emitTranscript(
+            "Send John a message saying the build is ready",
+            isFinal: true
+        )
+        capture.emitStop(.finalTranscript)
+
+        await fulfillment(of: [submitted], timeout: 2)
+        await drainTasks()
+
+        XCTAssertEqual(controller.state, .submitted("cmd_voice_fixed"))
+        let acknowledged = try XCTUnwrap(store.loadActiveCommandCheckpoint())
+        XCTAssertEqual(acknowledged.phase, .acknowledged)
+        XCTAssertNil(acknowledged.envelope)
+        XCTAssertEqual(acknowledged.backendState, "awaiting_confirmation")
+        XCTAssertEqual(acknowledged.backendVersion, 1)
+        XCTAssertEqual(
+            checkpointCoordinator.durablePendingConfirmation?.confirmation_token,
+            "one-time-confirmation-token"
+        )
+        XCTAssertEqual(
+            checkpointCoordinator.presentation?.message,
+            "Confirm sending the message to John."
+        )
+    }
+
     func testControllerClarifiesUnsupportedHighConfidenceIntent() async {
         let capture = ControlledVoiceCapture()
         let generator = ControlledCommandGenerator()
@@ -588,6 +666,48 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
             created_at: nil,
             updated_at: nil
         )
+    }
+
+    private nonisolated static func awaitingConfirmationResponse(
+        for envelope: CommandEnvelope
+    ) -> CommandResponse {
+        CommandResponse(
+            command_id: envelope.commandID,
+            state: "awaiting_confirmation",
+            command: envelope,
+            action: CommandActionMetadata(
+                title: "Send message",
+                risk: "high",
+                confirm_required: true,
+                reversible: false
+            ),
+            presentation: CommandPresentation(
+                schema_version: 1,
+                code: "command.awaiting_confirmation",
+                locale: "en-HK",
+                display_text: "Confirm sending the message to John.",
+                voice_script: nil,
+                terminal: false
+            ),
+            confirmation_token: "one-time-confirmation-token",
+            result: nil,
+            error: nil,
+            undo_command_id: nil,
+            version: 1,
+            created_at: nil,
+            updated_at: nil
+        )
+    }
+
+    private nonisolated static func temporarySQLiteURL(_ label: String) -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("knock-knock-\(label)-\(UUID().uuidString).sqlite")
+    }
+
+    private nonisolated static func removeSQLiteArtifacts(at url: URL) {
+        for suffix in ["", "-wal", "-shm"] {
+            try? FileManager.default.removeItem(atPath: url.path + suffix)
+        }
     }
 }
 

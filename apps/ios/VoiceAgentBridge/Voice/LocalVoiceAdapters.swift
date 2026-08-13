@@ -805,17 +805,297 @@ enum LocalVoiceArgumentGrounder {
     }
 }
 
+/// One non-executable intent prediction. It can select only an allowlisted
+/// command shape; arguments are still grounded from the transcript and the
+/// backend remains the execution authority.
+struct LocalIntentCandidate: Equatable, Sendable {
+    enum Source: String, Equatable, Sendable {
+        case deterministicRules
+        case embedding
+    }
+
+    static let deterministicRulesVersion = "deterministic-rules-1.0.0"
+
+    let intent: String
+    let confidence: Double
+    let runnerUpConfidence: Double?
+    let outOfDomainConfidence: Double?
+    let source: Source
+    let modelVersion: String
+
+    static func deterministic(intent: String) -> LocalIntentCandidate {
+        LocalIntentCandidate(
+            intent: intent,
+            confidence: 1,
+            runnerUpConfidence: nil,
+            outOfDomainConfidence: nil,
+            source: .deterministicRules,
+            modelVersion: deterministicRulesVersion
+        )
+    }
+}
+
+enum LocalIntentRoutingMode: Equatable, Sendable {
+    /// Production default. No embedding prediction can affect a command.
+    case rulesOnly
+    /// Evaluate the embedding classifier without changing the authoritative
+    /// rule result. Observations intentionally exclude the raw transcript.
+    case shadow
+    /// Use an embedding result only when no deterministic rule matched and all
+    /// calibrated acceptance gates pass.
+    case fallback
+}
+
+struct LocalIntentShadowObservation: Equatable, Sendable {
+    let localeIdentifier: String
+    let ruleCandidate: LocalIntentCandidate?
+    let embeddingCandidate: LocalIntentCandidate?
+    let fallbackWouldBeAccepted: Bool
+    let classifierFailed: Bool
+}
+
+/// Adapter seam for a future local multilingual embedding classifier. It may
+/// run asynchronously, but it can return only a candidate and can never create
+/// a CommandEnvelope or call the network.
+protocol LocalIntentClassifying: AnyObject {
+    func classifyIntent(
+        for transcript: String,
+        localeIdentifier: String,
+        completion: @escaping (Result<LocalIntentCandidate, Error>) -> Void
+    )
+    func cancelClassification()
+}
+
+extension LocalIntentClassifying {
+    func cancelClassification() {}
+}
+
+protocol LocalIntentResolving: AnyObject {
+    func resolveIntent(
+        for transcript: String,
+        localeIdentifier: String,
+        completion: @escaping (Result<LocalIntentCandidate?, Error>) -> Void
+    )
+    func cancelResolution()
+}
+
+extension LocalIntentResolving {
+    func cancelResolution() {}
+}
+
+/// Acceptance thresholds are deliberately stricter than the downstream
+/// CommandEnvelope confidence floor. They must be calibrated with multilingual
+/// UAT before `.fallback` is enabled outside tests.
+struct LocalIntentAcceptancePolicy: Equatable, Sendable {
+    static let supportedIntents: Set<String> = [
+        "search_history",
+        "create_reminder",
+        "create_draft",
+        "send_message",
+    ]
+
+    let minimumConfidence: Double
+    let minimumMargin: Double
+    let maximumOutOfDomainConfidence: Double
+
+    init(
+        minimumConfidence: Double = 0.92,
+        minimumMargin: Double = 0.15,
+        maximumOutOfDomainConfidence: Double = 0.10
+    ) {
+        self.minimumConfidence = minimumConfidence
+        self.minimumMargin = minimumMargin
+        self.maximumOutOfDomainConfidence = maximumOutOfDomainConfidence
+    }
+
+    func accepts(_ candidate: LocalIntentCandidate, localeIdentifier: String) -> Bool {
+        guard candidate.source == .embedding,
+              Self.supportedIntents.contains(candidate.intent),
+              Self.supports(localeIdentifier: localeIdentifier),
+              candidate.confidence.isFinite,
+              (0...1).contains(candidate.confidence),
+              candidate.confidence >= minimumConfidence,
+              let runnerUp = candidate.runnerUpConfidence,
+              runnerUp.isFinite,
+              (0...1).contains(runnerUp),
+              candidate.confidence - runnerUp >= minimumMargin,
+              let outOfDomain = candidate.outOfDomainConfidence,
+              outOfDomain.isFinite,
+              (0...1).contains(outOfDomain),
+              outOfDomain <= maximumOutOfDomainConfidence,
+              !candidate.modelVersion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return false
+        }
+        return true
+    }
+
+    static func supports(localeIdentifier: String) -> Bool {
+        let normalized = localeIdentifier
+            .replacingOccurrences(of: "_", with: "-")
+            .lowercased()
+        return normalized == "en" || normalized.hasPrefix("en-")
+            || normalized == "zh" || normalized.hasPrefix("zh-")
+            || normalized == "yue" || normalized.hasPrefix("yue-")
+    }
+}
+
+/// Safety preflight and deterministic rules always run first. An unsafe or
+/// ambiguous utterance fails immediately and is never offered to the embedding
+/// classifier. Shadow predictions cannot affect execution; fallback predictions
+/// must pass score, margin, OOD, locale, and allowlist gates.
+final class RuleFirstIntentResolver: LocalIntentResolving {
+    typealias ShadowObserver = (LocalIntentShadowObservation) -> Void
+
+    private let mode: LocalIntentRoutingMode
+    private let classifier: LocalIntentClassifying?
+    private let acceptancePolicy: LocalIntentAcceptancePolicy
+    private let observeShadow: ShadowObserver
+    private let lock = NSLock()
+    private var activeClassificationID: UUID?
+
+    init(
+        mode: LocalIntentRoutingMode = .rulesOnly,
+        classifier: LocalIntentClassifying? = nil,
+        acceptancePolicy: LocalIntentAcceptancePolicy = .init(),
+        observeShadow: @escaping ShadowObserver = { _ in }
+    ) {
+        self.mode = mode
+        self.classifier = classifier
+        self.acceptancePolicy = acceptancePolicy
+        self.observeShadow = observeShadow
+    }
+
+    func resolveIntent(
+        for transcript: String,
+        localeIdentifier: String,
+        completion: @escaping (Result<LocalIntentCandidate?, Error>) -> Void
+    ) {
+        cancelResolution()
+
+        let ruleCandidate: LocalIntentCandidate?
+        do {
+            ruleCandidate = try LocalVoiceUtterancePreflight.intentHint(for: transcript)
+                .map(LocalIntentCandidate.deterministic(intent:))
+        } catch {
+            // Safety failures are terminal for this utterance. Never invoke a
+            // statistical fallback after injection, negation, or ambiguity.
+            completion(.failure(error))
+            return
+        }
+
+        switch mode {
+        case .rulesOnly:
+            completion(.success(ruleCandidate))
+
+        case .shadow:
+            // Do not add classifier latency to the production decision.
+            completion(.success(ruleCandidate))
+            guard classifier != nil else { return }
+            beginClassification(
+                transcript: transcript,
+                localeIdentifier: localeIdentifier
+            ) { [acceptancePolicy, observeShadow] result in
+                let candidate = try? result.get()
+                observeShadow(LocalIntentShadowObservation(
+                    localeIdentifier: localeIdentifier,
+                    ruleCandidate: ruleCandidate,
+                    embeddingCandidate: candidate,
+                    fallbackWouldBeAccepted: candidate.map {
+                        acceptancePolicy.accepts($0, localeIdentifier: localeIdentifier)
+                    } ?? false,
+                    classifierFailed: result.failure != nil
+                ))
+            }
+
+        case .fallback:
+            if let ruleCandidate {
+                completion(.success(ruleCandidate))
+                return
+            }
+            guard classifier != nil else {
+                completion(.success(nil))
+                return
+            }
+            beginClassification(
+                transcript: transcript,
+                localeIdentifier: localeIdentifier
+            ) { [acceptancePolicy] result in
+                switch result {
+                case let .success(candidate):
+                    completion(.success(
+                        acceptancePolicy.accepts(candidate, localeIdentifier: localeIdentifier)
+                            ? candidate
+                            : nil
+                    ))
+                case let .failure(error):
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+
+    func cancelResolution() {
+        lock.withLock {
+            activeClassificationID = nil
+        }
+        classifier?.cancelClassification()
+    }
+
+    private func beginClassification(
+        transcript: String,
+        localeIdentifier: String,
+        completion: @escaping (Result<LocalIntentCandidate, Error>) -> Void
+    ) {
+        guard let classifier else {
+            completion(.failure(LocalVoiceAdapterError.gemmaRuntimeNotLinked))
+            return
+        }
+        let classificationID = UUID()
+        lock.withLock {
+            activeClassificationID = classificationID
+        }
+        classifier.classifyIntent(
+            for: transcript,
+            localeIdentifier: localeIdentifier
+        ) { [weak self] result in
+            guard let self else { return }
+            let isCurrent = self.lock.withLock {
+                guard self.activeClassificationID == classificationID else { return false }
+                self.activeClassificationID = nil
+                return true
+            }
+            guard isCurrent else { return }
+            completion(result)
+        }
+    }
+
+    deinit {
+        cancelResolution()
+    }
+}
+
+private extension Result {
+    var failure: Failure? {
+        guard case let .failure(error) = self else { return nil }
+        return error
+    }
+}
+
 /// A fail-closed command parser for iPhone 13-class devices. It recognizes
 /// only the four allowlisted command shapes, grounds every argument in the
 /// transcript, and asks for clarification whenever a required slot is absent.
 /// It never executes directly; its output still crosses the strict envelope
 /// and authenticated backend boundaries used by the signed-model path.
 final class DeterministicCommandGenerator: LocalCommandGenerating {
-    static let version = "deterministic-rules-1.0.0"
+    static let version = LocalIntentCandidate.deterministicRulesVersion
 
     private let envelopeContext: LocalCommandEnvelopeContext
     private let canonicalizer: LocalCommandEnvelopeCanonicalizer
     private let nowMilliseconds: () -> Int64
+    private let intentResolver: LocalIntentResolving
+    private let generationLock = NSLock()
+    private var activeGenerationID: UUID?
 
     init(
         locale: Locale = .current,
@@ -823,7 +1103,8 @@ final class DeterministicCommandGenerator: LocalCommandGenerating {
         deviceID: String? = nil,
         sessionID: String? = nil,
         identifierFactory: @escaping () -> String = { UUID().uuidString.lowercased() },
-        nowMilliseconds: @escaping () -> Int64 = LocalCommandClock.currentMilliseconds
+        nowMilliseconds: @escaping () -> Int64 = LocalCommandClock.currentMilliseconds,
+        intentResolver: LocalIntentResolving = RuleFirstIntentResolver()
     ) {
         envelopeContext = LocalCommandEnvelopeContext(
             modelVersion: Self.version,
@@ -834,6 +1115,7 @@ final class DeterministicCommandGenerator: LocalCommandGenerating {
         )
         canonicalizer = LocalCommandEnvelopeCanonicalizer(makeIdentifier: identifierFactory)
         self.nowMilliseconds = nowMilliseconds
+        self.intentResolver = intentResolver
     }
 
     func generateCommand(
@@ -841,37 +1123,68 @@ final class DeterministicCommandGenerator: LocalCommandGenerating {
         completion: @escaping (Result<Data, Error>) -> Void
     ) {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        do {
-            guard let intent = try LocalVoiceUtterancePreflight.intentHint(for: trimmed),
-                  let timezone = TimeZone(identifier: envelopeContext.timezone)
-            else {
-                throw LocalCommandEnvelopeCanonicalizerError.clarificationRequired(
-                    .unsupportedIntent
-                )
-            }
-            let arguments = try LocalVoiceArgumentGrounder.arguments(
-                for: intent,
-                modelArguments: [:],
-                transcript: trimmed,
-                referenceMilliseconds: nowMilliseconds(),
-                timezone: timezone
-            )
-            let modelOutput = try JSONSerialization.data(
-                withJSONObject: [
-                    "intent": intent,
-                    "args": arguments,
-                    "confidence": 1.0,
-                ],
-                options: [.sortedKeys]
-            )
-            completion(.success(try canonicalizer.canonicalize(
-                modelOutput: modelOutput,
-                context: envelopeContext,
-                validationMilliseconds: nowMilliseconds()
-            )))
-        } catch {
-            completion(.failure(error))
+        cancelGeneration()
+        let generationID = UUID()
+        generationLock.withLock {
+            activeGenerationID = generationID
         }
+
+        intentResolver.resolveIntent(
+            for: trimmed,
+            localeIdentifier: envelopeContext.locale
+        ) { [weak self] result in
+            guard let self, self.finishGeneration(id: generationID) else { return }
+            do {
+                guard let candidate = try result.get(),
+                      let timezone = TimeZone(identifier: self.envelopeContext.timezone)
+                else {
+                    throw LocalCommandEnvelopeCanonicalizerError.clarificationRequired(
+                        .unsupportedIntent
+                    )
+                }
+                let arguments = try LocalVoiceArgumentGrounder.arguments(
+                    for: candidate.intent,
+                    modelArguments: [:],
+                    transcript: trimmed,
+                    referenceMilliseconds: self.nowMilliseconds(),
+                    timezone: timezone
+                )
+                let modelOutput = try JSONSerialization.data(
+                    withJSONObject: [
+                        "intent": candidate.intent,
+                        "args": arguments,
+                        "confidence": candidate.confidence,
+                    ],
+                    options: [.sortedKeys]
+                )
+                completion(.success(try self.canonicalizer.canonicalize(
+                    modelOutput: modelOutput,
+                    context: self.envelopeContext,
+                    validationMilliseconds: self.nowMilliseconds()
+                )))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+
+    func cancelGeneration() {
+        generationLock.withLock {
+            activeGenerationID = nil
+        }
+        intentResolver.cancelResolution()
+    }
+
+    private func finishGeneration(id: UUID) -> Bool {
+        generationLock.withLock {
+            guard activeGenerationID == id else { return false }
+            activeGenerationID = nil
+            return true
+        }
+    }
+
+    deinit {
+        cancelGeneration()
     }
 }
 
@@ -1568,6 +1881,7 @@ final class GemmaCommandGenerator: LocalCommandGenerating {
     private let envelopeContext: LocalCommandEnvelopeContext
     private let canonicalizer: LocalCommandEnvelopeCanonicalizer
     private let nowMilliseconds: () -> Int64
+    private let intentResolver: LocalIntentResolving
     private let generationLock = NSLock()
     private var activeGenerationID: UUID?
     private var activeGenerationTask: Task<Void, Never>?
@@ -1582,7 +1896,8 @@ final class GemmaCommandGenerator: LocalCommandGenerating {
         deviceID: String? = nil,
         sessionID: String? = nil,
         identifierFactory: @escaping () -> String = { UUID().uuidString.lowercased() },
-        nowMilliseconds: @escaping () -> Int64 = LocalCommandClock.currentMilliseconds
+        nowMilliseconds: @escaping () -> Int64 = LocalCommandClock.currentMilliseconds,
+        intentResolver: LocalIntentResolving = RuleFirstIntentResolver()
     ) throws {
         guard FileManager.default.fileExists(atPath: modelURL.path) else {
             throw LocalVoiceAdapterError.modelArtifactMissing
@@ -1602,6 +1917,7 @@ final class GemmaCommandGenerator: LocalCommandGenerating {
         )
         canonicalizer = LocalCommandEnvelopeCanonicalizer(makeIdentifier: identifierFactory)
         self.nowMilliseconds = nowMilliseconds
+        self.intentResolver = intentResolver
     }
 
     func generateCommand(for transcript: String, completion: @escaping (Result<Data, Error>) -> Void) {
@@ -1618,35 +1934,58 @@ final class GemmaCommandGenerator: LocalCommandGenerating {
             activeGenerationTask = nil
         }
 
-        let task = Task { [weak self, runtime, envelopeContext, canonicalizer] in
-            let result: Result<Data, Error>
-            do {
-                let modelOutput = try await runtime.generate(
-                    transcript: trimmed,
-                    locale: envelopeContext.locale,
-                    timezone: envelopeContext.timezone
-                )
-                try Task.checkCancellation()
-                result = .success(try canonicalizer.canonicalize(
-                    modelOutput: modelOutput,
-                    context: envelopeContext,
-                    validationMilliseconds: self?.nowMilliseconds()
-                        ?? LocalCommandClock.currentMilliseconds()
-                ))
-            } catch {
-                result = .failure(error)
-            }
-            self?.finishGeneration(id: generationID)
-            completion(result)
-        }
+        intentResolver.resolveIntent(
+            for: trimmed,
+            localeIdentifier: envelopeContext.locale
+        ) { [weak self] resolution in
+            guard let self, self.isGenerationActive(id: generationID) else { return }
 
-        let shouldKeepTask = generationLock.withLock {
-            guard activeGenerationID == generationID else { return false }
-            activeGenerationTask = task
-            return true
-        }
-        if !shouldKeepTask {
-            task.cancel()
+            let candidate: LocalIntentCandidate
+            do {
+                guard let resolved = try resolution.get() else {
+                    throw LocalCommandEnvelopeCanonicalizerError.clarificationRequired(
+                        .unsupportedIntent
+                    )
+                }
+                candidate = resolved
+            } catch {
+                self.finishGeneration(id: generationID)
+                completion(.failure(error))
+                return
+            }
+
+            let task = Task { [weak self, runtime, envelopeContext, canonicalizer] in
+                let result: Result<Data, Error>
+                do {
+                    let modelOutput = try await runtime.generate(
+                        transcript: trimmed,
+                        locale: envelopeContext.locale,
+                        timezone: envelopeContext.timezone,
+                        trustedIntent: candidate.intent,
+                        intentConfidence: candidate.confidence
+                    )
+                    try Task.checkCancellation()
+                    result = .success(try canonicalizer.canonicalize(
+                        modelOutput: modelOutput,
+                        context: envelopeContext,
+                        validationMilliseconds: self?.nowMilliseconds()
+                            ?? LocalCommandClock.currentMilliseconds()
+                    ))
+                } catch {
+                    result = .failure(error)
+                }
+                self?.finishGeneration(id: generationID)
+                completion(result)
+            }
+
+            let shouldKeepTask = self.generationLock.withLock {
+                guard self.activeGenerationID == generationID else { return false }
+                self.activeGenerationTask = task
+                return true
+            }
+            if !shouldKeepTask {
+                task.cancel()
+            }
         }
     }
 
@@ -1657,7 +1996,14 @@ final class GemmaCommandGenerator: LocalCommandGenerating {
             activeGenerationTask = nil
             return task
         }
+        intentResolver.cancelResolution()
         task?.cancel()
+    }
+
+    private func isGenerationActive(id: UUID) -> Bool {
+        generationLock.withLock {
+            activeGenerationID == id
+        }
     }
 
     private func finishGeneration(id: UUID) {
@@ -1752,14 +2098,18 @@ private actor LiteRTLMCommandRuntime {
     func generate(
         transcript: String,
         locale: String,
-        timezone: String
+        timezone: String,
+        trustedIntent: String,
+        intentConfidence: Double
     ) async throws -> Data {
         await generationGate.acquire()
         do {
             let result = try await generateExclusively(
                 transcript: transcript,
                 locale: locale,
-                timezone: timezone
+                timezone: timezone,
+                trustedIntent: trustedIntent,
+                intentConfidence: intentConfidence
             )
             await generationGate.release()
             return result
@@ -1772,13 +2122,18 @@ private actor LiteRTLMCommandRuntime {
     private func generateExclusively(
         transcript: String,
         locale: String,
-        timezone: String
+        timezone: String,
+        trustedIntent: String,
+        intentConfidence: Double
     ) async throws -> Data {
         try Task.checkCancellation()
         guard health.isHealthy else {
             throw LocalVoiceAdapterError.gemmaRuntimeGenerationFailed
         }
-        guard let intentHint = try LocalVoiceUtterancePreflight.intentHint(for: transcript) else {
+        guard LocalIntentAcceptancePolicy.supportedIntents.contains(trustedIntent),
+              intentConfidence.isFinite,
+              (0...1).contains(intentConfidence)
+        else {
             throw LocalCommandEnvelopeCanonicalizerError.clarificationRequired(.unsupportedIntent)
         }
         let referenceMilliseconds = nowMilliseconds()
@@ -1802,7 +2157,7 @@ private actor LiteRTLMCommandRuntime {
                 locale: locale,
                 timezone: timezone,
                 referenceMilliseconds: referenceMilliseconds,
-                intentHint: intentHint
+                intentHint: trustedIntent
             )
         )
         let commandRunner = LiteRTStreamingConversationCommandRunner<OpaquePointer>(
@@ -1834,17 +2189,18 @@ private actor LiteRTLMCommandRuntime {
         guard let decoded = decoded as? [String: Any] else {
             throw LocalVoiceAdapterError.invalidModelOutput
         }
-        let modelArguments = Self.arguments(for: intentHint, from: decoded)
+        let modelArguments = Self.arguments(for: trustedIntent, from: decoded)
         let groundedArguments = try LocalVoiceArgumentGrounder.arguments(
-            for: intentHint,
+            for: trustedIntent,
             modelArguments: modelArguments,
             transcript: transcript,
             referenceMilliseconds: referenceMilliseconds,
             timezone: trustedTimezone
         )
         return try Self.semanticDraftData(
-            intent: intentHint,
-            arguments: groundedArguments
+            intent: trustedIntent,
+            arguments: groundedArguments,
+            confidence: min(Self.validatedExtractionConfidence, intentConfidence)
         )
     }
 
@@ -1915,16 +2271,20 @@ private actor LiteRTLMCommandRuntime {
 
     private static func semanticDraftData(
         intent: String,
-        arguments: [String: Any]
+        arguments: [String: Any],
+        confidence: Double
     ) throws -> Data {
-        guard JSONSerialization.isValidJSONObject(arguments) else {
+        guard JSONSerialization.isValidJSONObject(arguments),
+              confidence.isFinite,
+              (0...1).contains(confidence)
+        else {
             throw LocalVoiceAdapterError.invalidModelOutput
         }
         return try JSONSerialization.data(
             withJSONObject: [
                 "intent": intent,
                 "args": arguments,
-                "confidence": validatedExtractionConfidence,
+                "confidence": confidence,
             ],
             options: [.sortedKeys]
         )
@@ -2032,7 +2392,8 @@ struct GemmaCommandGenerator: LocalCommandGenerating {
         deviceID: String? = nil,
         sessionID: String? = nil,
         identifierFactory: @escaping () -> String = { UUID().uuidString.lowercased() },
-        nowMilliseconds: @escaping () -> Int64 = LocalCommandClock.currentMilliseconds
+        nowMilliseconds: @escaping () -> Int64 = LocalCommandClock.currentMilliseconds,
+        intentResolver: LocalIntentResolving = RuleFirstIntentResolver()
     ) throws {
         throw LocalVoiceAdapterError.gemmaRuntimeNotLinked
     }
