@@ -493,8 +493,11 @@ final class VoiceAgentBridgeUITests: XCTestCase {
             return
         }
 
+        var preparedSessionID: String?
         if phase == "seed" || phase == "transition-offline" || phase == "recovered" {
-            _ = try await UITestFixtureClient().prepareNeedsUserFixture(title: expectedTitle)
+            preparedSessionID = try await UITestFixtureClient()
+                .prepareNeedsUserFixture(title: expectedTitle)
+            print("[airplane-uat] prepared_session_id=\(preparedSessionID ?? "missing")")
         }
 
         let app = phase == "seed"
@@ -530,6 +533,12 @@ final class VoiceAgentBridgeUITests: XCTestCase {
             let baselineSessions = app.buttons["drawer.sessions"]
             XCTAssertTrue(baselineSessions.waitForExistence(timeout: 15))
             baselineSessions.tap()
+            try await refreshInboxAndWait(app)
+            selectAllAgentsIfAvailable(app, required: true)
+            let baselineSearch = app.textFields["inbox.search"]
+            XCTAssertTrue(baselineSearch.waitForExistence(timeout: 15))
+            baselineSearch.tap()
+            baselineSearch.typeText(expectedTitle)
             XCTAssertTrue(app.staticTexts[expectedTitle].waitForExistence(timeout: 30))
             attachScreenshot(app, named: "airplane-transition-online-baseline")
 
@@ -546,6 +555,12 @@ final class VoiceAgentBridgeUITests: XCTestCase {
             }
 
             app.terminate()
+            if environment["KNOCK_FORCE_UNREACHABLE_ROUTE_UAT"] == "1" {
+                let unreachableURL = "http://127.0.0.1:9"
+                app.launchEnvironment["KNOCK_UI_TEST_API_BASE_URL"] = unreachableURL
+                app.launchEnvironment["KNOCK_API_BASE_URL"] = unreachableURL
+                print("[airplane-uat] using_controlled_unreachable_route=1")
+            }
             app.launch()
             let cachedWorkspace = app.buttons["drawer.open"]
             guard cachedWorkspace.waitForExistence(timeout: 30) else {
@@ -570,6 +585,12 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         let sessions = app.buttons["drawer.sessions"]
         XCTAssertTrue(sessions.waitForExistence(timeout: 15))
         sessions.tap()
+        selectAllAgentsIfAvailable(app)
+
+        let search = app.textFields["inbox.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 15))
+        search.tap()
+        search.typeText(expectedTitle)
 
         let timeout: TimeInterval = ["offline", "transition-offline"].contains(phase) ? 15 : 45
         let expected = app.staticTexts[expectedTitle]
@@ -580,6 +601,35 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         print("[airplane-uat] phase=\(phase) title=\(expectedTitle)")
         attachScreenshot(app, named: "airplane-\(phase)-cache")
         #endif
+    }
+
+    private func selectAllAgentsIfAvailable(
+        _ app: XCUIApplication,
+        required: Bool = false
+    ) {
+        let agentFilter = app.buttons["agent.filter"]
+        guard agentFilter.waitForExistence(timeout: required ? 20 : 5) else {
+            if required {
+                XCTFail("Refresh must load every agent before the offline baseline is cached.")
+            }
+            return
+        }
+        agentFilter.tap()
+        let allAgents = app.buttons["All agents"]
+        XCTAssertTrue(allAgents.waitForExistence(timeout: 5))
+        allAgents.tap()
+    }
+
+    private func refreshInboxAndWait(_ app: XCUIApplication) async throws {
+        let refresh = app.buttons["inbox.refresh"]
+        XCTAssertTrue(refresh.waitForExistence(timeout: 15))
+        refresh.tap()
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        let completed = expectation(
+            for: NSPredicate(format: "enabled == true"),
+            evaluatedWith: refresh
+        )
+        await fulfillment(of: [completed], timeout: 45)
     }
 
     func testPhysicalVoiceProductionPath() async throws {
@@ -606,21 +656,36 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         XCTAssertTrue(voice.waitForExistence(timeout: 15))
         voice.tap()
 
-        let ready = app.staticTexts.matching(
-            NSPredicate(
-                format: "(label BEGINSWITH %@ OR label == %@) AND NOT label CONTAINS %@",
+        let expectedRuntime = ProcessInfo.processInfo.environment[
+            "KNOCK_EXPECTED_VOICE_RUNTIME"
+        ] ?? "signed-gemma"
+        let expectedStrategyLabel: String
+        let readyPredicate: NSPredicate
+        switch expectedRuntime {
+        case "signed-gemma":
+            expectedStrategyLabel = "Runtime policy · Signed Gemma"
+            readyPredicate = NSPredicate(
+                format: "identifier == %@ AND label BEGINSWITH %@ AND NOT label CONTAINS %@",
+                "settings.voice.status",
                 "Ready · Gemma",
-                "Ready · Safe parser",
                 "Update failed"
             )
-        ).firstMatch
-        let prepareOrRefresh = app.buttons.matching(
-            NSPredicate(
-                format: "label CONTAINS %@ OR label CONTAINS %@",
-                "Prepare on-device voice",
-                "Refresh on-device voice"
+        case "safe-parser":
+            expectedStrategyLabel = "Runtime policy · Safe parser"
+            readyPredicate = NSPredicate(
+                format: "identifier == %@ AND label == %@",
+                "settings.voice.status",
+                "Ready · Safe parser"
             )
-        ).firstMatch
+        default:
+            XCTFail("Unsupported KNOCK_EXPECTED_VOICE_RUNTIME: \(expectedRuntime)")
+            return
+        }
+        let strategy = app.staticTexts["settings.voice.strategy"]
+        XCTAssertTrue(strategy.waitForExistence(timeout: 10))
+        XCTAssertEqual(strategy.label, expectedStrategyLabel)
+        let ready = app.staticTexts.matching(readyPredicate).firstMatch
+        let prepareOrRefresh = app.buttons["settings.voice.prepare"]
         XCTAssertTrue(
             prepareOrRefresh.waitForExistence(timeout: 10),
             "The Voice settings panel must expose model preparation."
@@ -629,10 +694,12 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         let preparing = app.staticTexts.matching(
             NSPredicate(format: "label BEGINSWITH %@", "Preparing")
         ).firstMatch
-        _ = preparing.waitForExistence(timeout: 15)
+        if expectedRuntime == "signed-gemma" {
+            _ = preparing.waitForExistence(timeout: 15)
+        }
         XCTAssertTrue(
             ready.waitForExistence(timeout: 240),
-            "The device must prepare either its signed Gemma runtime or its fail-closed safe parser."
+            "The device must prepare the explicitly selected \(expectedRuntime) runtime."
         )
         XCTAssertFalse(
             app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Update failed"))
@@ -678,15 +745,23 @@ final class VoiceAgentBridgeUITests: XCTestCase {
             dock.press(forDuration: 1)
             app.tap()
         }
-        Thread.sleep(forTimeInterval: 1)
+        try await Task.sleep(nanoseconds: 1_000_000_000)
 
         let configuredCountdown = Int(
             ProcessInfo.processInfo.environment["KNOCK_PHYSICAL_VOICE_COUNTDOWN_SECONDS"] ?? "5"
         ) ?? 5
         let countdown = min(max(configuredCountdown, 3), 30)
-        print("[physical-voice-uat] SPEAK NOW in \(countdown)s: Show me what happened today")
-        Thread.sleep(forTimeInterval: TimeInterval(countdown))
-        dock.press(forDuration: 6)
+        let configuredHold = Double(
+            ProcessInfo.processInfo.environment["KNOCK_PHYSICAL_VOICE_HOLD_SECONDS"] ?? "12"
+        ) ?? 12
+        let holdSeconds = min(max(configuredHold, 8), 20)
+        print(
+            "[physical-voice-uat] WATCH PHONE in \(countdown)s; "
+                + "speak only after Listening appears (hold=\(holdSeconds)s)"
+        )
+        try await Task.sleep(nanoseconds: UInt64(countdown) * 1_000_000_000)
+        dock.press(forDuration: holdSeconds)
+        attachScreenshot(app, named: "physical-voice-after-capture")
 
         let terminal = app.descendants(matching: .any).matching(
             NSPredicate(
@@ -696,7 +771,12 @@ final class VoiceAgentBridgeUITests: XCTestCase {
             )
         ).firstMatch
         let resultDeadline = Date().addingTimeInterval(120)
+        var captureStatus = (dock.value as? String) ?? "Unknown"
         while Date() < resultDeadline && !terminal.exists {
+            captureStatus = (dock.value as? String) ?? "Unknown"
+            if captureStatus == "Needs clarification" || captureStatus.hasPrefix("Failed") {
+                break
+            }
             // The account fixture can reconcile a pending decision after the
             // initial preflight dismissal. Keep that unrelated overlay from
             // obscuring the backend-owned voice result during physical UAT.
@@ -710,7 +790,8 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         }
         XCTAssertTrue(
             terminal.exists,
-            "Only the backend-owned history_search.completed presentation is a success oracle."
+            "Only the backend-owned history_search.completed presentation is a success oracle. "
+                + "Capture status: \(captureStatus)."
         )
         attachScreenshot(app, named: "physical-voice-backend-result")
         print("[physical-voice-uat] Human must confirm that TTS said: History search completed.")

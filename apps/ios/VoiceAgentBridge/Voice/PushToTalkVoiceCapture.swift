@@ -30,7 +30,7 @@ final class PushToTalkVoiceCapture {
         case mediaServicesReset
     }
 
-    enum CaptureError: Error, Equatable {
+    enum CaptureError: LocalizedError, Equatable {
         case mustBeCalledOnMainThread
         case applicationNotActive
         case microphonePermissionDenied
@@ -41,7 +41,37 @@ final class PushToTalkVoiceCapture {
         case alreadyCapturing
         case audioSessionFailure
         case audioEngineFailure
+        case noSpeechDetected
         case recognitionFailure
+
+        var errorDescription: String? {
+            switch self {
+            case .mustBeCalledOnMainThread:
+                return "Voice capture started from an invalid context."
+            case .applicationNotActive:
+                return "Keep Knock Knock open while recording."
+            case .microphonePermissionDenied:
+                return "Microphone access is required."
+            case .speechPermissionDenied:
+                return "Speech Recognition access is required."
+            case .recognizerUnavailable:
+                return "On-device Speech Recognition is temporarily unavailable."
+            case .onDeviceRecognitionUnavailable:
+                return "This language is not downloaded for on-device Speech Recognition."
+            case .invalidInputFormat:
+                return "The current microphone route is unavailable."
+            case .alreadyCapturing:
+                return "Voice capture is already running."
+            case .audioSessionFailure:
+                return "The microphone audio session could not start."
+            case .audioEngineFailure:
+                return "The microphone audio engine could not start."
+            case .noSpeechDetected:
+                return "No speech was detected. Speak while holding the button."
+            case .recognitionFailure:
+                return "Speech Recognition could not understand this recording."
+            }
+        }
     }
 
     struct Transcript: Equatable {
@@ -280,8 +310,16 @@ final class PushToTalkVoiceCapture {
             )
             finishAfterFinalTranscript(reason: reason, captureID: captureID)
         case .failRecognition:
-            failCapture(.recognitionFailure, captureID: captureID)
+            let hasDetectedSpeech = vadQueue.sync { vad.hasDetectedSpeech }
+            failCapture(
+                Self.recognitionError(hasDetectedSpeech: hasDetectedSpeech),
+                captureID: captureID
+            )
         }
+    }
+
+    static func recognitionError(hasDetectedSpeech: Bool) -> CaptureError {
+        hasDetectedSpeech ? .recognitionFailure : .noSpeechDetected
     }
 
     static func recognitionCallbackAction(

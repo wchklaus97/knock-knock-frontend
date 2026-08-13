@@ -2,7 +2,7 @@
 
 ## 中文摘要
 
-本轮在 iPhone 13 Pro 与 iPhone 17 Pro Max 上验证了最新 Staging 客户端。两部设备的核心 UI 测试全部通过；同账号的 Session、Push 和 Cursor 最终一致；确定性断网测试证明本地缓存不会丢失，恢复网络后会补齐遗漏数据。APNs token 重用修复合并后，两部锁屏真机都由用户确认收到真实 Staging 通知。2026-08-13 18:03 HKT 也完成了 iPhone 13 Pro 的真实飞行模式、Wi-Fi 关闭、USB 保持连接测试：App 正常启动、请求真实超时且没有命中 URLCache、本地 SQLite 数据完整保留。18:43 HKT 恢复 Wi-Fi/VPN 后，手机 cursor 从 2042 前进到 2049，唯一 reconnect Session 自动写入一次，缓存由 22 个 Session 增加至 23 个且 pending operation 为 0。随后完成同账号双设备动作 UAT：iPhone 17 Pro Max 确认高风险操作并进入 `queued`，iPhone 13 Pro 自动同步同一 Session，最终两台手机都通过以 backend `session_id` 定位的 UI 收敛测试。36 条以上真人语音及稳定性测试仍需完成。
+本轮在 iPhone 13 Pro 与 iPhone 17 Pro Max 上验证了最新 Staging 客户端。两部设备的核心 UI 测试全部通过；同账号的 Session、Push 和 Cursor 最终一致；确定性断网测试证明本地缓存不会丢失，恢复网络后会补齐遗漏数据。APNs token 重用修复合并后，两部锁屏真机都由用户确认收到真实 Staging 通知。2026-08-13 18:03 HKT 也完成了 iPhone 13 Pro 的真实飞行模式、Wi-Fi 关闭、USB 保持连接测试：App 正常启动、请求真实超时且没有命中 URLCache、本地 SQLite 数据完整保留。18:43 HKT 恢复 Wi-Fi/VPN 后，手机 cursor 从 2042 前进到 2049，唯一 reconnect Session 自动写入一次，缓存由 22 个 Session 增加至 23 个且 pending operation 为 0。随后完成同账号双设备动作 UAT：iPhone 17 Pro Max 确认高风险操作并进入 `queued`，iPhone 13 Pro 自动同步同一 Session，最终两台手机都通过以 backend `session_id` 定位的 UI 收敛测试。iPhone 17 Pro Max 也完成 12 条真人录音比较和 2,880 次同进程 STT 稳定性循环；没有崩溃，但真人准确率仍未达到发布门槛。Agent 长配对码、环境绑定和重启后自动认证已在真实 Staging 完成修复及验证。36 条以上多人真人语音、iPhone 13 长时发热和完整 microphone-to-command 成功样本仍需完成。
 
 ## Build under test
 
@@ -18,7 +18,7 @@
 ## Clean Simulator regression
 
 The final isolated Worker/D1 Simulator regression completed at 2026-08-13
-18:11 HKT with 210 tests: 198 passed, 12 environment-gated tests skipped, and
+21:12 HKT with 212 tests: 200 passed, 12 environment-gated tests skipped, and
 zero failed. The UI portion contained six tests: three core UI flows passed and
 the three explicit physical-device opt-in tests were skipped as designed.
 
@@ -96,6 +96,16 @@ refresh:
 This closes the physical offline-retention and post-network-restoration data
 convergence gate. Only the separately observable status-pill transition remains.
 
+### Controlled visual offline status
+
+An opt-in physical UI test first loaded the authenticated Staging cache, then
+relaunched only that test process against an unreachable loopback route. The
+iPhone 13 Pro displayed the offline Retry state while the cached Session stayed
+visible. A normal relaunch restored the Staging route and displayed the same
+cache after reconciliation. This supplies deterministic visual evidence for the
+offline status UI without claiming that the radio was in airplane mode. The
+human-observed airplane-mode status transition remains a distinct release gate.
+
 ## Two-device convergence
 
 The same account was active on both physical devices. After creating the unique
@@ -128,6 +138,54 @@ Together these runs prove:
 - list ordering and lazy rendering no longer make the UAT inspect a namesake or
   only the initial viewport.
 
+## Agent pairing and restart persistence
+
+The Staging phone issued a high-entropy `pair_...` one-time code. The original
+CLI workflow could silently target its default Local/Production URL, and a
+relative `--write-env .env.agent` could be resolved from the filtered package
+directory while the MCP runtime loaded the workspace-root file. Those two paths
+made a valid Staging code look missing and made successful pairing appear not to
+survive a restart.
+
+The CLI now:
+
+- accepts the backend's 4–64-character pairing-code contract;
+- supports an explicit `--api-url` and explains that codes are environment-scoped;
+- resolves relative agent-env files at the workspace root;
+- writes both API URL aliases plus the agent key with mode `0600`;
+- reads the canonical file first while retaining the old package-local location
+  as a compatibility fallback.
+
+The same Staging code then produced a successful `POST /v1/pairing/claim`. A
+separate clean Node process, with all three agent variables removed, loaded the
+saved file and authenticated `GET /v1/agents/me/actions/pending`. A second check
+also succeeded when an old local `BRIDGE_API_URL` compatibility alias was
+present, proving that the paired canonical URL wins. No pairing code or agent
+key is recorded in this document or source control.
+
+## Voice and stability evidence
+
+The iPhone 17 Pro Max ran the same 12 human recordings through three local
+adapters. Strict overall transcript accuracy was 46.52% for system Speech,
+63.64% for SpeechAnalyzer automatic, and 64.71% for SpeechAnalyzer dictation;
+their respective p95 latencies were 1,321 ms, 318 ms, and 3,421 ms. Automatic
+SpeechAnalyzer remains the best latency/quality balance, but none passes the
+90% per-language release gate.
+
+A single-process 20-repeat run completed 2,880/2,880 configured STT cases with
+zero crash and a 157 ms sample-latency p95. The device entered the measured run
+already in the `serious` thermal state and ended in `serious`, so this proves
+repeat stability but not a cool-start thermal pass. A separate Power Profiler
+trace targeted the app for about 286 seconds and recorded a normal process exit.
+This was an STT/SpeechAnalyzer load test, not a Gemma thermal test.
+
+On iPhone 13 Pro, an automated 15-second live microphone attempt reached the
+safe clarification UI rather than executing an uncertain command. A later
+human-held English attempt reached `POST /v1/phone/commands` on Staging, but no
+new durable command row was created; it is transport evidence only and cannot
+be counted as an end-to-end semantic pass. No raw microphone audio was uploaded
+or retained.
+
 ## APNs status
 
 Earlier Staging delivery evidence recorded two attempted and two accepted APNs
@@ -142,6 +200,9 @@ work.
 ## Remaining gates
 
 - perform the online-started, human-observed airplane-mode status-pill transition;
-- run live push-to-talk/VAD and the 36+ human-voice corpus;
-- complete thermal, interruption, cancellation, and repeated-command testing;
+- collect and label the 36+ multi-speaker human-voice corpus and pass the frozen
+  per-language accuracy thresholds;
+- produce at least one microphone-to-durable-command success plus explicit
+  clarification and high-risk confirmation cases;
+- complete iPhone 13 Pro cool-start thermal, interruption, and cancellation testing;
 - retain release evidence and obtain human production approval.

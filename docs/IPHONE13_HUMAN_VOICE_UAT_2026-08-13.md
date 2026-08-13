@@ -81,6 +81,22 @@ not be normalized or guessed.
 - Machine-readable JSON and `.xcresult` evidence remains local to the test Mac and
   contains no raw audio.
 
+## Live push-to-talk pilot
+
+The physical UI harness now allows an 8–20 second hold window (12 seconds by
+default) and tells the operator to begin speaking only after the visible
+`Listening…` state. This removes the earlier fixed six-second synchronization
+assumption, but XCTest timing is still not accepted as proof that a human began
+speaking at the intended instant.
+
+One automated 15-second capture on iPhone 13 Pro produced the safe clarification
+UI and no high-risk execution. A later human-held English attempt reached the
+Staging `/v1/phone/commands` endpoint. No new durable command appeared in the
+Staging command table, so that run proves microphone-to-network transport only;
+it does not prove transcript correctness, canonical command creation, or action
+execution. This fail-closed outcome is correct, but a successful live command
+sample remains required.
+
 ## Decision
 
 This 12-recording pilot **fails the voice release gate safely**.
@@ -98,11 +114,12 @@ This 12-recording pilot **fails the voice release gate safely**.
 2. Verify every expected transcript and canonical command before scoring.
 3. Re-run the same-corpus SpeechAnalyzer, system Speech, Whisper, and SenseVoice
    comparison when their signed local runtimes are available.
-4. Run live push-to-talk, VAD stop/finalization, interruption, memory, and thermal
-   tests on iPhone 13 Pro.
+4. Complete live push-to-talk, VAD stop/finalization, interruption, memory, and
+   cool-start thermal tests on iPhone 13 Pro. The initial clarification/transport
+   pilots above do not close this gate.
 5. Only after the core human gate passes, test authenticated command submission,
    idempotency, confirmation, offline recovery, and device convergence.
 
-Physical lock-screen APNs observation, true airplane-mode recovery, and simultaneous
-two-phone UI convergence were outside this iPhone-13-only run and remain open UAT
-items.
+Physical lock-screen APNs, true-airplane cache retention/recovery, and simultaneous
+two-phone UI convergence were verified separately in
+`STAGING_PHYSICAL_UAT_2026-08-13.md`; they are not evidence for this voice gate.

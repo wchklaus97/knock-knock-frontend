@@ -3,6 +3,36 @@ import XCTest
 @testable import VoiceAgentBridge
 
 final class VoiceActivityDetectorTests: XCTestCase {
+    func testCaptureErrorsExposeSafeActionableDescriptions() {
+        XCTAssertEqual(
+            PushToTalkVoiceCapture.CaptureError.microphonePermissionDenied.errorDescription,
+            "Microphone access is required."
+        )
+        XCTAssertEqual(
+            PushToTalkVoiceCapture.CaptureError.onDeviceRecognitionUnavailable.errorDescription,
+            "This language is not downloaded for on-device Speech Recognition."
+        )
+        XCTAssertEqual(
+            PushToTalkVoiceCapture.CaptureError.audioEngineFailure.errorDescription,
+            "The microphone audio engine could not start."
+        )
+        XCTAssertEqual(
+            PushToTalkVoiceCapture.CaptureError.noSpeechDetected.errorDescription,
+            "No speech was detected. Speak while holding the button."
+        )
+    }
+
+    func testRecognitionFailureDistinguishesMissingSpeechFromFailedTranscription() {
+        XCTAssertEqual(
+            PushToTalkVoiceCapture.recognitionError(hasDetectedSpeech: false),
+            .noSpeechDetected
+        )
+        XCTAssertEqual(
+            PushToTalkVoiceCapture.recognitionError(hasDetectedSpeech: true),
+            .recognitionFailure
+        )
+    }
+
     @MainActor
     func testCaptureRefusesToStartWhenApplicationIsAlreadyInactive() {
         let capture = PushToTalkVoiceCapture(applicationIsActive: { false })

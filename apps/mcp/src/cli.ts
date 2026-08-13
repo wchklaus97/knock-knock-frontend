@@ -3,8 +3,12 @@
  * `vab` CLI — pair | session | progress | event | pending | result
  */
 import { api, bridgeBaseUrl } from "./client.js";
-import fs from "node:fs";
-import path from "node:path";
+import {
+  normalizeApiBaseUrl,
+  normalizePairingCode,
+  pairingFailureMessage,
+  writeAgentEnvFile,
+} from "./cli-support.js";
 
 const rawArgs = process.argv.slice(2);
 // pnpm forwards a separator for the documented `pnpm ... cli -- pair` form.
@@ -37,28 +41,9 @@ function numberArg(name: string): number | undefined {
   return parsed;
 }
 
-function writeAgentEnv(fileName: string, apiKey: string, force: boolean): string {
-  const filePath = path.resolve(fileName);
-  if (fs.existsSync(filePath) && !force) {
-    throw new Error(`${filePath} already exists; use --force to replace it`);
-  }
-  fs.writeFileSync(
-    filePath,
-    [
-      "# Knock Knock agent credentials — keep this file private",
-      `BRIDGE_API_URL=${bridgeBaseUrl()}`,
-      `BRIDGE_AGENT_KEY=${apiKey}`,
-      "",
-    ].join("\n"),
-    { encoding: "utf8", mode: 0o600 },
-  );
-  fs.chmodSync(filePath, 0o600);
-  return filePath;
-}
-
 function usage(code = 0): never {
   console.log(`Usage:
-  vab pair --code XXXXXX --label my-agent [--host cli] [--write-env .env.agent [--force]]
+  vab pair --code pair_... --label my-agent [--host cli] [--api-url URL] [--write-env .env.agent [--force]]
   vab session --skill deploy.result [--session ses_...] [--title ...] [--chat ...]
   vab progress --session ses_... --status running [--message "..."] [--percent 0-100]
   vab event --session ses_... --status needs_user --idemp KEY [--summary "..." ] [--service api] [--env prod] [--fact_status 失败] [--actions rollback,ack] [--force-push]
@@ -81,10 +66,12 @@ async function main(): Promise<void> {
 
   switch (cmd) {
     case "pair": {
-      const code = arg("code");
+      const rawCode = arg("code");
       const label = arg("label", "cli-agent");
-      if (!code) throw new Error("--code required");
-      const res = await fetch(`${bridgeBaseUrl()}/v1/pairing/claim`, {
+      if (!rawCode) throw new Error("--code required");
+      const code = normalizePairingCode(rawCode);
+      const pairingApiUrl = normalizeApiBaseUrl(arg("api-url") ?? bridgeBaseUrl());
+      const res = await fetch(`${pairingApiUrl}/v1/pairing/claim`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -93,12 +80,26 @@ async function main(): Promise<void> {
           host_label: arg("host", "cli"),
         }),
       });
-      const json = (await res.json()) as { api_key?: string; error?: string };
-      if (!res.ok) throw new Error(JSON.stringify(json));
+      const responseText = await res.text();
+      let json: { api_key?: string; error?: string; message?: string } = {};
+      try {
+        json = responseText ? (JSON.parse(responseText) as typeof json) : {};
+      } catch {
+        json = { error: responseText || "Unknown response" };
+      }
+      if (!res.ok) {
+        const detail = json.message ?? json.error ?? responseText ?? "Unknown response";
+        throw new Error(pairingFailureMessage(res.status, pairingApiUrl, detail));
+      }
       const envPath = valueArg("write-env");
       if (envPath && json.api_key) {
-        const written = writeAgentEnv(envPath, json.api_key, hasFlag("force"));
-        console.log(JSON.stringify({ env_file: written }, null, 2));
+        const written = writeAgentEnvFile(
+          envPath,
+          json.api_key,
+          pairingApiUrl,
+          hasFlag("force"),
+        );
+        console.log(JSON.stringify({ env_file: written, api_url: pairingApiUrl }, null, 2));
         console.error(`Saved agent credentials to ${written}`);
       } else {
         console.log(JSON.stringify(json, null, 2));

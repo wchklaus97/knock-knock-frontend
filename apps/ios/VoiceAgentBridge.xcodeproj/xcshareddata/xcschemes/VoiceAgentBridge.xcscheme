@@ -86,8 +86,23 @@
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
+            key = "KNOCK_EXPECTED_VOICE_RUNTIME"
+            value = "$(KNOCK_EXPECTED_VOICE_RUNTIME)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_FORCE_UNREACHABLE_ROUTE_UAT"
+            value = "$(KNOCK_FORCE_UNREACHABLE_ROUTE_UAT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
             key = "KNOCK_PHYSICAL_VOICE_COUNTDOWN_SECONDS"
             value = "$(KNOCK_PHYSICAL_VOICE_COUNTDOWN_SECONDS)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_PHYSICAL_VOICE_HOLD_SECONDS"
+            value = "$(KNOCK_PHYSICAL_VOICE_HOLD_SECONDS)"
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
@@ -153,6 +168,11 @@
          <EnvironmentVariable
             key = "KNOCK_VOICE_AUDIO_PROFILES"
             value = "$(KNOCK_VOICE_AUDIO_PROFILES)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_AUDIO_REPEAT_COUNT"
+            value = "$(KNOCK_VOICE_AUDIO_REPEAT_COUNT)"
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
@@ -216,8 +236,23 @@
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
+            key = "KNOCK_EXPECTED_VOICE_RUNTIME"
+            value = "$(KNOCK_EXPECTED_VOICE_RUNTIME)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_FORCE_UNREACHABLE_ROUTE_UAT"
+            value = "$(KNOCK_FORCE_UNREACHABLE_ROUTE_UAT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
             key = "KNOCK_PHYSICAL_VOICE_COUNTDOWN_SECONDS"
             value = "$(KNOCK_PHYSICAL_VOICE_COUNTDOWN_SECONDS)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_PHYSICAL_VOICE_HOLD_SECONDS"
+            value = "$(KNOCK_PHYSICAL_VOICE_HOLD_SECONDS)"
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
@@ -283,6 +318,11 @@
          <EnvironmentVariable
             key = "KNOCK_VOICE_AUDIO_PROFILES"
             value = "$(KNOCK_VOICE_AUDIO_PROFILES)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_AUDIO_REPEAT_COUNT"
+            value = "$(KNOCK_VOICE_AUDIO_REPEAT_COUNT)"
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
@@ -342,8 +382,23 @@
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
+            key = "KNOCK_EXPECTED_VOICE_RUNTIME"
+            value = "$(KNOCK_EXPECTED_VOICE_RUNTIME)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_FORCE_UNREACHABLE_ROUTE_UAT"
+            value = "$(KNOCK_FORCE_UNREACHABLE_ROUTE_UAT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
             key = "KNOCK_PHYSICAL_VOICE_COUNTDOWN_SECONDS"
             value = "$(KNOCK_PHYSICAL_VOICE_COUNTDOWN_SECONDS)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_PHYSICAL_VOICE_HOLD_SECONDS"
+            value = "$(KNOCK_PHYSICAL_VOICE_HOLD_SECONDS)"
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
@@ -409,6 +464,11 @@
          <EnvironmentVariable
             key = "KNOCK_VOICE_AUDIO_PROFILES"
             value = "$(KNOCK_VOICE_AUDIO_PROFILES)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_VOICE_AUDIO_REPEAT_COUNT"
+            value = "$(KNOCK_VOICE_AUDIO_REPEAT_COUNT)"
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable

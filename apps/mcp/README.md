@@ -35,11 +35,18 @@ pnpm install
 pnpm --filter @vab/mcp dev
 pnpm --filter @vab/mcp start
 pnpm --filter @vab/mcp typecheck
-pnpm --filter @vab/mcp cli -- pair --code ABCD12 --label laptop
+pnpm --filter @vab/mcp cli -- pair --code pair_xxx --label laptop \
+  --api-url https://your-worker.example
 
-# Save the scoped key for the MCP host (the file is created with mode 0600)
-pnpm --filter @vab/mcp cli -- pair --code ABCD12 --label laptop --write-env .env.agent
+# Save the scoped key and exact API URL for the MCP host. Relative paths are
+# resolved from the workspace root, and the file is created with mode 0600.
+pnpm --filter @vab/mcp cli -- pair --code pair_xxx --label laptop \
+  --api-url https://your-worker.example --write-env .env.agent
 ```
+
+Pairing codes are one-time and environment-specific. Always pass the same API
+URL shown in the phone app. The saved `.env.agent` keeps the agent paired across
+CLI/MCP restarts; a continuously open socket is not required.
 
 ## CLI (`vab`)
 
