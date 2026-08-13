@@ -166,6 +166,14 @@ final class AppStore: ObservableObject {
             !reconciliationExists
     }
 
+    nonisolated static func shouldForceSnapshot(
+        eventName: String,
+        appliedCursor: String?
+    ) -> Bool {
+        eventName == "sync.required"
+            && (appliedCursor?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    }
+
     nonisolated static func voicePreparationErrorMessage(for error: Error) -> String {
         if let modelError = error as? LocalVoiceModelManagerError {
             return modelError.userFacingDescription
@@ -930,18 +938,27 @@ final class AppStore: ObservableObject {
 
     private func finishAuthentication(_ auth: AuthResponse) async throws {
         try applyAuth(auth)
-        // Device registration enables system delivery, but it must not
-        // block the in-app decision surface. Simulators can lack a real
-        // APNs entitlement, and a temporary registration outage should
-        // still let the user sign in and poll the exact session inbox.
+        // Restore the backend-owned inbox before attempting APNs
+        // registration. A physical device can take much longer to register
+        // while its network route is settling; that must never leave an
+        // authenticated user looking at an empty workspace.
+        resetEventCursor()
+        await refresh()
+        // `refresh()` starts SSE after a successful reconciliation. Calling
+        // this idempotent wrapper as well preserves the fallback refresh loop
+        // when that first REST attempt fails because the route is still
+        // settling immediately after authentication.
+        startEventStream()
+
+        // Device registration enables system delivery, but it must not block
+        // the in-app decision surface. Simulators can lack a real APNs
+        // entitlement, and a temporary registration outage should still let
+        // the user poll the exact session inbox.
         do {
             try await client.registerDevice(pushToken: apnsToken)
         } catch {
             print("[push] device registration deferred: \(error.localizedDescription)")
         }
-        resetEventCursor()
-        startEventStream()
-        await refresh()
         if let pendingSessionToOpen {
             self.pendingSessionToOpen = nil
             await openSession(pendingSessionToOpen)
@@ -1523,7 +1540,10 @@ final class AppStore: ObservableObject {
 
     private func resetEventCursor() {
         appliedCursor = nil
-        pendingFullSync = false
+        // A new authentication scope has no trustworthy incremental cursor.
+        // Load one authoritative REST snapshot first instead of replaying the
+        // account's entire phone_changes history before showing the inbox.
+        pendingFullSync = true
         foregroundNeedsReconciliation = true
         localStore.resetSyncState(clearPendingEvents: true)
     }
@@ -1606,6 +1626,13 @@ final class AppStore: ObservableObject {
 
         switch event.name {
         case "sync.required":
+            // The server attaches its current user-scoped head cursor to the
+            // initial invalidation. Snapshot first, then atomically commit that
+            // cursor so a new device never replays the full historical log.
+            pendingFullSync = pendingFullSync || Self.shouldForceSnapshot(
+                eventName: event.name,
+                appliedCursor: appliedCursor
+            )
             scheduleReconciliation(includeAgents: true)
         case "session.updated":
             // A session update cannot change the agent list. Keep the push

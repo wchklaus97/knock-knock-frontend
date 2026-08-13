@@ -41,7 +41,9 @@ private final class UITestFixtureClient {
         baseURL = url
     }
 
-    func prepareNeedsUserFixture() async throws -> String {
+    func prepareNeedsUserFixture(
+        title: String = "Local UI needs user fixture"
+    ) async throws -> String {
         let token = try await ensureAccount()
         let nonce = UUID().uuidString.lowercased()
         let agentResponse = try await request(
@@ -62,7 +64,7 @@ private final class UITestFixtureClient {
             body: [
                 "skill_id": "deploy.result",
                 "idempotency_key": "ios-ui-session-\(nonce)",
-                "title": "Local UI needs user fixture",
+                "title": title,
                 "chat_id": "ios-ui-chat-\(nonce)",
                 "facts": ["service": "knock-knock", "environment": "local"]
             ],
@@ -99,6 +101,24 @@ private final class UITestFixtureClient {
 
     func prepareAccount() async throws {
         _ = try await ensureAccount()
+    }
+
+    func latestSessionExpectation() async throws -> (id: String, title: String) {
+        let token = try await ensureAccount()
+        let response = try await request(
+            "/v1/phone/sessions?limit=1",
+            bearer: token
+        )
+        guard (200..<300).contains(response.status),
+              let sessions = response.body["sessions"] as? [[String: Any]],
+              let session = sessions.first,
+              let sessionID = session["session_id"] as? String,
+              !sessionID.isEmpty,
+              let title = session["title"] as? String,
+              !title.isEmpty else {
+            throw failure("load latest session for convergence UAT", response: response)
+        }
+        return (sessionID, title)
     }
 
     private func ensureAccount() async throws -> String {
@@ -288,6 +308,21 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         return app
     }
 
+    /// Relaunches the application without clearing Keychain or SQLite. This is
+    /// intentionally separate from the repeatable fixture launcher because a
+    /// physical airplane-mode drill must prove that the real authenticated
+    /// cache survives process termination and a missing network route.
+    private func launchPreservingPhysicalState() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchEnvironment["KNOCK_UI_TEST_SUPPRESS_LOCAL_BANNER"] = "1"
+        app.launchEnvironment["KNOCK_UI_TEST_SUPPRESS_KNOCK_OVERLAY"] = "1"
+        let configuredURL = UITestFixtureClient.configuredBaseURLString()
+        app.launchEnvironment["KNOCK_UI_TEST_API_BASE_URL"] = configuredURL
+        app.launchEnvironment["KNOCK_API_BASE_URL"] = configuredURL
+        app.launch()
+        return app
+    }
+
     func testDecisionSurfaceCompletesDestructiveConfirmationFlow() async throws {
         _ = try await UITestFixtureClient().prepareNeedsUserFixture()
         let app = launchForIsolatedFixture()
@@ -396,12 +431,163 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         attachScreenshot(app, named: "drawer")
     }
 
+    func testLatestSessionConvergesOnPhysicalDevice() async throws {
+        guard ProcessInfo.processInfo.environment["KNOCK_RUN_DUAL_DEVICE_UAT"] == "1" else {
+            throw XCTSkip("Opt-in dual-device convergence UAT is disabled")
+        }
+        #if targetEnvironment(simulator)
+        throw XCTSkip("Dual-device convergence UAT requires a physical iPhone")
+        #else
+        let expected = try await UITestFixtureClient().latestSessionExpectation()
+        let app = launchForIsolatedFixture(suppressKnockOverlay: true)
+        signInIfNeeded(app)
+        dismissKnockIfPresent(app)
+
+        let menu = app.buttons["drawer.open"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 30))
+        menu.tap()
+
+        let sessions = app.buttons["drawer.sessions"]
+        XCTAssertTrue(sessions.waitForExistence(timeout: 15))
+        sessions.tap()
+
+        // The directory intentionally prioritizes needs-user decisions over
+        // queued/running sessions. A newly updated session can therefore be
+        // outside the initial LazyVStack viewport, and titles are not unique.
+        // Filter by the backend-owned opaque id before asserting the title so
+        // this UAT verifies the exact session rather than a visible namesake.
+        let search = app.textFields["inbox.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 15))
+        search.tap()
+        search.typeText(expected.id)
+
+        let expectedTitle = app.staticTexts[expected.title]
+        XCTAssertTrue(
+            expectedTitle.waitForExistence(timeout: 30),
+            "The latest backend-owned session must converge to this device. session_id=\(expected.id)"
+        )
+        print("[dual-device-uat] session_id=\(expected.id) title=\(expected.title)")
+        attachScreenshot(app, named: "dual-device-convergence-\(expected.id)")
+        #endif
+    }
+
+    func testPhysicalCacheSurvivesAirplaneModeAndRecovers() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["KNOCK_RUN_AIRPLANE_MODE_UAT"] == "1" else {
+            throw XCTSkip("Opt-in physical airplane-mode UAT is disabled")
+        }
+        #if targetEnvironment(simulator)
+        throw XCTSkip("Airplane-mode cache and recovery UAT requires a physical iPhone")
+        #else
+        let phase = environment["KNOCK_AIRPLANE_PHASE"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        let expectedTitle = environment["KNOCK_AIRPLANE_EXPECTED_SESSION_TITLE"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard ["seed", "offline", "transition-offline", "recovered"].contains(phase) else {
+            XCTFail("KNOCK_AIRPLANE_PHASE must be seed, offline, transition-offline, or recovered")
+            return
+        }
+        guard !expectedTitle.isEmpty else {
+            XCTFail("KNOCK_AIRPLANE_EXPECTED_SESSION_TITLE is required")
+            return
+        }
+
+        if phase == "seed" || phase == "transition-offline" || phase == "recovered" {
+            _ = try await UITestFixtureClient().prepareNeedsUserFixture(title: expectedTitle)
+        }
+
+        let app = phase == "seed"
+            ? launchForIsolatedFixture(suppressKnockOverlay: true)
+            : launchPreservingPhysicalState()
+
+        if phase == "seed" {
+            signInIfNeeded(app)
+        } else {
+            let drawer = app.buttons["drawer.open"]
+            guard drawer.waitForExistence(timeout: 30) else {
+                attachScreenshot(app, named: "airplane-\(phase)-authentication-missing")
+                XCTFail("The authenticated workspace and its SQLite cache must survive the \(phase) relaunch.")
+                return
+            }
+        }
+        dismissKnockIfPresent(app)
+
+        if phase == "offline" {
+            let offlineRetry = app.buttons["home.connection.retry"]
+            guard offlineRetry.waitForExistence(timeout: 30) else {
+                attachScreenshot(app, named: "airplane-offline-state-missing")
+                XCTFail("The device must visibly report an unavailable route. Verify that airplane mode is on and Wi-Fi is also off.")
+                return
+            }
+            attachScreenshot(app, named: "airplane-offline-state")
+        }
+
+        if phase == "transition-offline" {
+            let baselineMenu = app.buttons["drawer.open"]
+            XCTAssertTrue(baselineMenu.waitForExistence(timeout: 30))
+            baselineMenu.tap()
+            let baselineSessions = app.buttons["drawer.sessions"]
+            XCTAssertTrue(baselineSessions.waitForExistence(timeout: 15))
+            baselineSessions.tap()
+            XCTAssertTrue(app.staticTexts[expectedTitle].waitForExistence(timeout: 30))
+            attachScreenshot(app, named: "airplane-transition-online-baseline")
+
+            let countdown = max(
+                15,
+                Int(environment["KNOCK_AIRPLANE_COUNTDOWN_SECONDS"] ?? "") ?? 30
+            )
+            print("[airplane-uat] ready_for_airplane_mode countdown=\(countdown)")
+            for seconds in stride(from: countdown, through: 1, by: -1) {
+                if seconds == countdown || seconds <= 5 || seconds.isMultiple(of: 5) {
+                    print("[airplane-uat] enable_airplane_mode seconds_remaining=\(seconds)")
+                }
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+
+            app.terminate()
+            app.launch()
+            let cachedWorkspace = app.buttons["drawer.open"]
+            guard cachedWorkspace.waitForExistence(timeout: 30) else {
+                attachScreenshot(app, named: "airplane-transition-authentication-missing")
+                XCTFail("The authenticated workspace must relaunch from local state after airplane mode is enabled.")
+                return
+            }
+            let offlineRetry = app.buttons["home.connection.retry"]
+            guard offlineRetry.waitForExistence(timeout: 30) else {
+                attachScreenshot(app, named: "airplane-transition-offline-state-missing")
+                XCTFail("The device must visibly report an unavailable route. Verify that airplane mode is on and Wi-Fi is also off.")
+                return
+            }
+            attachScreenshot(app, named: "airplane-transition-offline-state")
+            dismissKnockIfPresent(app)
+        }
+
+        let menu = app.buttons["drawer.open"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 30))
+        menu.tap()
+
+        let sessions = app.buttons["drawer.sessions"]
+        XCTAssertTrue(sessions.waitForExistence(timeout: 15))
+        sessions.tap()
+
+        let timeout: TimeInterval = ["offline", "transition-offline"].contains(phase) ? 15 : 45
+        let expected = app.staticTexts[expectedTitle]
+        XCTAssertTrue(
+            expected.waitForExistence(timeout: timeout),
+            "The expected session must be visible during the \(phase) phase."
+        )
+        print("[airplane-uat] phase=\(phase) title=\(expectedTitle)")
+        attachScreenshot(app, named: "airplane-\(phase)-cache")
+        #endif
+    }
+
     func testPhysicalVoiceProductionPath() async throws {
         guard ProcessInfo.processInfo.environment["KNOCK_RUN_PHYSICAL_VOICE_E2E"] == "1" else {
             throw XCTSkip("Opt-in physical voice UAT is disabled")
         }
         #if targetEnvironment(simulator)
-        throw XCTSkip("Physical microphone, signed-model, and TTS UAT requires an iPhone")
+        throw XCTSkip("Physical microphone, on-device voice, and TTS UAT requires an iPhone")
         #else
         try await UITestFixtureClient().prepareAccount()
         let app = launchForIsolatedFixture()
@@ -422,16 +608,17 @@ final class VoiceAgentBridgeUITests: XCTestCase {
 
         let ready = app.staticTexts.matching(
             NSPredicate(
-                format: "label BEGINSWITH %@ AND NOT label CONTAINS %@",
+                format: "(label BEGINSWITH %@ OR label == %@) AND NOT label CONTAINS %@",
                 "Ready · Gemma",
+                "Ready · Safe parser",
                 "Update failed"
             )
         ).firstMatch
         let prepareOrRefresh = app.buttons.matching(
             NSPredicate(
                 format: "label CONTAINS %@ OR label CONTAINS %@",
-                "Prepare voice model",
-                "Refresh voice model"
+                "Prepare on-device voice",
+                "Refresh on-device voice"
             )
         ).firstMatch
         XCTAssertTrue(
@@ -445,7 +632,7 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         _ = preparing.waitForExistence(timeout: 15)
         XCTAssertTrue(
             ready.waitForExistence(timeout: 240),
-            "The production model manager must download and verify a signed Gemma model."
+            "The device must prepare either its signed Gemma runtime or its fail-closed safe parser."
         )
         XCTAssertFalse(
             app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Update failed"))

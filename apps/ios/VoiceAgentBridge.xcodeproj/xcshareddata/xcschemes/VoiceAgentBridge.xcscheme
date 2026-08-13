@@ -66,6 +66,21 @@
       </CommandLineArguments>
       <EnvironmentVariables>
          <EnvironmentVariable
+            key = "KNOCK_AIRPLANE_COUNTDOWN_SECONDS"
+            value = "$(KNOCK_AIRPLANE_COUNTDOWN_SECONDS)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_AIRPLANE_EXPECTED_SESSION_TITLE"
+            value = "$(KNOCK_AIRPLANE_EXPECTED_SESSION_TITLE)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_AIRPLANE_PHASE"
+            value = "$(KNOCK_AIRPLANE_PHASE)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
             key = "KNOCK_CLEAN_PUBLIC_STT_APPLE_UAT"
             value = "$(KNOCK_CLEAN_PUBLIC_STT_APPLE_UAT)"
             isEnabled = "YES">
@@ -78,6 +93,16 @@
          <EnvironmentVariable
             key = "KNOCK_PUBLIC_STT_APPLE_BACKEND"
             value = "$(KNOCK_PUBLIC_STT_APPLE_BACKEND)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_RUN_AIRPLANE_MODE_UAT"
+            value = "$(KNOCK_RUN_AIRPLANE_MODE_UAT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_RUN_DUAL_DEVICE_UAT"
+            value = "$(KNOCK_RUN_DUAL_DEVICE_UAT)"
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
@@ -171,6 +196,21 @@
       </CommandLineArguments>
       <EnvironmentVariables>
          <EnvironmentVariable
+            key = "KNOCK_AIRPLANE_COUNTDOWN_SECONDS"
+            value = "$(KNOCK_AIRPLANE_COUNTDOWN_SECONDS)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_AIRPLANE_EXPECTED_SESSION_TITLE"
+            value = "$(KNOCK_AIRPLANE_EXPECTED_SESSION_TITLE)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_AIRPLANE_PHASE"
+            value = "$(KNOCK_AIRPLANE_PHASE)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
             key = "KNOCK_CLEAN_PUBLIC_STT_APPLE_UAT"
             value = "$(KNOCK_CLEAN_PUBLIC_STT_APPLE_UAT)"
             isEnabled = "YES">
@@ -183,6 +223,16 @@
          <EnvironmentVariable
             key = "KNOCK_PUBLIC_STT_APPLE_BACKEND"
             value = "$(KNOCK_PUBLIC_STT_APPLE_BACKEND)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_RUN_AIRPLANE_MODE_UAT"
+            value = "$(KNOCK_RUN_AIRPLANE_MODE_UAT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_RUN_DUAL_DEVICE_UAT"
+            value = "$(KNOCK_RUN_DUAL_DEVICE_UAT)"
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
@@ -272,6 +322,21 @@
       </CommandLineArguments>
       <EnvironmentVariables>
          <EnvironmentVariable
+            key = "KNOCK_AIRPLANE_COUNTDOWN_SECONDS"
+            value = "$(KNOCK_AIRPLANE_COUNTDOWN_SECONDS)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_AIRPLANE_EXPECTED_SESSION_TITLE"
+            value = "$(KNOCK_AIRPLANE_EXPECTED_SESSION_TITLE)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_AIRPLANE_PHASE"
+            value = "$(KNOCK_AIRPLANE_PHASE)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
             key = "KNOCK_CLEAN_PUBLIC_STT_APPLE_UAT"
             value = "$(KNOCK_CLEAN_PUBLIC_STT_APPLE_UAT)"
             isEnabled = "YES">
@@ -284,6 +349,16 @@
          <EnvironmentVariable
             key = "KNOCK_PUBLIC_STT_APPLE_BACKEND"
             value = "$(KNOCK_PUBLIC_STT_APPLE_BACKEND)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_RUN_AIRPLANE_MODE_UAT"
+            value = "$(KNOCK_RUN_AIRPLANE_MODE_UAT)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_RUN_DUAL_DEVICE_UAT"
+            value = "$(KNOCK_RUN_DUAL_DEVICE_UAT)"
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
