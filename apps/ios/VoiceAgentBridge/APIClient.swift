@@ -549,9 +549,11 @@ final class APIClient: @unchecked Sendable {
         do {
             (data, resp) = try await session.data(for: request)
         } catch let error as URLError {
-            throw APIClientError.network(error.localizedDescription)
+            let path = request.url?.path ?? "request"
+            throw APIClientError.network("\(path): \(error.localizedDescription)")
         } catch {
-            throw APIClientError.network(error.localizedDescription)
+            let path = request.url?.path ?? "request"
+            throw APIClientError.network("\(path): \(error.localizedDescription)")
         }
         guard let http = resp as? HTTPURLResponse else {
             throw APIClientError.network("The server response was not HTTP.")

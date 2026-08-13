@@ -230,6 +230,37 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         XCTAssertFalse(later.exists, "The knock overlay must be dismissible before continuing.")
     }
 
+    /// A physical device can briefly lose its route while XCTest relaunches
+    /// the app (for example while Wi-Fi or a VPN tunnel is settling). Exercise
+    /// the same visible retry control a user has instead of treating one
+    /// transient 15-second request timeout as a product failure.
+    private func waitForDecisionReview(
+        _ app: XCUIApplication,
+        timeout: TimeInterval = 90
+    ) -> Bool {
+        let review = app.buttons["knock.review"]
+        let retry = app.buttons["home.connection.retry"]
+        let deadline = Date().addingTimeInterval(timeout)
+        var retries = 0
+
+        while Date() < deadline {
+            if review.exists { return true }
+
+            if retries < 3,
+               retry.waitForExistence(timeout: 2),
+               retry.isHittable
+            {
+                retry.tap()
+                retries += 1
+                if review.waitForExistence(timeout: 20) { return true }
+                continue
+            }
+
+            _ = review.waitForExistence(timeout: 2)
+        }
+        return review.exists
+    }
+
     private func attachScreenshot(_ app: XCUIApplication, named name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name
@@ -267,10 +298,11 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         signInIfNeeded(app)
 
         let review = app.buttons["knock.review"]
-        XCTAssertTrue(
-            review.waitForExistence(timeout: 45),
-            "A fresh needs_user event must be present before running this flow."
-        )
+        guard waitForDecisionReview(app) else {
+            attachScreenshot(app, named: "decision-fixture-unavailable")
+            XCTFail("A fresh needs_user event must be present before running this flow.")
+            return
+        }
         review.tap()
         attachScreenshot(app, named: "decision-detail")
 
