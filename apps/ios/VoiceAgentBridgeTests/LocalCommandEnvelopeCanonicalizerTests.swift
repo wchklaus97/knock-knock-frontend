@@ -84,6 +84,39 @@ final class LocalCommandEnvelopeCanonicalizerTests: XCTestCase {
         }
     }
 
+    func testUncertainPersonTimeAndAmountAlwaysRequireClarificationAcrossLocales() throws {
+        let reference = try XCTUnwrap(
+            LocalReminderDueAt.parseMilliseconds("2026-08-12T09:15:00+08:00")
+        )
+        let cases = [
+            ("en-HK", "Send him a message saying the build is ready"),
+            ("en-HK", "Remind me later to call John"),
+            ("en-HK", "Transfer some money to John"),
+            ("zh-Hans-CN", "告诉他版本已经准备好了"),
+            ("zh-Hans-CN", "晚一点提醒我给 John 打电话"),
+            ("zh-Hans-CN", "转账给 John 一些钱"),
+            ("yue-Hant-HK", "話畀佢版本準備好喇"),
+            ("yue-Hant-HK", "晚一點提醒我打電話畀 John"),
+            ("yue-Hant-HK", "轉啲錢畀 John"),
+        ]
+        for (localeIdentifier, transcript) in cases {
+            let generator = DeterministicCommandGenerator(
+                locale: Locale(identifier: localeIdentifier),
+                timezone: try XCTUnwrap(TimeZone(identifier: "Asia/Hong_Kong")),
+                deviceID: "iphone13-pro",
+                identifierFactory: { "fixed" },
+                nowMilliseconds: { reference }
+            )
+            var result: Result<Data, Error>?
+            generator.generateCommand(for: transcript) {
+                result = $0
+            }
+            XCTAssertThrowsError(try XCTUnwrap(result).get(), transcript) {
+                XCTAssertTrue(LocalVoiceCommandErrorPolicy.requiresClarification($0), transcript)
+            }
+        }
+    }
+
     func testVoicePreflightRoutesSupportedIntentsAndRejectsUnsafeOrAmbiguousCommands() throws {
         let routes = [
             ("Show me what happened today", "search_history"),
