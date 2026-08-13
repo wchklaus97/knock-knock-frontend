@@ -4,6 +4,7 @@ set -euo pipefail
 umask 077
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+APPROVED_STAGING_ORIGIN="https://knock-knock-backend-staging.wch-klaus.workers.dev"
 DEVICE_ID="${KNOCK_DEVICE_UDID:-}"
 API_BASE="${KNOCK_API_BASE_URL:-}"
 PUBLIC_KEY_PATH="${KNOCK_MODEL_PUBLIC_KEY_PATH:-}"
@@ -11,6 +12,9 @@ SCHEDULED_URL="${KNOCK_LOCAL_SCHEDULED_URL:-}"
 COUNTDOWN_SECONDS="${KNOCK_PHYSICAL_VOICE_COUNTDOWN_SECONDS:-5}"
 HOLD_SECONDS="${KNOCK_PHYSICAL_VOICE_HOLD_SECONDS:-12}"
 VOICE_RUNTIME="${KNOCK_EXPECTED_VOICE_RUNTIME:-signed-gemma}"
+MANUAL_CAPTURE="${KNOCK_PHYSICAL_VOICE_MANUAL_CAPTURE:-0}"
+EXPECTATION_MODE="${KNOCK_PHYSICAL_VOICE_EXPECTATION_MODE:-history}"
+PERMISSIONS_PREGRANTED="${KNOCK_PHYSICAL_VOICE_PERMISSIONS_PREGRANTED:-0}"
 ARTIFACTS_DIR="${KNOCK_VOICE_E2E_ARTIFACTS_DIR:-}"
 DERIVED_DATA=""
 PRIVATE_PUBLIC_KEY_PATH=""
@@ -21,18 +25,23 @@ usage() {
   cat >&2 <<'EOF'
 usage: scripts/ios-physical-voice-e2e.sh \
   --device <CoreDevice UUID> \
-  --api-base <https://staging.example or http://Mac-LAN-IP:8787> \
+  --api-base <https://knock-knock-backend-staging.wch-klaus.workers.dev or http://Mac-LAN-IP:8787> \
   [--public-key </absolute/path/public-key.base64>] \
   [--runtime <signed-gemma|safe-parser>] \
   [--scheduled-url <http://127.0.0.1:8787/__scheduled>] \
   [--countdown <3-30>] \
   [--hold-seconds <8-20>] \
+  [--manual-capture] \
+  --permissions-pregranted \
+  [--expectation <history|high-risk|clarification>] \
   [--artifacts-dir </absolute/path>]
 
 This is an opt-in physical-iPhone UAT. It never deploys or changes backend
-configuration. The operator must grant first-use permissions, speak exactly
-"Show me what happened today", keep holding through at least one second of
-silence, and confirm hearing "History search completed."
+configuration. Automated capture remains the default. With --manual-capture,
+the operator presses, holds, and releases voice.dock while XCUITest monitors.
+Microphone and Speech Recognition permissions must already be granted; the
+harness never presses the production voice dock merely to prime permissions.
+The script prints the exact golden-set phrase for the selected expectation.
 The public key is required only for the signed-gemma runtime. The iPhone 13 Pro
 safe-parser runtime does not download or trust a model artifact.
 EOF
@@ -94,6 +103,19 @@ while (($# > 0)); do
       HOLD_SECONDS="$2"
       shift 2
       ;;
+    --manual-capture)
+      MANUAL_CAPTURE=1
+      shift
+      ;;
+    --permissions-pregranted)
+      PERMISSIONS_PREGRANTED=1
+      shift
+      ;;
+    --expectation)
+      require_value "$@"
+      EXPECTATION_MODE="$2"
+      shift 2
+      ;;
     --runtime)
       require_value "$@"
       VOICE_RUNTIME="$2"
@@ -130,6 +152,24 @@ if [[ ! "${COUNTDOWN_SECONDS}" =~ ^[0-9]+$ ]] \
 fi
 [[ "${VOICE_RUNTIME}" == "signed-gemma" || "${VOICE_RUNTIME}" == "safe-parser" ]] \
   || fail "--runtime must be signed-gemma or safe-parser"
+[[ "${MANUAL_CAPTURE}" == "0" || "${MANUAL_CAPTURE}" == "1" ]] \
+  || fail "KNOCK_PHYSICAL_VOICE_MANUAL_CAPTURE must be 0 or 1"
+[[ "${PERMISSIONS_PREGRANTED}" == "1" ]] \
+  || fail "Microphone and Speech Recognition permissions must be pre-granted; pass --permissions-pregranted"
+case "${EXPECTATION_MODE}" in
+  history)
+    OPERATOR_PHRASE='Show me what happened today'
+    ;;
+  high-risk)
+    OPERATOR_PHRASE='Send John a message saying I am on my way'
+    ;;
+  clarification)
+    OPERATOR_PHRASE='Send him a message saying yes'
+    ;;
+  *)
+    fail "--expectation must be history, high-risk, or clarification"
+    ;;
+esac
 if [[ ! "${HOLD_SECONDS}" =~ ^([0-9]+)(\.[0-9]+)?$ ]] \
   || ! python3 - "${HOLD_SECONDS}" <<'PY'
 import sys
@@ -141,22 +181,37 @@ then
 fi
 [[ -n "${API_BASE}" ]] || fail "--api-base is required"
 API_BASE="${API_BASE%/}"
-python3 - "${API_BASE}" <<'PY' || fail "--api-base must be HTTPS or a local-network HTTP URL"
+python3 - "${API_BASE}" "${APPROVED_STAGING_ORIGIN}" <<'PY' \
+  || fail "--api-base must be the exact Knock Knock staging origin or an RFC1918 HTTP origin"
 import ipaddress
 import sys
 from urllib.parse import urlparse
 
 url = urlparse(sys.argv[1])
-if url.scheme == "https" and url.hostname:
+approved_staging = sys.argv[2]
+if sys.argv[1] == approved_staging:
     raise SystemExit(0)
-if url.scheme != "http" or not url.hostname:
-    raise SystemExit(1)
-if url.hostname in {"localhost", "127.0.0.1", "::1"}:
+if (
+    url.scheme != "http"
+    or not url.hostname
+    or url.username is not None
+    or url.password is not None
+    or url.path not in {"", "/"}
+    or url.query
+    or url.fragment
+):
     raise SystemExit(1)
 try:
-    raise SystemExit(0 if ipaddress.ip_address(url.hostname).is_private else 1)
+    address = ipaddress.ip_address(url.hostname)
+    _ = url.port
 except ValueError:
     raise SystemExit(1)
+private_lan = (
+    address in ipaddress.ip_network("10.0.0.0/8")
+    or address in ipaddress.ip_network("172.16.0.0/12")
+    or address in ipaddress.ip_network("192.168.0.0/16")
+)
+raise SystemExit(0 if private_lan else 1)
 PY
 
 if [[ "${VOICE_RUNTIME}" == "signed-gemma" ]]; then
@@ -194,8 +249,29 @@ fi
 
 HEALTH="$(curl -fsS --max-time 15 "${API_BASE}/health")" \
   || fail "backend health endpoint is unreachable"
-grep -Eq '"ok"[[:space:]]*:[[:space:]]*true' <<<"${HEALTH}" \
-  || fail "backend health did not report ok=true"
+python3 - "${HEALTH}" <<'PY' || fail "backend health did not report ok=true"
+import json
+import sys
+
+try:
+    payload = json.loads(sys.argv[1])
+except (json.JSONDecodeError, TypeError):
+    raise SystemExit(1)
+raise SystemExit(0 if payload.get("ok") is True else 1)
+PY
+if [[ "${EXPECTATION_MODE}" == "high-risk" ]]; then
+  python3 - "${HEALTH}" <<'PY' \
+    || fail "high-risk UAT requires health action_provider_ready=false"
+import json
+import sys
+
+try:
+    payload = json.loads(sys.argv[1])
+except (json.JSONDecodeError, TypeError):
+    raise SystemExit(1)
+raise SystemExit(0 if payload.get("action_provider_ready") is False else 1)
+PY
+fi
 if [[ "${VOICE_RUNTIME}" == "signed-gemma" ]]; then
   METRICS="$(curl -fsS --max-time 15 "${API_BASE}/metrics")" \
     || fail "backend metrics endpoint is unreachable"
@@ -254,9 +330,27 @@ fi
 
 printf '%s\n' \
   'Physical voice UAT is ready.' \
-  'Watch the iPhone; say the command only after the dock shows Listening.' \
-  "The automated hold lasts ${HOLD_SECONDS} seconds; finish with one second of silence." \
-  'After the UI succeeds, confirm that TTS says: History search completed.'
+  'Microphone and Speech Recognition permissions: pre-granted.' \
+  "Approved backend origin: ${API_BASE}" \
+  "Expectation mode: ${EXPECTATION_MODE}" \
+  "Say exactly: ${OPERATOR_PHRASE}"
+if [[ "${MANUAL_CAPTURE}" == "1" ]]; then
+  printf '%s\n' \
+    'MANUAL CAPTURE: press and hold voice.dock on the iPhone.' \
+    'Wait for Listening, speak the exact phrase, then release after one second of silence.'
+else
+  printf '%s\n' \
+    'Watch the iPhone; speak only after the dock shows Listening.' \
+    "The automated hold lasts ${HOLD_SECONDS} seconds; finish with one second of silence."
+fi
+if [[ "${EXPECTATION_MODE}" == "high-risk" ]]; then
+  printf '%s\n' \
+    'Provider effects are disabled by the verified health precondition.' \
+    'Do not tap Confirm. The test observes a stable awaiting_confirmation window, then cancels.'
+fi
+if [[ "${EXPECTATION_MODE}" == "history" ]]; then
+  printf '%s\n' 'After the UI succeeds, confirm that TTS says: History search completed.'
+fi
 
 set +e
 (
@@ -273,6 +367,8 @@ set +e
     KNOCK_API_BASE_URL="${API_BASE}" \
     "${MODEL_BUILD_SETTINGS[@]}" \
     KNOCK_RUN_PHYSICAL_VOICE_E2E=1 \
+    KNOCK_PHYSICAL_VOICE_MANUAL_CAPTURE="${MANUAL_CAPTURE}" \
+    KNOCK_PHYSICAL_VOICE_EXPECTATION_MODE="${EXPECTATION_MODE}" \
     KNOCK_PHYSICAL_VOICE_COUNTDOWN_SECONDS="${COUNTDOWN_SECONDS}" \
     KNOCK_PHYSICAL_VOICE_HOLD_SECONDS="${HOLD_SECONDS}" \
     test
@@ -284,6 +380,20 @@ printf 'Physical voice UAT artifacts: %s\n' "${ARTIFACTS_DIR}"
 if ((status != 0)); then
   fail "Xcode physical voice UAT failed (see the artifact log)"
 fi
+case "${EXPECTATION_MODE}" in
+  history)
+    printf '%s\n' \
+      'History row oracle passed: one durable command and a stable canonical replay response.' \
+      'This fixture replay does not prove provider-effect dedupe. Composite authority remains the iOS cold-start replay unit plus the backend provider lifecycle gate.'
+    ;;
+  high-risk)
+    printf '%s\n' \
+      'High-risk fail-closed oracle passed: provider disabled, stable awaiting_confirmation, never confirmed, then cancelled.'
+    ;;
+  clarification)
+    printf '%s\n' \
+      'Clarification oracle passed: zero backend command delta sustained for 30 seconds.'
+    ;;
+esac
 printf '%s\n' \
-  'Automated UI/backend oracle passed.' \
-  'Human sign-off remains required for microphone permission, spoken input, and audible TTS.'
+  'Human sign-off remains required for pre-granted permissions, spoken input, and audible TTS.'

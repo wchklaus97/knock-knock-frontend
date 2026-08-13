@@ -1,0 +1,336 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://knockknock.invalid/schemas/human-voice-corpus-manifest-row-v1.json",
+  "title": "Knock Knock human voice corpus manifest row v1",
+  "description": "Schema for one JSON object in manifest.jsonl. The validator additionally enforces immutable-snapshot integrity, corpus size, all command intents and ambiguity kinds per locale, at least four rows per opaque speaker, uniqueness, exact audio inventory, path and symlink containment, semantic timestamps, decodable audio metadata, and file hashes. capture_type is a declaration, not proof of human origin; provenance, consent, and privacy require the documented manual review.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "sample_id",
+    "locale",
+    "speaker_id",
+    "capture_type",
+    "relative_path",
+    "sha256",
+    "expected_transcript",
+    "expected_outcome",
+    "expected_intent",
+    "expected_args",
+    "risk_level",
+    "needs_confirmation",
+    "ambiguity_kind"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "description": "Optional explicit row schema version. Omitted rows are interpreted as version 1."
+    },
+    "sample_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "description": "Opaque identifier only; must not contain real names, initials, contact details, or other participant identifiers."
+    },
+    "locale": {
+      "enum": [
+        "en-HK",
+        "zh-Hans-CN",
+        "yue-Hant-HK"
+      ]
+    },
+    "speaker_id": {
+      "type": "string",
+      "pattern": "^spk_[0-9a-f]{12,64}$",
+      "description": "An opaque random identifier. Real names, initials, emails, handles, and phone numbers are forbidden."
+    },
+    "capture_type": {
+      "const": "human",
+      "description": "Collector declaration that this is a direct human recording. Software and this field cannot prove human origin or exclude TTS/replayed audio; manual provenance and consent review remains mandatory."
+    },
+    "relative_path": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^(?:[A-Za-z0-9_-][A-Za-z0-9._-]*/)*[A-Za-z0-9_-][A-Za-z0-9._-]*\\.(?:wav|m4a)$",
+      "description": "A safe, slash-separated path relative to the corpus root. Absolute paths, hidden components, empty components, dot traversal, backslashes, and non-WAV/M4A extensions are not allowed."
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "expected_transcript": {
+      "$ref": "#/$defs/transcript",
+      "description": "Must be fictionalized and contain no real participant or third-party PII."
+    },
+    "expected_outcome": {
+      "enum": [
+        "command",
+        "clarification"
+      ]
+    },
+    "expected_intent": {
+      "enum": [
+        "search_history",
+        "create_reminder",
+        "create_draft",
+        "send_message",
+        null
+      ]
+    },
+    "expected_args": {
+      "type": "object",
+      "maxProperties": 3,
+      "description": "Canonical arguments must use fictional recipients, text, amounts, and other entities; real PII is forbidden."
+    },
+    "risk_level": {
+      "enum": [
+        "low",
+        "high",
+        null
+      ]
+    },
+    "needs_confirmation": {
+      "type": "boolean"
+    },
+    "ambiguity_kind": {
+      "enum": [
+        "person",
+        "time",
+        "amount",
+        "none"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "expected_outcome": {
+            "const": "command"
+          }
+        },
+        "required": [
+          "expected_outcome"
+        ]
+      },
+      "then": {
+        "properties": {
+          "expected_intent": {
+            "enum": [
+              "search_history",
+              "create_reminder",
+              "create_draft",
+              "send_message"
+            ]
+          },
+          "risk_level": {
+            "enum": [
+              "low",
+              "high"
+            ]
+          },
+          "ambiguity_kind": {
+            "const": "none"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "expected_intent": {
+            "type": "null"
+          },
+          "expected_args": {
+            "type": "object",
+            "maxProperties": 0
+          },
+          "risk_level": {
+            "type": "null"
+          },
+          "needs_confirmation": {
+            "const": false
+          },
+          "ambiguity_kind": {
+            "enum": [
+              "person",
+              "time",
+              "amount"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "expected_intent": {
+            "const": "search_history"
+          }
+        },
+        "required": [
+          "expected_intent"
+        ]
+      },
+      "then": {
+        "properties": {
+          "expected_args": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "q"
+            ],
+            "properties": {
+              "q": {
+                "$ref": "#/$defs/shortText"
+              }
+            }
+          },
+          "risk_level": {
+            "const": "low"
+          },
+          "needs_confirmation": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "expected_intent": {
+            "const": "create_reminder"
+          }
+        },
+        "required": [
+          "expected_intent"
+        ]
+      },
+      "then": {
+        "properties": {
+          "expected_args": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "title",
+              "due_at"
+            ],
+            "properties": {
+              "title": {
+                "$ref": "#/$defs/shortText"
+              },
+              "due_at": {
+                "type": "string",
+                "maxLength": 64,
+                "format": "date-time",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})$"
+              }
+            }
+          },
+          "risk_level": {
+            "const": "low"
+          },
+          "needs_confirmation": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "expected_intent": {
+            "const": "create_draft"
+          }
+        },
+        "required": [
+          "expected_intent"
+        ]
+      },
+      "then": {
+        "properties": {
+          "expected_args": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "body"
+            ],
+            "properties": {
+              "body": {
+                "$ref": "#/$defs/longText"
+              },
+              "title": {
+                "$ref": "#/$defs/shortText"
+              }
+            }
+          },
+          "risk_level": {
+            "const": "low"
+          },
+          "needs_confirmation": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "expected_intent": {
+            "const": "send_message"
+          }
+        },
+        "required": [
+          "expected_intent"
+        ]
+      },
+      "then": {
+        "properties": {
+          "expected_args": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "recipient",
+              "body"
+            ],
+            "properties": {
+              "recipient": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 320,
+                "pattern": "\\S"
+              },
+              "body": {
+                "$ref": "#/$defs/longText"
+              }
+            }
+          },
+          "risk_level": {
+            "const": "high"
+          },
+          "needs_confirmation": {
+            "const": true
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "transcript": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000,
+      "pattern": "\\S"
+    },
+    "shortText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "\\S"
+    },
+    "longText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000,
+      "pattern": "\\S"
+    }
+  }
+}
