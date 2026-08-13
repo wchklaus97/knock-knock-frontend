@@ -4,6 +4,11 @@
 
 现有真人语料只有 12 条、每种语言 4 条、单一说话者，足以发现问题，但不足以证明生产准确率。下一轮至少收集 36 条真人命令，覆盖英语、普通话、粤语；每种语言至少 3 位说话者，并同时测试安全追问、姓名、日期时间和金额。MiniMax、ElevenLabs 或其他 TTS 只能列为合成语料，不能计入真人通过率。
 
+2026-08-13 的 iPhone 13 Pro 单一说话者试跑结果见
+[iPhone 13 Pro Human Voice UAT](IPHONE13_HUMAN_VOICE_UAT_2026-08-13.md)：
+准确率未通过，但 3/3 条追问正确且高风险错误执行为 0。它不能替代下面要求的
+至少 36 条、多说话者正式语料。
+
 ## Required corpus
 
 Collect at least 36 new recordings:
@@ -80,4 +85,3 @@ Acceptance criteria:
 
 The route is evidence-driven and must be re-evaluated after the larger human
 corpus. It does not authorize production rollout by itself.
-
