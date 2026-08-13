@@ -7,8 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		03FB82A9C9179F54492BEB68 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = D8B617978EF36B5E5AA1FFB6 /* MLXLLM */; };
 		050EE8ABC331146D8FE7CD65 /* LiteRTLM in Frameworks */ = {isa = PBXBuildFile; productRef = 0B3495CAC37DE7BB71C40B44 /* LiteRTLM */; };
 		076FADC6BA10C0B686162DAC /* VoiceAgentBridgeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D30B279968994BB440B903C /* VoiceAgentBridgeUITests.swift */; };
+		0A6931420DD0D10247B897CF /* MLXEmbedders in Frameworks */ = {isa = PBXBuildFile; productRef = FB21DA517F98ECE42D2221BE /* MLXEmbedders */; };
 		0D93D157788A40A948DCF6E2 /* ModelManifest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 149CAFF91FDC8612C25406DD /* ModelManifest.swift */; };
 		0FF7B9A0DFFFA31708F1A95D /* ModelManifestTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCF7CB1D4DEEC850EDE664F2 /* ModelManifestTests.swift */; };
 		137762B8BE34597AEC835FE1 /* ProductionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A8C292E2E86149C5183D6F7 /* ProductionViews.swift */; };
@@ -36,17 +38,22 @@
 		A17DC2B4DBF67D961CE4EBDE /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D395F5693E39802D84A2DE0 /* AppStore.swift */; };
 		A4F7B8446C4AAAC4DE5C5037 /* NotificationDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A3102CC0FD64B33E8C6512 /* NotificationDiagnostics.swift */; };
 		AB4332BD6D136A8495BEBB90 /* BackgroundRemoteNotificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CB02D354785B86D2132126E /* BackgroundRemoteNotificationTests.swift */; };
+		AC159FFDCFFDB705F180E7FC /* VoiceCommandGoldenSet.v1.json in Resources */ = {isa = PBXBuildFile; fileRef = C6271CCE5FA7C494BBADEB9E /* VoiceCommandGoldenSet.v1.json */; };
+		AEDC410F052B164D84D87293 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 76CE53617766DC3D267BF58E /* MLXLMCommon */; };
 		B008650A594C298E52098E25 /* VoiceActivityDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F323B1159699C0C4BA9C7B7 /* VoiceActivityDetectorTests.swift */; };
 		B049614B0D5B76A5CAEFD5FC /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3B75AF8190D9C92C0C3CD6F /* RootView.swift */; };
 		B4FE287C30FBAA073FAF97B6 /* LocalCommandEnvelopeCanonicalizerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D0AFE1014DA172AD7A6CBB1 /* LocalCommandEnvelopeCanonicalizerTests.swift */; };
 		B54A196A01253803D329A965 /* BackendCommandPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFB5EA120329E5E293186C82 /* BackendCommandPresentationTests.swift */; };
 		C0C08D2DE6E9A140CC5C3D0D /* VoiceAgentBridgeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19C24F29A3BD81FEBD216B85 /* VoiceAgentBridgeApp.swift */; };
 		D15FBECCAEF15DBCDA8518FD /* CommandEnvelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81C6F2A72F342A9A5510EDCC /* CommandEnvelope.swift */; };
+		D2038495C4EBF169D1A78340 /* MLXLocalRuntimeQualificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52E08AF777CCFD058B154D28 /* MLXLocalRuntimeQualificationTests.swift */; };
 		D67A0D02BDB75DA24BC6B8DE /* LocalVoiceCommandController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A99A0C0747DF715EF6BCBDAB /* LocalVoiceCommandController.swift */; };
 		DD38742C3FF1E2A935E168AE /* BackendCommandPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F8290B1E64F0BF7AD39B005 /* BackendCommandPresentation.swift */; };
 		E34883AB45A105A7E6650CE4 /* ModelArtifactStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74BA2D4358CF12E52878DF32 /* ModelArtifactStore.swift */; };
 		E65B93B71284AD22011D2A56 /* PushToTalkVoiceCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21A90A73DCC95DB21B1ACFAB /* PushToTalkVoiceCapture.swift */; };
 		E833A7A65F2F41858C9D8B7E /* VoiceActivityDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1F5D54469C09BABC5815B20 /* VoiceActivityDetector.swift */; };
+		EA8E5D0187231C6D66134257 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 32D1A8A47E75BDD576585FB2 /* MLX */; };
+		ED479B861FB157F82CEEB734 /* LocalModels in Resources */ = {isa = PBXBuildFile; fileRef = 7D6506CA198DBE45F2D414C5 /* LocalModels */; };
 		F0BF3EE3A752C8CA3AC03C81 /* VoiceLanguageRoutingPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28408E45AF85490E27B9BACF /* VoiceLanguageRoutingPolicyTests.swift */; };
 		F417CDE6A0B171958F18C435 /* VoiceAudioDatasetV2Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C657EA03DB560A56B274FB80 /* VoiceAudioDatasetV2Tests.swift */; };
 		FB3182B40BD8376D018FA41C /* LocalVoiceAdapters.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9321642D5AEBE9EEEB69A6AF /* LocalVoiceAdapters.swift */; };
@@ -61,6 +68,13 @@
 			remoteInfo = VoiceAgentBridge;
 		};
 		42EB5A437F9FF069E18830A5 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 04D5438232F1B050E05FECD4 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 95B2F73CA8EAD5AB4E6FF270;
+			remoteInfo = VoiceAgentBridge;
+		};
+		83C43CCD28AB040F86B646A0 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 04D5438232F1B050E05FECD4 /* Project object */;
 			proxyType = 1;
@@ -90,6 +104,7 @@
 		47773DB941E7546B7E4FB446 /* SpeechAnalyzerOnDeviceTranscriber.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechAnalyzerOnDeviceTranscriber.swift; sourceTree = "<group>"; };
 		4D30B279968994BB440B903C /* VoiceAgentBridgeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceAgentBridgeUITests.swift; sourceTree = "<group>"; };
 		4F8290B1E64F0BF7AD39B005 /* BackendCommandPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendCommandPresentation.swift; sourceTree = "<group>"; };
+		52E08AF777CCFD058B154D28 /* MLXLocalRuntimeQualificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLXLocalRuntimeQualificationTests.swift; sourceTree = "<group>"; };
 		5A8C292E2E86149C5183D6F7 /* ProductionViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionViews.swift; sourceTree = "<group>"; };
 		6C104E4640CA3F92C1AA7360 /* LocalCommandEnvelopeCanonicalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalCommandEnvelopeCanonicalizer.swift; sourceTree = "<group>"; };
 		702971A67B4C464BAD29C2BF /* LocalVoiceModelManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalVoiceModelManager.swift; sourceTree = "<group>"; };
@@ -98,6 +113,7 @@
 		7C7AD1AA432BE939E245DA12 /* VoiceAgentBridgeUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = VoiceAgentBridgeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		7D395F5693E39802D84A2DE0 /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
 		7D49A56708A5256649EFEAEF /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		7D6506CA198DBE45F2D414C5 /* LocalModels */ = {isa = PBXFileReference; lastKnownFileType = folder; name = LocalModels; path = VoiceAgentBridgeMLXTests/LocalModels; sourceTree = SOURCE_ROOT; };
 		7FFF4D3F41311E57CBB0335F /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		81C6F2A72F342A9A5510EDCC /* CommandEnvelope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandEnvelope.swift; sourceTree = "<group>"; };
 		8A0FA7BC48E2BC3640609CEB /* SQLiteStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SQLiteStore.swift; sourceTree = "<group>"; };
@@ -118,6 +134,7 @@
 		C4A3102CC0FD64B33E8C6512 /* NotificationDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationDiagnostics.swift; sourceTree = "<group>"; };
 		C6271CCE5FA7C494BBADEB9E /* VoiceCommandGoldenSet.v1.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = VoiceCommandGoldenSet.v1.json; sourceTree = "<group>"; };
 		C657EA03DB560A56B274FB80 /* VoiceAudioDatasetV2Tests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceAudioDatasetV2Tests.swift; sourceTree = "<group>"; };
+		CA7AFE6E7C8C2AE763D83A56 /* VoiceAgentBridgeMLXTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = VoiceAgentBridgeMLXTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		CFB5EA120329E5E293186C82 /* BackendCommandPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendCommandPresentationTests.swift; sourceTree = "<group>"; };
 		D3B75AF8190D9C92C0C3CD6F /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		E1F5D54469C09BABC5815B20 /* VoiceActivityDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceActivityDetector.swift; sourceTree = "<group>"; };
@@ -128,6 +145,17 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		2BC8A1BB41DC93E960B6A0FB /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EA8E5D0187231C6D66134257 /* MLX in Frameworks */,
+				0A6931420DD0D10247B897CF /* MLXEmbedders in Frameworks */,
+				03FB82A9C9179F54492BEB68 /* MLXLLM in Frameworks */,
+				AEDC410F052B164D84D87293 /* MLXLMCommon in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		EA22C1F5CB60EC7BDC19362B /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -160,6 +188,7 @@
 			children = (
 				81A1F34DAB5170F4C70B923F /* Packages */,
 				2B954E283BFA591894598998 /* VoiceAgentBridge */,
+				BD9AD92F0AA31AE9AB689016 /* VoiceAgentBridgeMLXTests */,
 				01BDE7BCB4EC37A83A188B29 /* VoiceAgentBridgeSenseVoiceTests */,
 				2A70FF0079F783B3E78FA5A2 /* VoiceAgentBridgeTests */,
 				95B01F585F4E19FD6A9213E0 /* VoiceAgentBridgeUITests */,
@@ -254,10 +283,20 @@
 			path = Fixtures;
 			sourceTree = "<group>";
 		};
+		BD9AD92F0AA31AE9AB689016 /* VoiceAgentBridgeMLXTests */ = {
+			isa = PBXGroup;
+			children = (
+				7D6506CA198DBE45F2D414C5 /* LocalModels */,
+				52E08AF777CCFD058B154D28 /* MLXLocalRuntimeQualificationTests.swift */,
+			);
+			path = VoiceAgentBridgeMLXTests;
+			sourceTree = "<group>";
+		};
 		FF7EB3BAB2C0E30249C42E67 /* Products */ = {
 			isa = PBXGroup;
 			children = (
 				FB51484FA608CC2A692E7A0B /* VoiceAgentBridge.app */,
+				CA7AFE6E7C8C2AE763D83A56 /* VoiceAgentBridgeMLXTests.xctest */,
 				302E856E2F847031E3C1C228 /* VoiceAgentBridgeSenseVoiceTests.xctest */,
 				32DC4074DC9D2EA6A41D3174 /* VoiceAgentBridgeTests.xctest */,
 				7C7AD1AA432BE939E245DA12 /* VoiceAgentBridgeUITests.xctest */,
@@ -268,6 +307,30 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		0145FD9B4A66B1721C15B279 /* VoiceAgentBridgeMLXTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 96236CBB36A92A20E3CCE684 /* Build configuration list for PBXNativeTarget "VoiceAgentBridgeMLXTests" */;
+			buildPhases = (
+				5F0AA2FCC4D1FABC948F511A /* Sources */,
+				D5563C4AFD9613F987A8A8A4 /* Resources */,
+				2BC8A1BB41DC93E960B6A0FB /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				8CB21C09171D499695B71102 /* PBXTargetDependency */,
+			);
+			name = VoiceAgentBridgeMLXTests;
+			packageProductDependencies = (
+				32D1A8A47E75BDD576585FB2 /* MLX */,
+				FB21DA517F98ECE42D2221BE /* MLXEmbedders */,
+				D8B617978EF36B5E5AA1FFB6 /* MLXLLM */,
+				76CE53617766DC3D267BF58E /* MLXLMCommon */,
+			);
+			productName = VoiceAgentBridgeMLXTests;
+			productReference = CA7AFE6E7C8C2AE763D83A56 /* VoiceAgentBridgeMLXTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		88316352B2D23303A8BD9E7C /* VoiceAgentBridgeUITests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 940FF2FB1C07A5FE254CF136 /* Build configuration list for PBXNativeTarget "VoiceAgentBridgeUITests" */;
@@ -355,6 +418,10 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1600;
 				TargetAttributes = {
+					0145FD9B4A66B1721C15B279 = {
+						DevelopmentTeam = TXKDW2YS44;
+						ProvisioningStyle = Automatic;
+					};
 					88316352B2D23303A8BD9E7C = {
 						DevelopmentTeam = TXKDW2YS44;
 						ProvisioningStyle = Automatic;
@@ -384,6 +451,8 @@
 			mainGroup = 0468E8690A41473FE4548D43;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				F2FDAF62B1EBCF2590931A63 /* XCRemoteSwiftPackageReference "mlx-swift" */,
+				FA4CEF8514A0CC312D70CCFB /* XCRemoteSwiftPackageReference "mlx-swift-lm" */,
 				C520E033C52B2C12FC3A95C8 /* XCRemoteSwiftPackageReference "sherpa-onnx" */,
 				EC84E6938DD4BD1E205AD2EB /* XCLocalSwiftPackageReference "ThirdParty/LiteRTLM" */,
 			);
@@ -393,6 +462,7 @@
 			projectRoot = "";
 			targets = (
 				95B2F73CA8EAD5AB4E6FF270 /* VoiceAgentBridge */,
+				0145FD9B4A66B1721C15B279 /* VoiceAgentBridgeMLXTests */,
 				C73E1EDEE46E11C940E86B46 /* VoiceAgentBridgeSenseVoiceTests */,
 				C1014640451ADE67F8E70780 /* VoiceAgentBridgeTests */,
 				88316352B2D23303A8BD9E7C /* VoiceAgentBridgeUITests */,
@@ -414,6 +484,15 @@
 			buildActionMask = 2147483647;
 			files = (
 				24BC3078277BDE7AB878D378 /* VoiceCommandGoldenSet.v1.json in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D5563C4AFD9613F987A8A8A4 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				ED479B861FB157F82CEEB734 /* LocalModels in Resources */,
+				AC159FFDCFFDB705F180E7FC /* VoiceCommandGoldenSet.v1.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -460,6 +539,14 @@
 				F417CDE6A0B171958F18C435 /* VoiceAudioDatasetV2Tests.swift in Sources */,
 				473DFF05EA882A4B4398A88B /* VoiceCommandGoldenSetTests.swift in Sources */,
 				F0BF3EE3A752C8CA3AC03C81 /* VoiceLanguageRoutingPolicyTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5F0AA2FCC4D1FABC948F511A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D2038495C4EBF169D1A78340 /* MLXLocalRuntimeQualificationTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -521,6 +608,11 @@
 			isa = PBXTargetDependency;
 			target = 95B2F73CA8EAD5AB4E6FF270 /* VoiceAgentBridge */;
 			targetProxy = 42EB5A437F9FF069E18830A5 /* PBXContainerItemProxy */;
+		};
+		8CB21C09171D499695B71102 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 95B2F73CA8EAD5AB4E6FF270 /* VoiceAgentBridge */;
+			targetProxy = 83C43CCD28AB040F86B646A0 /* PBXContainerItemProxy */;
 		};
 		BE94793650C530BC32A3AFE0 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -794,6 +886,44 @@
 			};
 			name = Release;
 		};
+		63CF868296BFCB34BD085FBF /* Staging */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = TXKDW2YS44;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "hk.knockknock.app.mlx-tests";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/VoiceAgentBridge.app/VoiceAgentBridge";
+			};
+			name = Staging;
+		};
+		6F065976D518A97DC1026966 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = TXKDW2YS44;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "hk.knockknock.app.mlx-tests";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/VoiceAgentBridge.app/VoiceAgentBridge";
+			};
+			name = Release;
+		};
 		7AC039F50B4CD3CA6BBD5E80 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -811,6 +941,25 @@
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/VoiceAgentBridge.app/VoiceAgentBridge";
 			};
 			name = Release;
+		};
+		A1A60D3CD711AD51945D03AB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = TXKDW2YS44;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "hk.knockknock.app.mlx-tests";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/VoiceAgentBridge.app/VoiceAgentBridge";
+			};
+			name = Debug;
 		};
 		D751E8A0AF9401CE7AF7D858 /* Staging */ = {
 			isa = XCBuildConfiguration;
@@ -994,6 +1143,16 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
+		96236CBB36A92A20E3CCE684 /* Build configuration list for PBXNativeTarget "VoiceAgentBridgeMLXTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1A60D3CD711AD51945D03AB /* Debug */,
+				6F065976D518A97DC1026966 /* Release */,
+				63CF868296BFCB34BD085FBF /* Staging */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		A557707B699BFE740750E368 /* Build configuration list for PBXNativeTarget "VoiceAgentBridge" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -1032,6 +1191,22 @@
 				version = 1.13.5;
 			};
 		};
+		F2FDAF62B1EBCF2590931A63 /* XCRemoteSwiftPackageReference "mlx-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ml-explore/mlx-swift";
+			requirement = {
+				kind = exactVersion;
+				version = 0.29.1;
+			};
+		};
+		FA4CEF8514A0CC312D70CCFB /* XCRemoteSwiftPackageReference "mlx-swift-lm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ml-explore/mlx-swift-lm";
+			requirement = {
+				kind = exactVersion;
+				version = 2.29.3;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1039,10 +1214,30 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = LiteRTLM;
 		};
+		32D1A8A47E75BDD576585FB2 /* MLX */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = F2FDAF62B1EBCF2590931A63 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLX;
+		};
+		76CE53617766DC3D267BF58E /* MLXLMCommon */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FA4CEF8514A0CC312D70CCFB /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXLMCommon;
+		};
 		BB8D0EAA143F46B5F073CEE4 /* sherpa-onnx */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = C520E033C52B2C12FC3A95C8 /* XCRemoteSwiftPackageReference "sherpa-onnx" */;
 			productName = "sherpa-onnx";
+		};
+		D8B617978EF36B5E5AA1FFB6 /* MLXLLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FA4CEF8514A0CC312D70CCFB /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXLLM;
+		};
+		FB21DA517F98ECE42D2221BE /* MLXEmbedders */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FA4CEF8514A0CC312D70CCFB /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXEmbedders;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
