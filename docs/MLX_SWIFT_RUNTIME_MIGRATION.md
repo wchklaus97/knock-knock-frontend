@@ -103,11 +103,13 @@ The failed Chinese cases were rejected closed. They did not create commands or e
 effects. Gemma copied prompt-template metadata into its JSON, and the strict key parser rejected
 the result. A first shorter positive-only prompt removed those extra keys but copied placeholder
 values for two English message cases, reducing English command accuracy to 6/8 (75%). That prompt
-is rejected. A second bounded prompt candidate explicitly requires replacing all placeholders and
-still forbids extra keys. A Simulator diagnostic compiled and linked MLX successfully but its test
-host aborted during inference, so it produced no qualifying output. Physical-device reruns remain
-pending because the iPhone 17 developer tunnel disconnected. The candidate was not promoted into
-production source and must not be enabled before all three locale shards pass.
+is rejected. A second bounded prompt candidate explicitly required replacing all placeholders and
+forbade extra keys. Its physical iPhone 17 English shard achieved only 3/8 commands (37.5%), while
+all 4/4 required clarifications remained correct, high-risk false execution remained zero, load
+time was 2.949 seconds, and command p95 was 1.874 seconds. The model still emitted placeholder text
+for reminder and message fields. Because English already failed the 95% gate, the Mandarin and
+Cantonese shards were intentionally not run. The candidate was rejected and the committed prompt
+baseline was restored; Gemma remains ineligible for production command generation.
 
 These 32 cases are regression fixtures, not an unbiased holdout set. Any accepted prompt must also
 pass a new multilingual holdout and the planned human-recording pipeline before release.
