@@ -307,10 +307,16 @@ final class VoiceAgentBridgeUITests: XCTestCase {
         attachScreenshot(app, named: "decision-detail")
 
         let rollback = app.buttons["decision.action.rollback"]
-        if !rollback.waitForExistence(timeout: 3) {
-            app.swipeUp()
-        }
         XCTAssertTrue(rollback.waitForExistence(timeout: 10))
+        var scrollAttempts = 0
+        while !rollback.isHittable && scrollAttempts < 4 {
+            app.swipeUp()
+            scrollAttempts += 1
+        }
+        XCTAssertTrue(
+            rollback.isHittable,
+            "The destructive action must be scrolled into the visible viewport before tapping."
+        )
         rollback.tap()
 
         let confirm = app.buttons["Confirm and continue"]
