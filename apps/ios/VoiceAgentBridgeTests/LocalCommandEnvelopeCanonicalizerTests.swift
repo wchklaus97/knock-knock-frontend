@@ -254,6 +254,19 @@ final class LocalCommandEnvelopeCanonicalizerTests: XCTestCase {
         )
         XCTAssertEqual(
             try LocalVoiceArgumentGrounder.arguments(
+                for: "create_draft",
+                modelArguments: [
+                    "title": "Project update saying the build is ready",
+                    "body": "Project update saying the build is ready",
+                ],
+                transcript: "Create a draft titled Project update saying the build is ready",
+                referenceMilliseconds: reference,
+                timezone: timezone
+            ) as NSDictionary,
+            ["title": "Project update", "body": "the build is ready"] as NSDictionary
+        )
+        XCTAssertEqual(
+            try LocalVoiceArgumentGrounder.arguments(
                 for: "send_message",
                 modelArguments: ["recipient": "Ann", "body": "hello"],
                 transcript: "Message Joanne that hello",

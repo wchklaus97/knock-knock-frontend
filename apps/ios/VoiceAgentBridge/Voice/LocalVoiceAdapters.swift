@@ -591,11 +591,11 @@ enum LocalVoiceArgumentGrounder {
                 throw clarification()
             }
             var result: [String: Any] = ["body": body]
-            if let title = string(modelArguments, aliases: ["title", "subject"]),
+            if let title = draftTitle(from: transcript) {
+                result["title"] = title
+            } else if let title = string(modelArguments, aliases: ["title", "subject"]),
                isGrounded(title, in: transcript)
             {
-                result["title"] = title
-            } else if let title = draftTitle(from: transcript) {
                 result["title"] = title
             }
             return result

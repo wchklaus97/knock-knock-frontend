@@ -8,6 +8,12 @@ options:
 packages:
   LiteRTLM:
     path: ThirdParty/LiteRTLM
+  MLXSwift:
+    url: https://github.com/ml-explore/mlx-swift
+    exactVersion: 0.29.1
+  MLXSwiftLM:
+    url: https://github.com/ml-explore/mlx-swift-lm
+    exactVersion: 2.29.3
   SherpaOnnx:
     url: https://github.com/k2-fsa/sherpa-onnx
     exactVersion: 1.13.5
@@ -140,6 +146,36 @@ targets:
         IPHONEOS_DEPLOYMENT_TARGET: "15.0"
         DEVELOPMENT_TEAM: TXKDW2YS44
 
+  VoiceAgentBridgeMLXTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: VoiceAgentBridgeMLXTests
+        excludes:
+          - LocalModels
+      - path: VoiceAgentBridgeMLXTests/LocalModels
+        type: folder
+        buildPhase: resources
+      - path: VoiceAgentBridgeTests/Fixtures/VoiceCommandGoldenSet.v1.json
+        buildPhase: resources
+    dependencies:
+      - target: VoiceAgentBridge
+      - package: MLXSwift
+        product: MLX
+      - package: MLXSwiftLM
+        product: MLXEmbedders
+      - package: MLXSwiftLM
+        product: MLXLLM
+      - package: MLXSwiftLM
+        product: MLXLMCommon
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: hk.knockknock.app.mlx-tests
+        GENERATE_INFOPLIST_FILE: YES
+        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        DEVELOPMENT_TEAM: TXKDW2YS44
+
 schemes:
   VoiceAgentBridgeSenseVoiceQualification:
     build:
@@ -156,3 +192,19 @@ schemes:
         KNOCK_SENSEVOICE_LANGUAGE: "$(KNOCK_SENSEVOICE_LANGUAGE)"
         KNOCK_SENSEVOICE_NUM_THREADS: "$(KNOCK_SENSEVOICE_NUM_THREADS)"
         KNOCK_SENSEVOICE_DELETE_UAT_DATA: "$(KNOCK_SENSEVOICE_DELETE_UAT_DATA)"
+
+  VoiceAgentBridgeMLXQualification:
+    build:
+      targets:
+        VoiceAgentBridge: all
+        VoiceAgentBridgeMLXTests: [test]
+    test:
+      targets:
+        - name: VoiceAgentBridgeMLXTests
+          parallelizable: false
+      environmentVariables:
+        KNOCK_RUN_MLX_BENCHMARK: "$(KNOCK_RUN_MLX_BENCHMARK)"
+        KNOCK_MLX_EMBEDDER_DIR: "$(KNOCK_MLX_EMBEDDER_DIR)"
+        KNOCK_MLX_GEMMA_DIR: "$(KNOCK_MLX_GEMMA_DIR)"
+        KNOCK_MLX_GOLDEN_LOCALES: "$(KNOCK_MLX_GOLDEN_LOCALES)"
+        KNOCK_ALLOW_MLX_SIMULATOR_DIAGNOSTIC: "$(KNOCK_ALLOW_MLX_SIMULATOR_DIAGNOSTIC)"
