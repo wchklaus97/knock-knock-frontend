@@ -48,6 +48,8 @@ results are supporting evidence only and must not be reported as physical voice 
 | SpeechAnalyzer 12-WAV physical STT | 12/12 final; English 37/37 (100%), Cantonese 65/75 (86.7%), Simplified Chinese 55/71 (77.5%); per-locale p95 405/482/354 ms | Failed per-locale accuracy gate |
 | SpeechAnalyzer 12-WAV physical pipeline | 3/9 commands exact, 3/3 clarifications, high-risk false executions 0, p95 STT 379 ms and p95 total 380 ms | Failed semantic gate; safe failure |
 | DictationTranscriber comparison | English 35/37 (94.6%), Cantonese 56/75 (74.7%), Simplified Chinese 51/71 (71.8%); per-locale p95 438/785/660 ms | Rejected; worse than SpeechTranscriber |
+| Human 12-recording SpeechAnalyzer pilot | 12/12 final; English 48.84%, Simplified Chinese 69.57%, Cantonese 66.67%, overall 63.64%; maximum per-locale p95 313 ms | Failed accuracy gate; single-speaker discovery evidence |
+| Human 12-recording physical pipeline | 0/9 commands exact, 3/3 clarifications, high-risk false executions 0, p95 total 487 ms | Failed semantic gate; safe failure |
 | Full physical audio pipeline | All 144 profiles | Blocked by failed 12-WAV gate |
 | Live push-to-talk/VAD | Real microphone, stop/final transcript, clarification, confirmation, result/TTS | Pending |
 | Stability | memory, thermal, repeated commands, interruption/cancellation | Pending |
@@ -86,6 +88,12 @@ records Apple `say` on macOS 26.5.2. The regenerated `draft-zh-01` Apple `say` W
 matches the package SHA-256 exactly, so the manifest is the observed source of
 truth; the package cannot be accepted as formal release-provenance evidence until
 its handoff documentation is corrected.
+
+The separate single-speaker human-recording pilot is documented in
+[iPhone 13 Pro Human Voice UAT — 2026-08-13](IPHONE13_HUMAN_VOICE_UAT_2026-08-13.md).
+It is discovery evidence only: the aligned reference commands were not independently
+verified as word-for-word transcripts, and the corpus is below the required speaker
+count.
 
 ## Physical execution order
 
