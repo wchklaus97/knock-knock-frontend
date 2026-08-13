@@ -101,8 +101,18 @@
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
+            key = "KNOCK_PHYSICAL_VOICE_EXPECTATION_MODE"
+            value = "$(KNOCK_PHYSICAL_VOICE_EXPECTATION_MODE)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
             key = "KNOCK_PHYSICAL_VOICE_HOLD_SECONDS"
             value = "$(KNOCK_PHYSICAL_VOICE_HOLD_SECONDS)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_PHYSICAL_VOICE_MANUAL_CAPTURE"
+            value = "$(KNOCK_PHYSICAL_VOICE_MANUAL_CAPTURE)"
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
@@ -251,8 +261,18 @@
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
+            key = "KNOCK_PHYSICAL_VOICE_EXPECTATION_MODE"
+            value = "$(KNOCK_PHYSICAL_VOICE_EXPECTATION_MODE)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
             key = "KNOCK_PHYSICAL_VOICE_HOLD_SECONDS"
             value = "$(KNOCK_PHYSICAL_VOICE_HOLD_SECONDS)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_PHYSICAL_VOICE_MANUAL_CAPTURE"
+            value = "$(KNOCK_PHYSICAL_VOICE_MANUAL_CAPTURE)"
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
@@ -397,8 +417,18 @@
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
+            key = "KNOCK_PHYSICAL_VOICE_EXPECTATION_MODE"
+            value = "$(KNOCK_PHYSICAL_VOICE_EXPECTATION_MODE)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
             key = "KNOCK_PHYSICAL_VOICE_HOLD_SECONDS"
             value = "$(KNOCK_PHYSICAL_VOICE_HOLD_SECONDS)"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "KNOCK_PHYSICAL_VOICE_MANUAL_CAPTURE"
+            value = "$(KNOCK_PHYSICAL_VOICE_MANUAL_CAPTURE)"
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
