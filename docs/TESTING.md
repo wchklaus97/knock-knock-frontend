@@ -263,6 +263,12 @@ xcodebuild -project VoiceAgentBridge.xcodeproj -scheme VoiceAgentBridge \
   test
 ```
 
+For an attached-device stability run, set `KNOCK_VOICE_AUDIO_REPEAT_COUNT` to repeat the
+selected WAV matrix inside one test process. The value defaults to `1` and is capped at
+`50`. The schema-v2 result records the repeat count, total evaluation time, and the
+device thermal state before and after the run. Use Instruments on the same physical
+device for power evidence; Simulator results do not qualify as thermal evidence.
+
 Use `speech_analyzer_dictation` only for a diagnostic A/B comparison. It is not an
 approved production backend. SpeechAnalyzer selection is strict and does not silently
 fall back to legacy Speech, so a report cannot mislabel the backend that produced it.
@@ -270,6 +276,18 @@ fall back to legacy Speech, so a report cannot mislabel the backend that produce
 Machine-readable STT and pipeline results are written below the staged package's
 `voice-golden-v2-generated/results/` directory. No test creates an API client or uploads
 audio. Backend idempotency and confirmation remain a separate Layer B gate.
+
+For physical offline UI verification, `testPhysicalCacheSurvivesAirplaneModeAndRecovers`
+supports two explicitly different evidence levels. A human can enable airplane mode and
+disable Wi-Fi during the countdown for real radio-loss evidence. Debug UAT may instead set
+`KNOCK_FORCE_UNREACHABLE_ROUTE_UAT=1`; after caching the online fixture, the test relaunches
+against local port 9 and verifies the offline prompt plus cached Session. The latter is a
+controlled route-outage test and must never be reported as a real airplane-mode pass.
+
+For live microphone UAT, `KNOCK_PHYSICAL_VOICE_HOLD_SECONDS` controls the automated
+long-press window (`12` seconds by default, restricted to `8...20`). The operator must
+watch the physical iPhone and speak only after the dock visibly changes to `Listening…`;
+chat or shell countdown timing is not evidence that microphone capture has begun.
 
 ### iPhone 13 runtime policy
 
@@ -320,9 +338,14 @@ the local Mac/iPhone loop.
 curl -s -X POST http://127.0.0.1:8787/v1/pairing/code \
   -H "Authorization: Bearer $USER_TOKEN"
 
-vab pair --code XXXXXX --label "codex-mac" --write-env .env.agent
+vab pair --code pair_xxx --label "codex-mac" \
+  --api-url "$KNOCK_KNOCK_API_URL" --write-env .env.agent
 # configure Cursor/Codex MCP with BRIDGE_AGENT_KEY
 ```
+
+Pairing codes only exist in the environment that issued them. The CLI stores
+both API URL aliases and the agent key in the workspace-root `.env.agent` with
+mode `0600`, so a restarted MCP host reconnects to the same environment.
 
 ## Definition of Done (MVP)
 

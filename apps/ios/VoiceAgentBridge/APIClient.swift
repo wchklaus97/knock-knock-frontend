@@ -506,6 +506,12 @@ final class APIClient: @unchecked Sendable {
     private func get<T: Decodable>(_ path: String, query: [URLQueryItem] = []) async throws -> T {
         var req = URLRequest(url: try makeURL(path, query: query))
         req.httpMethod = "GET"
+        // Authenticated API state must come from the backend or from our
+        // explicit SQLite offline cache. URLCache can otherwise replay a
+        // successful response while the device is offline and make the UI
+        // incorrectly report that it is connected.
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        req.setValue("no-store", forHTTPHeaderField: "Cache-Control")
         try applyAuth(&req)
         return try await send(req)
     }

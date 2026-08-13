@@ -518,6 +518,42 @@ final class BackendCommandPresentationTests: XCTestCase {
         }
     }
 
+    func testAPIClientGETBypassesURLCache() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [APIErrorURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer {
+            APIErrorURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+        APIErrorURLProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalCacheData)
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Cache-Control"), "no-store")
+            let response = try XCTUnwrap(HTTPURLResponse(
+                url: request.url ?? URL(string: "https://api.example.com")!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            ))
+            return (response, Data(#"{"sessions":[]}"#.utf8))
+        }
+        let previousBaseURL = UserDefaults.standard.string(forKey: "vab.apiBase")
+        defer {
+            if let previousBaseURL {
+                UserDefaults.standard.set(previousBaseURL, forKey: "vab.apiBase")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "vab.apiBase")
+            }
+        }
+        let client = APIClient(session: session)
+        client.baseURL = URL(string: "https://api.example.com")
+        client.token = "test-token"
+
+        let page = try await client.listSessionsPage()
+        XCTAssertTrue(page.sessions.isEmpty)
+    }
+
     func testPersistenceFailurePreventsPost() async throws {
         let parentFile = FileManager.default.temporaryDirectory
             .appendingPathComponent("knock-knock-parent-file-\(UUID().uuidString)")

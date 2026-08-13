@@ -1,13 +1,11 @@
 /** Thin HTTP client for Bridge contract URLs. Auth: BRIDGE_AGENT_KEY → X-Agent-Key */
 
 import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { agentEnvCandidates, normalizeApiBaseUrl } from "./cli-support.js";
 
 function loadAgentEnvFile() {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const envPath = path.resolve(here, "../../../.env.agent");
-  if (!fs.existsSync(envPath)) return;
+  const envPath = agentEnvCandidates().find((candidate) => fs.existsSync(candidate));
+  if (!envPath) return;
   for (const line of fs.readFileSync(envPath, "utf8").split("\n")) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
@@ -27,10 +25,11 @@ function loadAgentEnvFile() {
 
 loadAgentEnvFile();
 
-const API =
+const API = normalizeApiBaseUrl(
   process.env.KNOCK_KNOCK_API_URL ??
-  process.env.BRIDGE_API_URL ??
-  "http://127.0.0.1:8787";
+    process.env.BRIDGE_API_URL ??
+    "http://127.0.0.1:8787",
+);
 const KEY = process.env.BRIDGE_AGENT_KEY ?? "";
 
 export async function api<T>(
@@ -58,5 +57,5 @@ export async function api<T>(
 }
 
 export function bridgeBaseUrl(): string {
-  return API.replace(/\/+$/, "");
+  return API;
 }

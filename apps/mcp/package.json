@@ -12,6 +12,7 @@
     "start": "tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test src/cli-support.test.ts",
     "test:paperclip": "tsx src/paperclip-smoke.ts",
     "cli": "tsx src/cli.ts"
   },

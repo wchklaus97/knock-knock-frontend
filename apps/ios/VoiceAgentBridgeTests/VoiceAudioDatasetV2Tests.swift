@@ -60,6 +60,7 @@ private struct VoiceAudioDatasetV2: Decodable {
 }
 
 private struct VoiceAudioSTTResult: Codable {
+    let iteration: Int
     let exampleID: String
     let locale: String
     let profile: String
@@ -72,6 +73,7 @@ private struct VoiceAudioSTTResult: Codable {
     let referenceUnitCount: Int?
 
     enum CodingKeys: String, CodingKey {
+        case iteration
         case exampleID = "example_id"
         case locale, profile
         case relativePath = "relative_path"
@@ -89,6 +91,10 @@ private struct VoiceAudioSTTReport: Codable {
     let device: String
     let sttBackend: String
     let generatedAt: String
+    let repeatCount: Int
+    let evaluationMilliseconds: Int
+    let thermalStateBefore: String
+    let thermalStateAfter: String
     let sampleCount: Int
     let successfulTranscriptions: Int
     let results: [VoiceAudioSTTResult]
@@ -98,6 +104,10 @@ private struct VoiceAudioSTTReport: Codable {
         case device
         case sttBackend = "stt_backend"
         case generatedAt = "generated_at"
+        case repeatCount = "repeat_count"
+        case evaluationMilliseconds = "evaluation_ms"
+        case thermalStateBefore = "thermal_state_before"
+        case thermalStateAfter = "thermal_state_after"
         case sampleCount = "sample_count"
         case successfulTranscriptions = "successful_transcriptions"
         case results
@@ -652,6 +662,10 @@ final class VoiceAudioSTTEvaluationTests: XCTestCase {
                 : Set(package.dataset.examples.map(\.id)))
             : explicitIDs
         let limit = Int(environment["KNOCK_VOICE_AUDIO_LIMIT"] ?? "")
+        let repeatCount = max(
+            1,
+            min(Int(environment["KNOCK_VOICE_AUDIO_REPEAT_COUNT"] ?? "") ?? 1, 50)
+        )
         let examplesByID = Dictionary(
             uniqueKeysWithValues: package.dataset.examples.map { ($0.id, $0) }
         )
@@ -665,63 +679,82 @@ final class VoiceAudioSTTEvaluationTests: XCTestCase {
         }
         XCTAssertFalse(selectedRows.isEmpty, "No audio rows matched the configured filters")
 
+        let evaluationStarted = ProcessInfo.processInfo.systemUptime
+        let thermalStateBefore = thermalStateName(ProcessInfo.processInfo.thermalState)
         var results: [VoiceAudioSTTResult] = []
-        for row in selectedRows {
-            let example = try XCTUnwrap(examplesByID[row.exampleID])
-            let started = ProcessInfo.processInfo.systemUptime
-            do {
-                let transcript = try await transcribe(
-                    package.audioURL(for: row),
-                    locale: Locale(identifier: example.locale),
-                    backend: environment["KNOCK_VOICE_STT_BACKEND"] ?? "system_speech"
-                )
-                let elapsed = Int(((ProcessInfo.processInfo.systemUptime - started) * 1_000).rounded())
-                let comparison = transcriptionDistance(
-                    expected: example.text,
-                    actual: transcript,
-                    locale: example.locale
-                )
-                results.append(
-                    VoiceAudioSTTResult(
-                        exampleID: example.id,
-                        locale: example.locale,
-                        profile: row.profile,
-                        relativePath: row.relativePath,
-                        expectedText: example.text,
-                        transcript: transcript,
-                        errorCategory: nil,
-                        sttMilliseconds: elapsed,
-                        editDistance: comparison.distance,
-                        referenceUnitCount: comparison.referenceCount
+        results.reserveCapacity(selectedRows.count * repeatCount)
+        for iteration in 1...repeatCount {
+            for row in selectedRows {
+                let example = try XCTUnwrap(examplesByID[row.exampleID])
+                let started = ProcessInfo.processInfo.systemUptime
+                do {
+                    let transcript = try await transcribe(
+                        package.audioURL(for: row),
+                        locale: Locale(identifier: example.locale),
+                        backend: environment["KNOCK_VOICE_STT_BACKEND"] ?? "system_speech"
                     )
-                )
-            } catch {
-                let elapsed = Int(((ProcessInfo.processInfo.systemUptime - started) * 1_000).rounded())
-                results.append(
-                    VoiceAudioSTTResult(
-                        exampleID: example.id,
-                        locale: example.locale,
-                        profile: row.profile,
-                        relativePath: row.relativePath,
-                        expectedText: example.text,
-                        transcript: nil,
-                        errorCategory: sttErrorCategory(error),
-                        sttMilliseconds: elapsed,
-                        editDistance: nil,
-                        referenceUnitCount: nil
+                    let elapsed = Int(((ProcessInfo.processInfo.systemUptime - started) * 1_000).rounded())
+                    let comparison = transcriptionDistance(
+                        expected: example.text,
+                        actual: transcript,
+                        locale: example.locale
                     )
-                )
+                    results.append(
+                        VoiceAudioSTTResult(
+                            iteration: iteration,
+                            exampleID: example.id,
+                            locale: example.locale,
+                            profile: row.profile,
+                            relativePath: row.relativePath,
+                            expectedText: example.text,
+                            transcript: transcript,
+                            errorCategory: nil,
+                            sttMilliseconds: elapsed,
+                            editDistance: comparison.distance,
+                            referenceUnitCount: comparison.referenceCount
+                        )
+                    )
+                } catch {
+                    let elapsed = Int(((ProcessInfo.processInfo.systemUptime - started) * 1_000).rounded())
+                    results.append(
+                        VoiceAudioSTTResult(
+                            iteration: iteration,
+                            exampleID: example.id,
+                            locale: example.locale,
+                            profile: row.profile,
+                            relativePath: row.relativePath,
+                            expectedText: example.text,
+                            transcript: nil,
+                            errorCategory: sttErrorCategory(error),
+                            sttMilliseconds: elapsed,
+                            editDistance: nil,
+                            referenceUnitCount: nil
+                        )
+                    )
+                }
             }
         }
 
-        try writeReport(results, package: package, environment: environment)
+        let evaluationMilliseconds = Int(
+            ((ProcessInfo.processInfo.systemUptime - evaluationStarted) * 1_000).rounded()
+        )
+        let thermalStateAfter = thermalStateName(ProcessInfo.processInfo.thermalState)
+        try writeReport(
+            results,
+            package: package,
+            environment: environment,
+            repeatCount: repeatCount,
+            evaluationMilliseconds: evaluationMilliseconds,
+            thermalStateBefore: thermalStateBefore,
+            thermalStateAfter: thermalStateAfter
+        )
         let failureSummary = results.compactMap { result in
             result.errorCategory.map { "\(result.exampleID)=\($0)" }
         }.joined(separator: ", ")
         let supportedLocales = supportedSpeechLocaleIdentifiers().joined(separator: ",")
         XCTAssertEqual(
             results.filter { $0.errorCategory == nil }.count,
-            selectedRows.count,
+            selectedRows.count * repeatCount,
             "Every selected WAV must produce a final on-device transcript. "
                 + "Failures: \(failureSummary); supported locales: \(supportedLocales)"
         )
@@ -744,6 +777,16 @@ final class VoiceAudioSTTEvaluationTests: XCTestCase {
                     || identifier.hasPrefix("yue")
             }
             .sorted()
+    }
+
+    private func thermalStateName(_ state: ProcessInfo.ThermalState) -> String {
+        switch state {
+        case .nominal: "nominal"
+        case .fair: "fair"
+        case .serious: "serious"
+        case .critical: "critical"
+        @unknown default: "unknown"
+        }
     }
 
     private func transcribe(_ url: URL, locale: Locale, backend: String) async throws -> String {
@@ -838,16 +881,24 @@ final class VoiceAudioSTTEvaluationTests: XCTestCase {
     private func writeReport(
         _ results: [VoiceAudioSTTResult],
         package: VoiceAudioDatasetV2Package,
-        environment: [String: String]
+        environment: [String: String],
+        repeatCount: Int,
+        evaluationMilliseconds: Int,
+        thermalStateBefore: String,
+        thermalStateAfter: String
     ) throws {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let device = environment["KNOCK_VOICE_RESULT_DEVICE"] ?? "unspecified-ios-device"
         let report = VoiceAudioSTTReport(
-            schemaVersion: 1,
+            schemaVersion: 2,
             device: device,
             sttBackend: environment["KNOCK_VOICE_STT_BACKEND"] ?? "system_speech",
             generatedAt: formatter.string(from: Date()),
+            repeatCount: repeatCount,
+            evaluationMilliseconds: evaluationMilliseconds,
+            thermalStateBefore: thermalStateBefore,
+            thermalStateAfter: thermalStateAfter,
             sampleCount: results.count,
             successfulTranscriptions: results.filter { $0.errorCategory == nil }.count,
             results: results

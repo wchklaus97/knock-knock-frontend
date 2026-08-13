@@ -505,6 +505,60 @@ private extension LocalVoiceCommandController.State {
         if case .listening = self { return true }
         return false
     }
+
+    var dockSystemImage: String {
+        switch self {
+        case .idle, .requestingPermissions: return "mic.circle"
+        case .listening: return "mic.circle.fill"
+        case .processing: return "waveform.badge.magnifyingglass"
+        case .clarificationRequired: return "questionmark.circle"
+        case .submitted: return "checkmark.circle"
+        case .failed: return "exclamationmark.triangle"
+        }
+    }
+
+    var dockStatusLabel: String {
+        switch self {
+        case .idle: return "Push to talk"
+        case .requestingPermissions: return "Permission needed"
+        case .listening: return "Release to submit"
+        case .processing: return "Understanding…"
+        case .clarificationRequired: return "Try again"
+        case .submitted: return "Sent"
+        case .failed: return "Unavailable"
+        }
+    }
+
+    var dockActionLabel: String {
+        switch self {
+        case .idle: return "Hold and speak a command"
+        case .requestingPermissions: return "Allow microphone and speech access"
+        case .listening: return "Listening…"
+        case .processing: return "Understanding your command…"
+        case .clarificationRequired: return "I didn’t catch that. Hold and try again"
+        case .submitted: return "Sent for backend validation"
+        case let .failed(message): return message
+        }
+    }
+
+    var dockAccessibilityValue: String {
+        switch self {
+        case .idle: return "Ready"
+        case .requestingPermissions: return "Permission needed"
+        case .listening: return "Listening"
+        case .processing: return "Processing"
+        case .clarificationRequired: return "Needs clarification"
+        case .submitted: return "Submitted"
+        case let .failed(message): return "Failed: \(message)"
+        }
+    }
+
+    var usesActiveDockColor: Bool {
+        switch self {
+        case .listening, .processing: return true
+        default: return false
+        }
+    }
 }
 
 struct DashboardHero: View {
@@ -818,6 +872,7 @@ struct AgentPickerRow: View {
             .clipShape(Capsule())
         }
         .accessibilityLabel("Agent filter: \(selectedTitle)")
+        .accessibilityIdentifier("agent.filter")
     }
 }
 
@@ -992,19 +1047,19 @@ struct HomeVoiceDock: View {
                     .font(.subheadline.weight(.bold))
                     .foregroundStyle(KnockDesign.ink)
                 Spacer()
-                Text(controller.state.isListening ? "Release to submit" : "Push to talk")
+                Text(controller.state.dockStatusLabel)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(KnockDesign.muted)
             }
             HStack(spacing: 9) {
-                Image(systemName: controller.state.isListening ? "mic.circle.fill" : "mic.circle")
-                Text(controller.state.isListening ? "Listening…" : "Hold and speak a command")
+                Image(systemName: controller.state.dockSystemImage)
+                Text(controller.state.dockActionLabel)
             }
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 12)
-            .background(controller.state.isListening ? KnockDesign.lavender : KnockDesign.coral)
+            .background(controller.state.usesActiveDockColor ? KnockDesign.lavender : KnockDesign.coral)
             .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
             .onLongPressGesture(minimumDuration: 0, maximumDistance: 44, pressing: { pressing in
@@ -1016,6 +1071,7 @@ struct HomeVoiceDock: View {
             }, perform: {})
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Push to talk")
+            .accessibilityValue(controller.state.dockAccessibilityValue)
             .accessibilityHint("Hold to speak a command. Release to submit it for backend validation.")
             .accessibilityIdentifier("voice.dock")
         }
@@ -2502,6 +2558,7 @@ struct ProductionInboxView: View {
                     }
                     .disabled(store.isRefreshing)
                     .accessibilityLabel("Refresh inbox")
+                    .accessibilityIdentifier("inbox.refresh")
                 }
             }
             .background {
@@ -3739,6 +3796,12 @@ struct SettingsPanelView: View {
         Text("Push-to-talk keeps microphone capture in the foreground. Local intent parsing only produces a CommandEnvelope; the backend remains the execution authority.")
             .font(.subheadline)
             .foregroundStyle(KnockDesign.muted)
+        Text(LocalVoiceRuntimePolicy.strategy() == .deterministicParser
+            ? "Runtime policy · Safe parser"
+            : "Runtime policy · Signed Gemma")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(KnockDesign.muted)
+            .accessibilityIdentifier("settings.voice.strategy")
         KnockCard(padding: 14) {
             HStack(spacing: 10) {
                 Image(systemName: "waveform.and.mic")
@@ -3749,6 +3812,7 @@ struct SettingsPanelView: View {
                     Text(store.voiceModelStatus)
                         .font(.caption)
                         .foregroundStyle(KnockDesign.muted)
+                        .accessibilityIdentifier("settings.voice.status")
                 }
                 Spacer()
             }
@@ -3769,6 +3833,7 @@ struct SettingsPanelView: View {
             .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
         }
         .disabled(store.voiceModelStatus.hasPrefix("Preparing"))
+        .accessibilityIdentifier("settings.voice.prepare")
     }
 
     @ViewBuilder

@@ -2,6 +2,13 @@ import XCTest
 @testable import VoiceAgentBridge
 
 final class ModelsDecodingTests: XCTestCase {
+    func testInitialSyncRequiredForcesSnapshotOnlyBeforeCursorIsEstablished() {
+        XCTAssertTrue(AppStore.shouldForceSnapshot(eventName: "sync.required", appliedCursor: nil))
+        XCTAssertTrue(AppStore.shouldForceSnapshot(eventName: "sync.required", appliedCursor: "  "))
+        XCTAssertFalse(AppStore.shouldForceSnapshot(eventName: "sync.required", appliedCursor: "2030"))
+        XCTAssertFalse(AppStore.shouldForceSnapshot(eventName: "session.updated", appliedCursor: nil))
+    }
+
     func testRuntimeApiOverrideNeverPollutesPersistedServerSelection() {
         XCTAssertFalse(AppStore.shouldPersistApiBase(
             runtimeOverride: "https://127.0.0.1:9",
