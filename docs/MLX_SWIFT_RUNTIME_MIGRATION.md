@@ -62,8 +62,9 @@ The latest stable MLX Swift line currently requires iOS 17 and a newer Swift too
 
 ### Gemma extraction
 
-- Gemma returns only the argument object required by trusted local code. It does not generate
-  command IDs, idempotency keys, risk, confirmation, locale, timezone, or model identity.
+- Gemma is asked for one allowlisted literal field per request, such as `reminder_title` or
+  `message_recipient`. It does not generate intent, command IDs, idempotency keys, time, risk,
+  confirmation, locale, timezone, model identity, or execution controls.
 - Model output must pass the existing single-object parser. The transport may unwrap one exact
   `json` code fence, but must not search for, repair, or merge partial JSON.
 - Trusted local code grounds arguments in the transcript, rebuilds policy fields, and the final
@@ -111,12 +112,48 @@ for reminder and message fields. Because English already failed the 95% gate, th
 Cantonese shards were intentionally not run. The candidate was rejected and the committed prompt
 baseline was restored; Gemma remains ineligible for production command generation.
 
+### Controlled-field qualification (2026-08-14)
+
+A stricter architecture then replaced the full argument-object request with independent,
+allowlisted field requests. Each response must be exactly `{"value":"literal transcript
+substring"}` or `{}`. Unknown keys, duplicate keys, wrong types, placeholders, ungrounded text,
+pronouns used as people, and command/time text in the wrong field all fail to clarification.
+Trusted code still owns intent, time parsing, risk, confirmation, identifiers, and the final
+`CommandEnvelope`.
+
+On the physical iPhone 17 Pro Max, an exact reminder smoke passed in 3.668 seconds and the raw
+model field was verified as `call John`; deterministic grounding was not allowed to hide a wrong
+field. The complete English shard then produced:
+
+| Metric | Result | Required |
+|---|---:|---:|
+| Exact commands | 3/8 (37.5%) | >=95% |
+| Exact raw fields | 6/11 (54.5%) | >=95% |
+| Required clarifications | 4/4 | 4/4 |
+| High-risk false executions | 0 | 0 |
+| Load | 2.743 s | recorded |
+| Command p95 | 1.768 s | <=2 s |
+| Field p95 | 0.896 s | <=2 s |
+
+The model met latency and safe-rejection requirements but failed semantic accuracy. A diagnostic
+without field examples became worse: 0/8 exact commands and 3/11 exact fields. That variant was
+discarded. Mandarin and Cantonese were not run because failure of the English shard already blocks
+qualification.
+
+Release therefore defaults every device, including iPhone 17 Pro Max, to
+`DeterministicCommandGenerator`. The signed Gemma path remains compiled for qualification but is
+guarded by `signedGemmaQualifiedForRelease = false`; a valid signature, successful download, and
+successful model initialization cannot override this semantic gate. The deterministic fallback
+passed all 24 command examples and all 8 required clarifications across the same 32-case fixture,
+with zero high-risk false executions.
+
 These 32 cases are regression fixtures, not an unbiased holdout set. Any accepted prompt must also
 pass a new multilingual holdout and the planned human-recording pipeline before release.
 
-The production deterministic safety suite passed 25/25 tests after the draft-title grounding fix.
-Coverage includes ambiguous people/time/amount clarification, high-risk confirmation, injection,
-duplicate/extra keys, strict timestamps, and the iPhone 13 rules-first fallback.
+The current command-safety focused suite passed 29/29 tests, and the complete iOS unit target
+passed 205 tests with 9 expected opt-in skips and zero failures. Coverage includes ambiguous
+people/time/amount clarification, high-risk confirmation, injection, duplicate/extra keys, strict
+timestamps, controlled fields, and the rules-first release fallback.
 
 Model weight SHA-256 values used for this qualification:
 
@@ -145,8 +182,9 @@ Current device policy from the measured evidence:
 
 - iPhone 13 Pro remains rules-first with clarification. Gemma 3 1B is not eligible for the
   interactive path because one safe generation took 4.148 seconds.
-- iPhone 17 Pro Max may enter non-authoritative shadow mode only after the final prompt passes all
-  locale shards and a separate holdout. It is not currently production-eligible.
+- iPhone 17 Pro Max also remains rules-first in Release. Gemma may enter non-authoritative shadow
+  mode only after the raw-field gate passes every locale shard and a separate holdout. It is not
+  currently production-eligible.
 - Multilingual E5 may proceed to a larger retrieval-only shadow benchmark on both devices. A
   retrieved memory is context only and can never authorize an action.
 

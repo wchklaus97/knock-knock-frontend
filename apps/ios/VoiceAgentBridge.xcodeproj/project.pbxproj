@@ -14,6 +14,7 @@
 		0D93D157788A40A948DCF6E2 /* ModelManifest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 149CAFF91FDC8612C25406DD /* ModelManifest.swift */; };
 		0FF7B9A0DFFFA31708F1A95D /* ModelManifestTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCF7CB1D4DEEC850EDE664F2 /* ModelManifestTests.swift */; };
 		137762B8BE34597AEC835FE1 /* ProductionViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A8C292E2E86149C5183D6F7 /* ProductionViews.swift */; };
+		1C09684A2B56E1AAA5CC0BE4 /* ControlledFieldExtraction.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C527516AC8F001B6D28D20A /* ControlledFieldExtraction.swift */; };
 		2114B9779C001BA980B4E436 /* DemoConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1CB585C4D196C26E5F29DFC /* DemoConfig.swift */; };
 		24BC3078277BDE7AB878D378 /* VoiceCommandGoldenSet.v1.json in Resources */ = {isa = PBXBuildFile; fileRef = C6271CCE5FA7C494BBADEB9E /* VoiceCommandGoldenSet.v1.json */; };
 		25641E57D673CB29E940845B /* CommandResponseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E961F8A69AB7D6BDE901A076 /* CommandResponseTests.swift */; };
@@ -23,6 +24,7 @@
 		431E50C47EA9942550BABB6C /* LocalVoiceModelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 702971A67B4C464BAD29C2BF /* LocalVoiceModelManager.swift */; };
 		473DFF05EA882A4B4398A88B /* VoiceCommandGoldenSetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA717EF03B5C5EAB9F24A65F /* VoiceCommandGoldenSetTests.swift */; };
 		49795404D433FEBEB093D31C /* CommandEnvelopeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C1D1AD3C4D5FC05095BE5A6 /* CommandEnvelopeTests.swift */; };
+		4D243E13460133345395AA04 /* ControlledFieldExtractionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8DC36F4DC3FC22E51EEAD47 /* ControlledFieldExtractionTests.swift */; };
 		51C2DF8CD2A8E251B9247B67 /* LocalVoiceCommandCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD705554BEBFA130F3F1E4A6 /* LocalVoiceCommandCoordinator.swift */; };
 		6E080537F813A6B4165CBB31 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FFF4D3F41311E57CBB0335F /* APIClient.swift */; };
 		720401804B43056F029C368F /* sherpa-onnx in Frameworks */ = {isa = PBXBuildFile; productRef = BB8D0EAA143F46B5F073CEE4 /* sherpa-onnx */; };
@@ -107,6 +109,7 @@
 		52E08AF777CCFD058B154D28 /* MLXLocalRuntimeQualificationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLXLocalRuntimeQualificationTests.swift; sourceTree = "<group>"; };
 		5A8C292E2E86149C5183D6F7 /* ProductionViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionViews.swift; sourceTree = "<group>"; };
 		6C104E4640CA3F92C1AA7360 /* LocalCommandEnvelopeCanonicalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalCommandEnvelopeCanonicalizer.swift; sourceTree = "<group>"; };
+		6C527516AC8F001B6D28D20A /* ControlledFieldExtraction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControlledFieldExtraction.swift; sourceTree = "<group>"; };
 		702971A67B4C464BAD29C2BF /* LocalVoiceModelManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalVoiceModelManager.swift; sourceTree = "<group>"; };
 		743C16B034EDDD0B1135C4D4 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		74BA2D4358CF12E52878DF32 /* ModelArtifactStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelArtifactStore.swift; sourceTree = "<group>"; };
@@ -139,6 +142,7 @@
 		D3B75AF8190D9C92C0C3CD6F /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		E1F5D54469C09BABC5815B20 /* VoiceActivityDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceActivityDetector.swift; sourceTree = "<group>"; };
 		E961F8A69AB7D6BDE901A076 /* CommandResponseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandResponseTests.swift; sourceTree = "<group>"; };
+		F8DC36F4DC3FC22E51EEAD47 /* ControlledFieldExtractionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControlledFieldExtractionTests.swift; sourceTree = "<group>"; };
 		FA82608CC7DEEE8B1ABB3BD0 /* LocalVoiceCommandControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalVoiceCommandControllerTests.swift; sourceTree = "<group>"; };
 		FB51484FA608CC2A692E7A0B /* VoiceAgentBridge.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = VoiceAgentBridge.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FCF7CB1D4DEEC850EDE664F2 /* ModelManifestTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelManifestTests.swift; sourceTree = "<group>"; };
@@ -201,6 +205,7 @@
 			children = (
 				4F8290B1E64F0BF7AD39B005 /* BackendCommandPresentation.swift */,
 				81C6F2A72F342A9A5510EDCC /* CommandEnvelope.swift */,
+				6C527516AC8F001B6D28D20A /* ControlledFieldExtraction.swift */,
 				6C104E4640CA3F92C1AA7360 /* LocalCommandEnvelopeCanonicalizer.swift */,
 				9321642D5AEBE9EEEB69A6AF /* LocalVoiceAdapters.swift */,
 				A99A0C0747DF715EF6BCBDAB /* LocalVoiceCommandController.swift */,
@@ -223,6 +228,7 @@
 				2CB02D354785B86D2132126E /* BackgroundRemoteNotificationTests.swift */,
 				9C1D1AD3C4D5FC05095BE5A6 /* CommandEnvelopeTests.swift */,
 				E961F8A69AB7D6BDE901A076 /* CommandResponseTests.swift */,
+				F8DC36F4DC3FC22E51EEAD47 /* ControlledFieldExtractionTests.swift */,
 				9D0AFE1014DA172AD7A6CBB1 /* LocalCommandEnvelopeCanonicalizerTests.swift */,
 				FA82608CC7DEEE8B1ABB3BD0 /* LocalVoiceCommandControllerTests.swift */,
 				9FD236C7A543804B27C041D4 /* LocalVoiceCommandCoordinatorTests.swift */,
@@ -529,6 +535,7 @@
 				AB4332BD6D136A8495BEBB90 /* BackgroundRemoteNotificationTests.swift in Sources */,
 				49795404D433FEBEB093D31C /* CommandEnvelopeTests.swift in Sources */,
 				25641E57D673CB29E940845B /* CommandResponseTests.swift in Sources */,
+				4D243E13460133345395AA04 /* ControlledFieldExtractionTests.swift in Sources */,
 				B4FE287C30FBAA073FAF97B6 /* LocalCommandEnvelopeCanonicalizerTests.swift in Sources */,
 				92E68DB4901ECC95540F451B /* LocalVoiceCommandControllerTests.swift in Sources */,
 				8E39FCC5139F5AA07C78C74F /* LocalVoiceCommandCoordinatorTests.swift in Sources */,
@@ -559,6 +566,7 @@
 				A17DC2B4DBF67D961CE4EBDE /* AppStore.swift in Sources */,
 				DD38742C3FF1E2A935E168AE /* BackendCommandPresentation.swift in Sources */,
 				D15FBECCAEF15DBCDA8518FD /* CommandEnvelope.swift in Sources */,
+				1C09684A2B56E1AAA5CC0BE4 /* ControlledFieldExtraction.swift in Sources */,
 				2114B9779C001BA980B4E436 /* DemoConfig.swift in Sources */,
 				79437CFF750C1C884D19DB78 /* LocalCommandEnvelopeCanonicalizer.swift in Sources */,
 				FB3182B40BD8376D018FA41C /* LocalVoiceAdapters.swift in Sources */,
