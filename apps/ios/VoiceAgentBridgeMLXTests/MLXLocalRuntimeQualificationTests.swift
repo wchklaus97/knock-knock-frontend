@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import MLX
 import MLXEmbedders
 import MLXHuggingFace
@@ -11,6 +12,11 @@ import XCTest
 final class MLXLocalRuntimeQualificationTests: XCTestCase {
     private static let qualificationPackageVersion =
         "mlx-swift-lm 3.31.4 / mlx-swift 0.31.4"
+    /// Pinned expected metadata for the qualification artifact. This constant is
+    /// not a locally verified hash unless the opt-in benchmark actually loads
+    /// weights from `KNOCK_MLX_EMBEDDER_DIR` and compares them.
+    private static let expectedE5ModelSHA256 =
+        "1a55775f53449dac10a2bcbc312469fac40b96d53198c407081a831f81c98477"
 
     private enum GemmaCandidate: String {
         case gemma3_1B = "mlx-community/gemma-3-1b-it-qat-4bit"
@@ -56,6 +62,8 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
     private enum QualificationConfigurationError: LocalizedError {
         case unsupportedModelID(String)
         case unexpectedModelType(expected: String, actual: String)
+        case unexpectedWeightFileCount(Int)
+        case unexpectedModelSHA256(expected: String, actual: String)
 
         var errorDescription: String? {
             switch self {
@@ -63,6 +71,10 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
                 return "Model \(modelID) is not allowlisted for MLX qualification."
             case .unexpectedModelType(let expected, let actual):
                 return "Expected \(expected), but config.json declares \(actual)."
+            case .unexpectedWeightFileCount(let count):
+                return "Expected one pinned safetensors weight file, found \(count)."
+            case .unexpectedModelSHA256(let expected, let actual):
+                return "Expected model SHA-256 \(expected), found \(actual)."
             }
         }
     }
@@ -89,21 +101,9 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
         }
     }
 
-    private struct RetrievalPrediction: Codable {
-        let queryID: String
-        let locale: String
-        let expectedDocumentID: String
-        let predictedDocumentID: String
-        let correct: Bool
-        let topScore: Float
-        let topOneMargin: Float
-    }
-
     private struct RetrievalReport: Codable {
-        let runtime: String
-        let executionEnvironment: String
-        let packageVersion: String
         let model: String
+        let modelSHA256: String
         let queryCount: Int
         let correctCount: Int
         let recallAtOne: Double
@@ -111,11 +111,8 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
         let p95Seconds: Double
         let loadSeconds: Double
         let minimumTopOneMargin: Float
-        let localeResults: [String: LocaleResult]
-        let predictions: [RetrievalPrediction]
-        let memoryBeforeLoad: GPU.Snapshot
-        let memoryAfterLoad: GPU.Snapshot
-        let memoryAfterBenchmark: GPU.Snapshot
+        let localeResults: [String: MemoryShadowLocaleMetrics]
+        let predictions: [MemoryShadowPrediction]
     }
 
     private struct GemmaSmokeReport: Codable {
@@ -278,91 +275,62 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
         try requireBenchmarkOptIn()
         try requirePhysicalDeviceForInference()
         let directory = try validatedLocalModelDirectory(environmentKey: "KNOCK_MLX_EMBEDDER_DIR")
+        let modelSHA256 = try weightSHA256(in: directory)
+        guard modelSHA256 == Self.expectedE5ModelSHA256 else {
+            throw QualificationConfigurationError.unexpectedModelSHA256(
+                expected: Self.expectedE5ModelSHA256,
+                actual: modelSHA256
+            )
+        }
 
         Memory.clearCache()
-        let memoryBeforeLoad = Memory.snapshot()
         let loadStarted = CFAbsoluteTimeGetCurrent()
         let container = try await EmbedderModelFactory.shared.loadContainer(
             from: directory,
             using: #huggingFaceTokenizerLoader()
         )
         let loadSeconds = CFAbsoluteTimeGetCurrent() - loadStarted
-        let memoryAfterLoad = Memory.snapshot()
-
-        let documentVectors = await embed(
-            documents.map { "passage: \($0.text)" },
-            using: container
+        let shadow: any MemoryShadowQualificationReporting =
+            MultilingualE5ReadOnlyShadow(container: container)
+        let shadowReport = try await shadow.makeReport(
+            fixture: MemoryShadowFixture(
+                memories: documents.map {
+                    MemoryShadowMemoryFixture(
+                        memoryID: $0.id,
+                        displayText: $0.text
+                    )
+                },
+                queries: queries.map {
+                    MemoryShadowQueryFixture(
+                        queryID: $0.id,
+                        locale: $0.locale,
+                        expectedMemoryID: $0.expectedDocumentID,
+                        displayText: $0.text
+                    )
+                }
+            )
         )
-        XCTAssertEqual(documentVectors.count, documents.count)
-        var correct = 0
-        var localeResults: [String: LocaleResult] = [:]
-        var margins: [Float] = []
-        var perExampleSeconds: [Double] = []
-        var predictions: [RetrievalPrediction] = []
-
-        for query in queries {
-            let inferenceStarted = CFAbsoluteTimeGetCurrent()
-            let vectors = await embed(["query: \(query.text)"], using: container)
-            perExampleSeconds.append(CFAbsoluteTimeGetCurrent() - inferenceStarted)
-            guard let queryVector = vectors.first else {
-                XCTFail("Embedding runtime returned no vector for \(query.id)")
-                continue
-            }
-            let scored = zip(documents, documentVectors)
-                .map { document, vector in (document.id, dot(queryVector, vector)) }
-                .sorted { $0.1 > $1.1 }
-            guard let predicted = scored.first else {
-                XCTFail("No retrieval score was produced for \(query.id)")
-                continue
-            }
-            let secondScore = scored.dropFirst().first?.1 ?? -.infinity
-            let margin = predicted.1 - secondScore
-            margins.append(margin)
-
-            let isCorrect = predicted.0 == query.expectedDocumentID
-            if isCorrect { correct += 1 }
-            let previous = localeResults[query.locale] ?? .init(correct: 0, total: 0)
-            localeResults[query.locale] = .init(
-                correct: previous.correct + (isCorrect ? 1 : 0),
-                total: previous.total + 1
-            )
-            predictions.append(
-                .init(
-                    queryID: query.id,
-                    locale: query.locale,
-                    expectedDocumentID: query.expectedDocumentID,
-                    predictedDocumentID: predicted.0,
-                    correct: isCorrect,
-                    topScore: predicted.1,
-                    topOneMargin: margin
-                )
-            )
-        }
-
-        let recallAtOne = Double(correct) / Double(queries.count)
         let report = RetrievalReport(
-            runtime: "MLX Swift",
-            executionEnvironment: executionEnvironment,
-            packageVersion: Self.qualificationPackageVersion,
             model: "intfloat/multilingual-e5-small",
-            queryCount: queries.count,
-            correctCount: correct,
-            recallAtOne: recallAtOne,
-            p50Seconds: percentile(perExampleSeconds, percentile: 0.50),
-            p95Seconds: percentile(perExampleSeconds, percentile: 0.95),
+            modelSHA256: modelSHA256,
+            queryCount: shadowReport.queryCount,
+            correctCount: shadowReport.correctCount,
+            recallAtOne: shadowReport.recallAtOne,
+            p50Seconds: shadowReport.p50Seconds,
+            p95Seconds: shadowReport.p95Seconds,
             loadSeconds: loadSeconds,
-            minimumTopOneMargin: margins.min() ?? 0,
-            localeResults: localeResults,
-            predictions: predictions,
-            memoryBeforeLoad: memoryBeforeLoad,
-            memoryAfterLoad: memoryAfterLoad,
-            memoryAfterBenchmark: Memory.snapshot()
+            minimumTopOneMargin: shadowReport.minimumTopOneMargin,
+            localeResults: shadowReport.localeMetrics,
+            predictions: shadowReport.predictions
         )
         try attach(report, name: "mlx-multilingual-e5-memory-retrieval.json")
 
-        XCTAssertGreaterThanOrEqual(recallAtOne, 0.90)
+        XCTAssertGreaterThanOrEqual(shadowReport.recallAtOne, 0.90)
         for locale in ["en-HK", "zh-Hans-HK", "yue-Hant-HK"] {
-            XCTAssertGreaterThanOrEqual(try XCTUnwrap(localeResults[locale]).accuracy, 0.90)
+            XCTAssertGreaterThanOrEqual(
+                try XCTUnwrap(shadowReport.localeMetrics[locale]).accuracy,
+                0.90
+            )
         }
         XCTAssertLessThanOrEqual(report.p95Seconds, 2.0)
     }
@@ -817,6 +785,27 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
         return directory
     }
 
+    private func weightSHA256(in directory: URL) throws -> String {
+        let weightFiles = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        )
+        .filter { $0.pathExtension == "safetensors" }
+        .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        guard weightFiles.count == 1, let weightURL = weightFiles.first else {
+            throw QualificationConfigurationError.unexpectedWeightFileCount(weightFiles.count)
+        }
+        let handle = try FileHandle(forReadingFrom: weightURL)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while true {
+            let chunk = try handle.read(upToCount: 1024 * 1024) ?? Data()
+            guard !chunk.isEmpty else { break }
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
     private func selectedGemmaCandidate() throws -> GemmaCandidate {
         let configured = ProcessInfo.processInfo.environment["KNOCK_MLX_GEMMA_MODEL_ID"]?
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -874,45 +863,6 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
             return example.expectedArguments?["body"]
         case .messageRecipient:
             return example.expectedArguments?["recipient"]
-        }
-    }
-
-    private func dot(_ lhs: [Float], _ rhs: [Float]) -> Float {
-        zip(lhs, rhs).reduce(0) { partial, values in
-            partial + values.0 * values.1
-        }
-    }
-
-    private func embed(
-        _ texts: [String],
-        using container: EmbedderModelContainer
-    ) async -> [[Float]] {
-        await container.perform { context -> [[Float]] in
-            let model = context.model
-            let tokenizer = context.tokenizer
-            let pooling = context.pooling
-            let encoded = texts.map { tokenizer.encode(text: $0, addSpecialTokens: true) }
-            let maximumLength = encoded.reduce(into: 16) { current, tokens in
-                current = max(current, tokens.count)
-            }
-            let paddingToken = tokenizer.convertTokenToId("<pad>") ?? 0
-            let padded = stacked(encoded.map { tokens in
-                MLXArray(tokens + Array(repeating: paddingToken, count: maximumLength - tokens.count))
-            })
-            let attentionMask = padded .!= paddingToken
-            let tokenTypes = MLXArray.zeros(like: padded)
-            let output = pooling(
-                model(
-                    padded,
-                    positionIds: nil,
-                    tokenTypeIds: tokenTypes,
-                    attentionMask: attentionMask
-                ),
-                normalize: true,
-                applyLayerNorm: false
-            )
-            output.eval()
-            return output.map { $0.asArray(Float.self) }
         }
     }
 

@@ -51,6 +51,29 @@ enum APIClientError: LocalizedError {
 struct EmptyJSON: Decodable {}
 struct EmptyBody: Encodable {}
 
+enum MemorySnapshotPaginationError: LocalizedError, Equatable {
+    case invalidMaximumPages
+    case missingNextCursor(page: Int)
+    case cursorDidNotAdvance(String)
+    case duplicateMemoryID(String)
+    case maximumPagesExceeded(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidMaximumPages:
+            return "Memory pagination requires a positive maximum page count."
+        case .missingNextCursor(let page):
+            return "Memory page \(page) has more data but no next cursor."
+        case .cursorDidNotAdvance(let cursor):
+            return "Memory pagination cursor did not advance from \(cursor)."
+        case .duplicateMemoryID(let memoryID):
+            return "Memory snapshot repeated item \(memoryID)."
+        case .maximumPagesExceeded(let maximum):
+            return "Memory snapshot exceeded the \(maximum)-page safety limit."
+        }
+    }
+}
+
 final class APIClient: @unchecked Sendable {
     /// The endpoint is user- or bundle-configured. There is no fixed physical
     /// device address because a Mac's LAN address can change at any time.
@@ -223,6 +246,70 @@ final class APIClient: @unchecked Sendable {
             query.append(URLQueryItem(name: "after", value: cursor))
         }
         return try await get("/v1/phone/sync", query: query)
+    }
+
+    func listMemoriesPage(
+        before: String? = nil,
+        limit: Int = 50
+    ) async throws -> MemoryPage {
+        var query = [URLQueryItem(name: "limit", value: String(min(max(limit, 1), 50)))]
+        if let before, !before.isEmpty {
+            query.append(URLQueryItem(name: "before", value: before))
+        }
+        return try await get("/v1/phone/memories", query: query)
+    }
+
+    /// Builds a complete authoritative snapshot in memory. The caller does
+    /// not receive a partial result, so a failed/stalled page can never drive
+    /// a destructive local cache replacement.
+    func listMemories(
+        limit: Int = 50,
+        maximumPages: Int = 100
+    ) async throws -> [MemoryItem] {
+        guard maximumPages > 0 else {
+            throw MemorySnapshotPaginationError.invalidMaximumPages
+        }
+        var memories: [MemoryItem] = []
+        var memoryIDs = Set<String>()
+        var cursor: String?
+        var seenCursors = Set<String>()
+
+        for pageNumber in 1 ... maximumPages {
+            let page = try await listMemoriesPage(before: cursor, limit: limit)
+            for memory in page.memories {
+                guard memoryIDs.insert(memory.memory_id).inserted else {
+                    throw MemorySnapshotPaginationError.duplicateMemoryID(memory.memory_id)
+                }
+                memories.append(memory)
+            }
+            guard page.has_more else { return memories }
+
+            guard let nextCursor = page.next_cursor?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !nextCursor.isEmpty
+            else {
+                throw MemorySnapshotPaginationError.missingNextCursor(page: pageNumber)
+            }
+            guard nextCursor != cursor,
+                  seenCursors.insert(nextCursor).inserted
+            else {
+                throw MemorySnapshotPaginationError.cursorDidNotAdvance(nextCursor)
+            }
+            cursor = nextCursor
+        }
+        throw MemorySnapshotPaginationError.maximumPagesExceeded(maximumPages)
+    }
+
+    func getMemory(memoryID: String) async throws -> MemoryItem {
+        try await get("/v1/phone/memories/\(memoryID)")
+    }
+
+    func createMemory(_ input: MemoryInput) async throws -> MemoryItem {
+        try await post("/v1/phone/memories", body: input, auth: true)
+    }
+
+    func deleteMemory(memoryID: String) async throws -> DeletedMemoryResponse {
+        try await delete("/v1/phone/memories/\(memoryID)")
     }
 
     func listAgents() async throws -> [Agent] {

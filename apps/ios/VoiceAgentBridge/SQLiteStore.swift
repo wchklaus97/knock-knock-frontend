@@ -1,6 +1,23 @@
 import Foundation
 import SQLite3
 
+/// Local Memory cache identity. The normalized origin deliberately contains
+/// only scheme, lowercase host, and effective port; credentials, paths,
+/// queries, fragments, and auth tokens are not part of the scope.
+struct MemoryCacheScope: Equatable, Hashable {
+    let apiOrigin: String
+    let userID: String
+
+    init?(apiBaseURL: URL?, userID: String?) {
+        guard let apiOrigin = ActiveCommandScope.origin(for: apiBaseURL),
+              let userID = userID?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !userID.isEmpty
+        else { return nil }
+        self.apiOrigin = apiOrigin
+        self.userID = userID
+    }
+}
+
 /// Small iOS 15-compatible persistence layer for the offline/read-cache path.
 ///
 /// The app stores opaque JSON payloads instead of duplicating every server
@@ -21,6 +38,11 @@ final class SQLiteStore {
         case null
     }
 
+    private struct PreparedMemory {
+        let item: MemoryItem
+        let valueJSON: String
+    }
+
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
     /// Each identifier is append-only. Existing databases are upgraded by
@@ -29,6 +51,7 @@ final class SQLiteStore {
         "ios_g1_001_pending_operation_state",
         "ios_g1_002_pending_reconciliation_events",
         "ios_g1_003_sync_cursor_state",
+        "ios_g1_004_structured_memory_cache",
     ]
 
     init(databaseURL: URL? = nil) {
@@ -284,6 +307,85 @@ final class SQLiteStore {
         }
     }
 
+    /// Upserts one live canonical item. Deletions arrive separately as
+    /// user-scoped phone-change tombstones.
+    @discardableResult
+    func upsertMemory(_ item: MemoryItem, in scope: MemoryCacheScope) -> Bool {
+        guard let prepared = prepareMemory(item) else { return false }
+        return queue.sync {
+            upsertMemoryLocked(prepared, in: scope)
+        }
+    }
+
+    /// Applies incremental live rows without deleting unrelated memories.
+    @discardableResult
+    func upsertMemories(_ items: [MemoryItem], in scope: MemoryCacheScope) -> Bool {
+        guard let prepared = prepareMemories(items)
+        else { return false }
+        return queue.sync {
+            transactionLocked {
+                for memory in prepared {
+                    if !upsertMemoryLocked(memory, in: scope) {
+                        return false
+                    }
+                }
+                return true
+            }
+        }
+    }
+
+    func loadMemories(in scope: MemoryCacheScope, now: Date = Date()) -> [MemoryItem] {
+        return queue.sync {
+            memoriesLocked(in: scope, now: now)
+        }
+    }
+
+    @discardableResult
+    func removeMemory(_ memoryID: String, in scope: MemoryCacheScope) -> Bool {
+        guard !memoryID.isEmpty else { return false }
+        return queue.sync {
+            executeLocked(
+                "DELETE FROM cached_memories WHERE api_origin = ? AND user_id = ? AND memory_id = ?",
+                bindings: [.text(scope.apiOrigin), .text(scope.userID), .text(memoryID)]
+            )
+        }
+    }
+
+    /// Replaces exactly one user's cache in a single SQLite transaction.
+    /// Encoding and duplicate validation complete before the DELETE begins,
+    /// so malformed snapshots preserve the previous offline state.
+    @discardableResult
+    func replaceMemories(_ items: [MemoryItem], in scope: MemoryCacheScope) -> Bool {
+        guard let prepared = prepareMemories(items)
+        else { return false }
+        var memoryIDs = Set<String>()
+        guard prepared.allSatisfy({ memoryIDs.insert($0.item.memory_id).inserted }) else {
+            return false
+        }
+        return queue.sync {
+            transactionLocked {
+                guard executeLocked(
+                    "DELETE FROM cached_memories WHERE api_origin = ? AND user_id = ?",
+                    bindings: [.text(scope.apiOrigin), .text(scope.userID)]
+                ) else { return false }
+                for memory in prepared where !upsertMemoryLocked(memory, in: scope) {
+                    return false
+                }
+                return true
+            }
+        }
+    }
+
+    @discardableResult
+    func clearMemories(in scope: MemoryCacheScope) -> Bool {
+        return queue.sync {
+            executeLocked(
+                "DELETE FROM cached_memories WHERE api_origin = ? AND user_id = ?",
+                bindings: [.text(scope.apiOrigin), .text(scope.userID)]
+            )
+        }
+    }
+
     func cacheSessions(_ sessions: [Session]) {
         queue.sync {
             let now = ISO8601DateFormatter().string(from: Date())
@@ -480,6 +582,7 @@ final class SQLiteStore {
         queue.sync {
             _ = transactionLocked {
                 guard executeLocked("DELETE FROM cached_sessions") else { return false }
+                guard executeLocked("DELETE FROM cached_memories") else { return false }
                 guard executeLocked("DELETE FROM cached_messages") else { return false }
                 guard executeLocked("DELETE FROM cached_retrievals") else { return false }
                 guard executeLocked("DELETE FROM cached_history") else { return false }
@@ -604,6 +707,35 @@ final class SQLiteStore {
                     );
                     """
                 )
+            case "ios_g1_004_structured_memory_cache":
+                applied = executeScriptLocked(
+                    """
+                    CREATE TABLE IF NOT EXISTS cached_memories (
+                      api_origin TEXT NOT NULL,
+                      user_id TEXT NOT NULL,
+                      memory_id TEXT NOT NULL,
+                      schema_version INTEGER NOT NULL,
+                      kind TEXT NOT NULL,
+                      subject TEXT NOT NULL,
+                      predicate TEXT NOT NULL,
+                      value_json TEXT NOT NULL,
+                      display_text TEXT NOT NULL,
+                      locale TEXT NOT NULL,
+                      source_type TEXT NOT NULL,
+                      source_session_id TEXT,
+                      source_message_id TEXT,
+                      user_confirmed INTEGER NOT NULL,
+                      confidence REAL NOT NULL,
+                      version INTEGER NOT NULL,
+                      retention_expires_at TEXT,
+                      created_at TEXT NOT NULL,
+                      updated_at TEXT NOT NULL,
+                      PRIMARY KEY (api_origin, user_id, memory_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_cached_memories_scope_page
+                      ON cached_memories(api_origin, user_id, created_at DESC, memory_id DESC);
+                    """
+                )
             default:
                 applied = false
             }
@@ -685,6 +817,146 @@ final class SQLiteStore {
             if String(cString: columnName) == name { return true }
         }
         return false
+    }
+
+    private func prepareMemory(_ item: MemoryItem) -> PreparedMemory? {
+        guard let data = try? JSONEncoder().encode(item.value),
+              data.count <= 8_192,
+              let valueJSON = String(data: data, encoding: .utf8)
+        else { return nil }
+        return PreparedMemory(item: item, valueJSON: valueJSON)
+    }
+
+    private func prepareMemories(_ items: [MemoryItem]) -> [PreparedMemory]? {
+        let prepared = items.compactMap { prepareMemory($0) }
+        return prepared.count == items.count ? prepared : nil
+    }
+
+    private func upsertMemoryLocked(
+        _ prepared: PreparedMemory,
+        in scope: MemoryCacheScope
+    ) -> Bool {
+        let item = prepared.item
+        return executeLocked(
+            """
+            INSERT OR REPLACE INTO cached_memories (
+              api_origin, user_id, memory_id, schema_version, kind, subject, predicate,
+              value_json, display_text, locale, source_type,
+              source_session_id, source_message_id, user_confirmed, confidence,
+              version, retention_expires_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            bindings: [
+                .text(scope.apiOrigin),
+                .text(scope.userID),
+                .text(item.memory_id),
+                .integer(Int64(item.schema_version)),
+                .text(item.kind.rawValue),
+                .text(item.subject),
+                .text(item.predicate),
+                .text(prepared.valueJSON),
+                .text(item.display_text),
+                .text(item.locale),
+                .text(item.source_type.rawValue),
+                item.source_session_id.map(Binding.text) ?? .null,
+                item.source_message_id.map(Binding.text) ?? .null,
+                .integer(item.user_confirmed ? 1 : 0),
+                .real(item.confidence),
+                .integer(Int64(item.version)),
+                item.retention_expires_at.map(Binding.text) ?? .null,
+                .text(item.created_at),
+                .text(item.updated_at),
+            ]
+        )
+    }
+
+    private func memoriesLocked(in scope: MemoryCacheScope, now: Date) -> [MemoryItem] {
+        guard let database else { return [] }
+        let sql = """
+        SELECT
+          schema_version, memory_id, kind, subject, predicate, value_json,
+          display_text, locale, source_type, source_session_id,
+          source_message_id, user_confirmed, confidence, version,
+          retention_expires_at, created_at, updated_at
+        FROM cached_memories
+        WHERE api_origin = ? AND user_id = ?
+        ORDER BY created_at DESC, memory_id DESC
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK,
+              let statement
+        else { return [] }
+        defer { sqlite3_finalize(statement) }
+        guard bindLocked(
+            statement,
+            bindings: [.text(scope.apiOrigin), .text(scope.userID)]
+        ) else { return [] }
+
+        func requiredText(_ index: Int32) -> String? {
+            guard sqlite3_column_type(statement, index) != SQLITE_NULL,
+                  let value = sqlite3_column_text(statement, index)
+            else { return nil }
+            return String(cString: value)
+        }
+        func optionalText(_ index: Int32) -> String? {
+            guard sqlite3_column_type(statement, index) != SQLITE_NULL else { return nil }
+            return requiredText(index)
+        }
+
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let wholeSecondFormatter = ISO8601DateFormatter()
+        wholeSecondFormatter.formatOptions = [.withInternetDateTime]
+
+        var memories: [MemoryItem] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let memoryID = requiredText(1),
+                  let kindRaw = requiredText(2),
+                  let kind = MemoryKind(rawValue: kindRaw),
+                  let subject = requiredText(3),
+                  let predicate = requiredText(4),
+                  let valueJSON = requiredText(5),
+                  let value = try? JSONDecoder().decode(
+                      JSONValue.self,
+                      from: Data(valueJSON.utf8)
+                  ),
+                  let displayText = requiredText(6),
+                  let locale = requiredText(7),
+                  let sourceRaw = requiredText(8),
+                  let sourceType = MemorySourceType(rawValue: sourceRaw),
+                  let createdAt = requiredText(15),
+                  let updatedAt = requiredText(16)
+            else { continue }
+            let retentionExpiresAt = optionalText(14)
+            if let retentionExpiresAt {
+                guard let expiration = fractionalFormatter.date(from: retentionExpiresAt)
+                    ?? wholeSecondFormatter.date(from: retentionExpiresAt),
+                      expiration > now
+                else { continue }
+            }
+            memories.append(
+                MemoryItem(
+                    schema_version: Int(sqlite3_column_int64(statement, 0)),
+                    memory_id: memoryID,
+                    kind: kind,
+                    subject: subject,
+                    predicate: predicate,
+                    value: value,
+                    display_text: displayText,
+                    locale: locale,
+                    source_type: sourceType,
+                    source_session_id: optionalText(9),
+                    source_message_id: optionalText(10),
+                    user_confirmed: sqlite3_column_int64(statement, 11) != 0,
+                    confidence: sqlite3_column_double(statement, 12),
+                    version: Int(sqlite3_column_int64(statement, 13)),
+                    retention_expires_at: retentionExpiresAt,
+                    created_at: createdAt,
+                    updated_at: updatedAt
+                )
+            )
+        }
+        return memories
     }
 
     private func pendingOperationsLocked() -> [PendingOperation] {
