@@ -522,6 +522,156 @@ struct SessionExportResponse: Decodable {
     let truncated: Bool?
 }
 
+enum MemoryKind: String, Codable, CaseIterable, Hashable {
+    case fact
+    case preference
+    case relationship
+    case project
+    case goal
+    case constraint
+}
+
+enum MemorySourceType: String, Codable, CaseIterable, Hashable {
+    case explicitUser = "explicit_user"
+    case trustedSystem = "trusted_system"
+}
+
+/// Canonical public Memory contract. Backend-only storage fields such as
+/// `value_json` and `request_hash` must never be represented here.
+struct MemoryItem: Codable, Identifiable, Hashable {
+    let schema_version: Int
+    let memory_id: String
+    let kind: MemoryKind
+    let subject: String
+    let predicate: String
+    let value: JSONValue
+    let display_text: String
+    let locale: String
+    let source_type: MemorySourceType
+    let source_session_id: String?
+    let source_message_id: String?
+    let user_confirmed: Bool
+    let confidence: Double
+    let version: Int
+    let retention_expires_at: String?
+    let created_at: String
+    let updated_at: String
+
+    var id: String { memory_id }
+    var displayText: String { display_text }
+
+    init(
+        schema_version: Int = 1,
+        memory_id: String,
+        kind: MemoryKind,
+        subject: String,
+        predicate: String,
+        value: JSONValue,
+        display_text: String,
+        locale: String,
+        source_type: MemorySourceType,
+        source_session_id: String? = nil,
+        source_message_id: String? = nil,
+        user_confirmed: Bool,
+        confidence: Double,
+        version: Int,
+        retention_expires_at: String? = nil,
+        created_at: String,
+        updated_at: String
+    ) {
+        self.schema_version = schema_version
+        self.memory_id = memory_id
+        self.kind = kind
+        self.subject = subject
+        self.predicate = predicate
+        self.value = value
+        self.display_text = display_text
+        self.locale = locale
+        self.source_type = source_type
+        self.source_session_id = source_session_id
+        self.source_message_id = source_message_id
+        self.user_confirmed = user_confirmed
+        self.confidence = confidence
+        self.version = version
+        self.retention_expires_at = retention_expires_at
+        self.created_at = created_at
+        self.updated_at = updated_at
+    }
+}
+
+struct MemoryPage: Decodable {
+    let memories: [MemoryItem]
+    let next_cursor: String?
+    let has_more: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case memories, next_cursor, has_more
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        memories = try container.decode([MemoryItem].self, forKey: .memories)
+        next_cursor = try container.decodeIfPresent(String.self, forKey: .next_cursor)
+        has_more = try container.decode(Bool.self, forKey: .has_more)
+    }
+}
+
+struct MemoryInput: Encodable, Hashable {
+    let schema_version: Int
+    let kind: MemoryKind
+    let subject: String
+    let predicate: String
+    let value: JSONValue
+    let display_text: String
+    let locale: String
+    let source_type: MemorySourceType
+    let source_session_id: String?
+    let source_message_id: String?
+    let user_confirmed: Bool
+    let confidence: Double
+    let retention_expires_at: String?
+    let idempotency_key: String
+
+    init(
+        schema_version: Int = 1,
+        kind: MemoryKind,
+        subject: String,
+        predicate: String,
+        value: JSONValue,
+        display_text: String,
+        locale: String,
+        source_session_id: String? = nil,
+        source_message_id: String? = nil,
+        user_confirmed: Bool = true,
+        confidence: Double = 1,
+        retention_expires_at: String? = nil,
+        idempotency_key: String
+    ) {
+        self.schema_version = schema_version
+        self.kind = kind
+        self.subject = subject
+        self.predicate = predicate
+        self.value = value
+        self.display_text = display_text
+        self.locale = locale
+        self.source_type = .explicitUser
+        self.source_session_id = source_session_id
+        self.source_message_id = source_message_id
+        self.user_confirmed = user_confirmed
+        self.confidence = confidence
+        self.retention_expires_at = retention_expires_at
+        self.idempotency_key = idempotency_key
+    }
+}
+
+typealias CreateMemoryInput = MemoryInput
+
+struct DeletedMemoryResponse: Decodable {
+    let ok: Bool
+    let memory_id: String
+    let deleted_at: String
+}
+
 struct PhoneChange: Decodable {
     let cursor: String
     let entity_type: String

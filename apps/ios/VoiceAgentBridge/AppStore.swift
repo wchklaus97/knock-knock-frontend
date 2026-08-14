@@ -83,6 +83,9 @@ final class AppStore: ObservableObject {
     @Published private(set) var historyBySession: [String: [HistoryEntry]] = [:]
     @Published private(set) var messagesBySession: [String: [SessionMessage]] = [:]
     @Published private(set) var retrievalsBySession: [String: [RetrievalItem]] = [:]
+    /// REST/cache snapshot only. No product UI consumes this state yet, and
+    /// qualification shadow hits are never written here.
+    @Published private(set) var memories: [MemoryItem] = []
     @Published private(set) var pendingOperations: [PendingOperation] = []
     @Published var pendingCommandConfirmation: PendingCommandConfirmation? = nil
     @Published private(set) var latestCommandResponse: CommandResponse? = nil
@@ -93,8 +96,11 @@ final class AppStore: ObservableObject {
     /// A knock can ask the main tab to open one exact agent session.
     @Published var openSessionId: String?
 
-    let client = APIClient()
+    typealias MemorySnapshotLoader = () async throws -> [MemoryItem]
+
+    let client: APIClient
     private let localStore: SQLiteStore
+    private let memorySnapshotLoader: MemorySnapshotLoader
     /// One shared speaker owns both backend result announcements and local
     /// clarification prompts. Push-to-talk can therefore stop any in-flight
     /// speech before opening the microphone, and scope changes cannot leave a
@@ -226,9 +232,15 @@ final class AppStore: ObservableObject {
     init(
         localStore: SQLiteStore = .shared,
         commandSynthesizer: VoiceSynthesizing = SystemVoiceSynthesizer(),
-        backgroundReconciliationDispatcher: BackgroundReconciliationDispatcher = .shared
+        backgroundReconciliationDispatcher: BackgroundReconciliationDispatcher = .shared,
+        client: APIClient = APIClient(),
+        memorySnapshotLoader: MemorySnapshotLoader? = nil
     ) {
+        self.client = client
         self.localStore = localStore
+        self.memorySnapshotLoader = memorySnapshotLoader ?? {
+            try await client.listMemories()
+        }
         self.commandSynthesizer = commandSynthesizer
         self.backgroundReconciliationDispatcher = backgroundReconciliationDispatcher
         activeCommandCoordinator = ActiveCommandCheckpointCoordinator(
@@ -318,6 +330,7 @@ final class AppStore: ObservableObject {
         appliedCursor = localStore.loadAppliedCursor()
         sessions = localStore.loadSessions()
         pushes = localStore.loadPushes()
+        restoreMemorySnapshotForCurrentScope()
         pendingOperations = localStore.loadPendingOperations()
         pendingCommandConfirmation = localStore.loadPendingCommandConfirmation()
         // APIClient resolves the same runtime/persisted/bundled precedence on
@@ -344,6 +357,24 @@ final class AppStore: ObservableObject {
 
     private var activeCommandScope: ActiveCommandScope? {
         ActiveCommandScope(backendURL: client.baseURL, ownerUserID: currentUserID)
+    }
+
+    /// Memory cache scope is origin + stable backend user only. Access and
+    /// refresh tokens are intentionally absent from both this type and SQLite.
+    private var memoryCacheScope: MemoryCacheScope? {
+        MemoryCacheScope(apiBaseURL: client.baseURL, userID: currentUserID)
+    }
+
+    private func restoreMemorySnapshotForCurrentScope() {
+        restoreMemorySnapshot(apiBaseURL: client.baseURL)
+    }
+
+    private func restoreMemorySnapshot(apiBaseURL: URL?) {
+        guard let scope = MemoryCacheScope(apiBaseURL: apiBaseURL, userID: currentUserID) else {
+            memories = []
+            return
+        }
+        memories = localStore.loadMemories(in: scope)
     }
 
     private var localVoiceWorkScope: LocalVoiceWorkScope? {
@@ -672,6 +703,9 @@ final class AppStore: ObservableObject {
         if persist {
             client.baseURL = url
         }
+        // Switching origin must synchronously replace the visible offline
+        // snapshot before this MainActor method returns.
+        restoreMemorySnapshot(apiBaseURL: url)
         connectionState = .unknown
         errorMessage = nil
         return true
@@ -700,6 +734,27 @@ final class AppStore: ObservableObject {
         guard token != nil else { return }
         startEventStream()
         Task { await refresh() }
+    }
+
+    /// Refreshes the non-UI Memory snapshot. The loader returns only after all
+    /// cursor pages complete. Failure is propagated so reconciliation cannot
+    /// commit a newer applied cursor over an older Memory snapshot.
+    @discardableResult
+    func refreshMemorySnapshot(generation: Int? = nil) async throws -> Bool {
+        guard token != nil, let scope = memoryCacheScope else {
+            throw CancellationError()
+        }
+        let snapshot = try await memorySnapshotLoader()
+        guard memoryCacheScope == scope,
+              token != nil,
+              generation.map({ $0 == reconciliationGeneration }) ?? true,
+              !Task.isCancelled
+        else { throw CancellationError() }
+        guard localStore.replaceMemories(snapshot, in: scope) else {
+            throw APIClientError.network("Memory snapshot could not be saved atomically.")
+        }
+        memories = snapshot
+        return true
     }
 
     /// The Settings test popup proves this binary can show the knock UI.
@@ -1005,7 +1060,7 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func applyAuth(_ auth: AuthResponse) throws {
+    func applyAuth(_ auth: AuthResponse) throws {
         let accountWillChange = currentUserID != auth.user_id
         let accessTokenWillChange = token != auth.token
         if accountWillChange || accessTokenWillChange {
@@ -1017,6 +1072,9 @@ final class AppStore: ObservableObject {
         isApplyingAuthenticationScopeMutation = true
         currentUserID = auth.user_id
         UserDefaults.standard.set(auth.user_id, forKey: Self.userIDKey)
+        if accountWillChange {
+            restoreMemorySnapshotForCurrentScope()
+        }
         token = auth.token
         isApplyingAuthenticationScopeMutation = false
         if let nextRefresh = auth.refresh_token {
@@ -1436,6 +1494,7 @@ final class AppStore: ObservableObject {
         historyBySession = [:]
         messagesBySession = [:]
         retrievalsBySession = [:]
+        memories = []
         pendingOperations = []
         pendingCommandConfirmation = nil
         latestCommandResponse = nil
@@ -1704,6 +1763,7 @@ final class AppStore: ObservableObject {
     private struct ReconciliationResult {
         let cursor: String?
         let resetCursor: Bool
+        let memoryTombstoneIDs: Set<String>
     }
 
     private func performReconciliationPass(
@@ -1724,6 +1784,11 @@ final class AppStore: ObservableObject {
         )
         guard reconciliationGeneration == generation, token != nil else {
             throw CancellationError()
+        }
+        for memoryID in result.memoryTombstoneIDs.sorted() {
+            guard removeLocalMemory(memoryID) else {
+                throw APIClientError.network("Memory tombstone could not be saved locally.")
+            }
         }
         guard localStore.commitReconciliation(
             cursor: result.cursor,
@@ -1755,10 +1820,15 @@ final class AppStore: ObservableObject {
             guard reconciliationGeneration == generation, token != nil else {
                 throw CancellationError()
             }
-            return ReconciliationResult(cursor: fallbackCursor ?? cursor, resetCursor: false)
+            return ReconciliationResult(
+                cursor: fallbackCursor ?? cursor,
+                resetCursor: false,
+                memoryTombstoneIDs: []
+            )
         }
 
         var nextCursor = cursor
+        var memoryTombstoneIDs = Set<String>()
         do {
             var previousCursor = nextCursor
             while true {
@@ -1777,7 +1847,8 @@ final class AppStore: ObservableObject {
                     let responseCursor = response.effectiveNextCursor
                     return ReconciliationResult(
                         cursor: responseCursor.isEmpty ? (fallbackCursor ?? nextCursor) : responseCursor,
-                        resetCursor: false
+                        resetCursor: false,
+                        memoryTombstoneIDs: memoryTombstoneIDs
                     )
                 }
                 for change in response.changes where change.deleted_at != nil {
@@ -1788,6 +1859,11 @@ final class AppStore: ObservableObject {
                         removeLocalMessage(change.entity_id, sessionID: change.session_id)
                     case "retrieval":
                         removeLocalRetrieval(change.entity_id, sessionID: change.session_id)
+                    case "memory":
+                        // Stage Memory tombstones until the complete REST
+                        // snapshot has been atomically replaced. A later page
+                        // failure must preserve the old cache and old cursor.
+                        memoryTombstoneIDs.insert(change.entity_id)
                     default:
                         break
                     }
@@ -1809,7 +1885,11 @@ final class AppStore: ObservableObject {
             guard reconciliationGeneration == generation, token != nil else {
                 throw CancellationError()
             }
-            return ReconciliationResult(cursor: fallbackCursor ?? nextCursor, resetCursor: false)
+            return ReconciliationResult(
+                cursor: fallbackCursor ?? nextCursor,
+                resetCursor: false,
+                memoryTombstoneIDs: memoryTombstoneIDs
+            )
         } catch let APIClientError.badStatus(code, _, _) where [400, 409, 410].contains(code) {
             // A cursor can be malformed, expired, or outside the server's
             // retention window. Reset it and establish a fresh REST snapshot;
@@ -1820,13 +1900,21 @@ final class AppStore: ObservableObject {
             guard reconciliationGeneration == generation, token != nil else {
                 throw CancellationError()
             }
-            return ReconciliationResult(cursor: nil, resetCursor: true)
+            return ReconciliationResult(
+                cursor: nil,
+                resetCursor: true,
+                memoryTombstoneIDs: memoryTombstoneIDs
+            )
         }
         try await loadRemoteState(includeAgents: includeAgents, generation: generation)
         guard reconciliationGeneration == generation, token != nil else {
             throw CancellationError()
         }
-        return ReconciliationResult(cursor: nextCursor ?? fallbackCursor, resetCursor: false)
+        return ReconciliationResult(
+            cursor: nextCursor ?? fallbackCursor,
+            resetCursor: false,
+            memoryTombstoneIDs: memoryTombstoneIDs
+        )
     }
 
     private func reconcileBeforeReconnect(generation: Int) async -> Bool {
@@ -2020,7 +2108,7 @@ final class AppStore: ObservableObject {
         if let generation,
            (generation != reconciliationGeneration || token == nil || Task.isCancelled)
         {
-            return
+            throw CancellationError()
         }
         let candidateCursor = remoteSessionPage.next_cursor?
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2063,6 +2151,7 @@ final class AppStore: ObservableObject {
         }
         localStore.cacheSessions(self.sessions)
         localStore.cachePushes(newPushes)
+        try await refreshMemorySnapshot(generation: generation)
         lastRefreshAt = Date()
         connectionState = .connected
         errorMessage = nil
@@ -2103,6 +2192,21 @@ final class AppStore: ObservableObject {
             }
         }
         localStore.removeRetrieval(retrievalID)
+    }
+
+    /// Durable phone-change tombstones remove only the active user's row.
+    /// Kept internal so synchronization isolation can be unit tested without
+    /// exposing a Memory product action.
+    @discardableResult
+    func removeLocalMemory(_ memoryID: String) -> Bool {
+        guard let scope = memoryCacheScope else { return false }
+        let previous = memories
+        memories.removeAll { $0.memory_id == memoryID }
+        guard localStore.removeMemory(memoryID, in: scope) else {
+            memories = previous
+            return false
+        }
+        return true
     }
 
     private func handleRefreshError(_ error: Error) {
