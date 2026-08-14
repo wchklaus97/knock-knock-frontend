@@ -116,6 +116,7 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
         let expectedIntent: String?
         let actualIntent: String?
         let correct: Bool
+        let fieldExtractionCorrect: Bool?
         let latencySeconds: Double
         let rawOutput: String?
         let canonicalEnvelopeJSON: String?
@@ -131,12 +132,16 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
         let evaluatedCommands: Int
         let correctCommands: Int
         let pipelineCommandAccuracy: Double
+        let evaluatedFields: Int
+        let correctFields: Int
+        let fieldExtractionAccuracy: Double
         let expectedClarifications: Int
         let correctClarifications: Int
         let highRiskFalseExecutions: Int
         let loadSeconds: Double
         let overallP95Seconds: Double
         let commandP95Seconds: Double
+        let fieldP95Seconds: Double
         let localeResults: [String: LocaleResult]
         let predictions: [CommandBenchmarkPrediction]
         let memoryBeforeLoad: GPU.Snapshot
@@ -304,13 +309,6 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
         let intentHint = try XCTUnwrap(
             try LocalVoiceUtterancePreflight.intentHint(for: transcript)
         )
-        let trustedPrompt = try LocalCommandPrompt.userText(
-            transcript: transcript,
-            locale: locale,
-            timezone: timezone,
-            referenceMilliseconds: referenceMilliseconds,
-            intentHint: intentHint
-        )
 
         GPU.clearCache()
         let memoryBeforeLoad = GPU.snapshot()
@@ -322,14 +320,36 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
         let container = try await LLMModelFactory.shared.loadContainer(configuration: configuration)
         let loadSeconds = CFAbsoluteTimeGetCurrent() - loadStarted
         let memoryAfterLoad = GPU.snapshot()
-        let session = ChatSession(
-            container,
-            instructions: LocalCommandPrompt.system,
-            generateParameters: .init(maxTokens: 128, temperature: 0)
-        )
 
         let generationStarted = CFAbsoluteTimeGetCurrent()
-        let output = try await session.respond(to: trustedPrompt)
+        var extractedValues: [LocalCommandControlledField: String] = [:]
+        var fieldOutputs: [String] = []
+        for request in try LocalCommandControlledFieldPlan.requests(
+            for: intentHint,
+            transcript: transcript
+        ) {
+            let session = ChatSession(
+                container,
+                instructions: LocalCommandControlledFieldPrompt.system,
+                generateParameters: .init(maxTokens: 32, temperature: 0)
+            )
+            let output = try await session.respond(
+                to: LocalCommandControlledFieldPrompt.userText(
+                    request: request,
+                    transcript: transcript,
+                    locale: locale
+                )
+            )
+            fieldOutputs.append("\(request.field.rawValue)=\(output)")
+            if let value = try LocalCommandControlledFieldOutputParser.value(
+                from: output,
+                request: request,
+                transcript: transcript
+            ) {
+                extractedValues[request.field] = value
+            }
+        }
+        let output = fieldOutputs.joined(separator: "\n")
         let generationSeconds = CFAbsoluteTimeGetCurrent() - generationStarted
         let memoryAfterGeneration = GPU.snapshot()
         try attach(GemmaSmokeReport(
@@ -347,21 +367,24 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
             memoryAfterGeneration: memoryAfterGeneration
         ), name: "mlx-gemma3-1b-command-envelope-raw.json")
 
-        let argumentData = try LiteRTModelOutputParser.extractJSONObject(
-            from: LiteRTModelResponseTransport.jsonCandidate(from: output)
-        )
-        guard let modelArguments = try JSONSerialization.jsonObject(with: argumentData)
-            as? [String: Any],
-              let trustedTimezone = TimeZone(identifier: timezone)
-        else {
+        guard let trustedTimezone = TimeZone(identifier: timezone) else {
             throw LocalVoiceAdapterError.invalidModelOutput
         }
-        let groundedArguments = try LocalVoiceArgumentGrounder.arguments(
+        XCTAssertEqual(
+            extractedValues[.reminderTitle],
+            "call John",
+            "The model must extract the literal field correctly; deterministic grounding must not hide a bad model output."
+        )
+        let groundedArguments = try LocalCommandControlledFieldAssembler.arguments(
             for: intentHint,
-            modelArguments: modelArguments,
+            extractedValues: extractedValues,
             transcript: transcript,
             referenceMilliseconds: referenceMilliseconds,
             timezone: trustedTimezone
+        )
+        let argumentData = try JSONSerialization.data(
+            withJSONObject: groundedArguments,
+            options: [.sortedKeys]
         )
         let semanticDraft = try JSONSerialization.data(
             withJSONObject: [
@@ -446,8 +469,11 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
         var expectedClarifications = 0
         var correctClarifications = 0
         var highRiskFalseExecutions = 0
+        var evaluatedFields = 0
+        var correctFields = 0
         var latencies: [Double] = []
         var commandLatencies: [Double] = []
+        var fieldLatencies: [Double] = []
         var localeResults: [String: LocaleResult] = [:]
         var predictions: [CommandBenchmarkPrediction] = []
 
@@ -459,6 +485,7 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
             var actualOutcome = "runtime_error"
             var errorDescription: String?
             var commandCorrect = false
+            var fieldExtractionCorrect: Bool?
 
             do {
                 guard let intentHint = try LocalVoiceUtterancePreflight.intentHint(
@@ -468,32 +495,52 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
                         .unsupportedIntent
                     )
                 }
-                let trustedPrompt = try LocalCommandPrompt.userText(
-                    transcript: example.transcript,
-                    locale: example.locale,
-                    timezone: example.timezone,
-                    referenceMilliseconds: referenceMilliseconds,
-                    intentHint: intentHint
-                )
-                let session = ChatSession(
-                    container,
-                    instructions: LocalCommandPrompt.system,
-                    generateParameters: .init(maxTokens: 128, temperature: 0)
-                )
-                let output = try await session.respond(to: trustedPrompt)
-                rawOutput = output
-                let argumentData = try LiteRTModelOutputParser.extractJSONObject(
-                    from: LiteRTModelResponseTransport.jsonCandidate(from: output)
-                )
-                guard let modelArguments = try JSONSerialization.jsonObject(with: argumentData)
-                    as? [String: Any],
-                      let timezone = TimeZone(identifier: example.timezone)
-                else {
+                guard let timezone = TimeZone(identifier: example.timezone) else {
                     throw LocalVoiceAdapterError.invalidModelOutput
                 }
-                let groundedArguments = try LocalVoiceArgumentGrounder.arguments(
+                var extractedValues: [LocalCommandControlledField: String] = [:]
+                var fieldOutputs: [String] = []
+                var allFieldsCorrect = true
+                for request in try LocalCommandControlledFieldPlan.requests(
                     for: intentHint,
-                    modelArguments: modelArguments,
+                    transcript: example.transcript
+                ) {
+                    evaluatedFields += 1
+                    let session = ChatSession(
+                        container,
+                        instructions: LocalCommandControlledFieldPrompt.system,
+                        generateParameters: .init(maxTokens: 32, temperature: 0)
+                    )
+                    let fieldStarted = CFAbsoluteTimeGetCurrent()
+                    let output = try await session.respond(
+                        to: LocalCommandControlledFieldPrompt.userText(
+                            request: request,
+                            transcript: example.transcript,
+                            locale: example.locale
+                        )
+                    )
+                    fieldLatencies.append(CFAbsoluteTimeGetCurrent() - fieldStarted)
+                    fieldOutputs.append("\(request.field.rawValue)=\(output)")
+                    rawOutput = fieldOutputs.joined(separator: "\n")
+                    if let value = try LocalCommandControlledFieldOutputParser.value(
+                        from: output,
+                        request: request,
+                        transcript: example.transcript
+                    ) {
+                        extractedValues[request.field] = value
+                        if value == expectedFieldValue(for: request.field, in: example) {
+                            correctFields += 1
+                        } else {
+                            allFieldsCorrect = false
+                        }
+                    } else {
+                        allFieldsCorrect = false
+                    }
+                }
+                fieldExtractionCorrect = allFieldsCorrect
+                let groundedArguments = try LocalCommandControlledFieldAssembler.arguments(
+                    for: intentHint,
+                    extractedValues: extractedValues,
                     transcript: example.transcript,
                     referenceMilliseconds: referenceMilliseconds,
                     timezone: timezone
@@ -534,7 +581,8 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
                     }
                     let expectedConfirmation = example.backendConfirmationRequired
                         ?? (example.expectedIntent == "send_message")
-                    commandCorrect = envelope.intent == example.expectedIntent
+                    commandCorrect = allFieldsCorrect
+                        && envelope.intent == example.expectedIntent
                         && envelope.args == expectedArguments
                         && envelope.needsConfirmation == expectedConfirmation
                         && envelope.riskLevel == (expectedConfirmation ? .high : .low)
@@ -578,6 +626,7 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
                 expectedIntent: example.expectedIntent,
                 actualIntent: actualIntent,
                 correct: isCorrect,
+                fieldExtractionCorrect: fieldExtractionCorrect,
                 latencySeconds: latency,
                 rawOutput: rawOutput,
                 canonicalEnvelopeJSON: canonicalEnvelopeJSON,
@@ -587,6 +636,7 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
         }
 
         let accuracy = Double(correctCommands) / Double(max(1, evaluatedCommands))
+        let fieldAccuracy = Double(correctFields) / Double(max(1, evaluatedFields))
         let report = CommandBenchmarkReport(
             runtime: "MLX Swift",
             executionEnvironment: executionEnvironment,
@@ -596,12 +646,16 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
             evaluatedCommands: evaluatedCommands,
             correctCommands: correctCommands,
             pipelineCommandAccuracy: accuracy,
+            evaluatedFields: evaluatedFields,
+            correctFields: correctFields,
+            fieldExtractionAccuracy: fieldAccuracy,
             expectedClarifications: expectedClarifications,
             correctClarifications: correctClarifications,
             highRiskFalseExecutions: highRiskFalseExecutions,
             loadSeconds: loadSeconds,
             overallP95Seconds: percentile(latencies, percentile: 0.95),
             commandP95Seconds: percentile(commandLatencies, percentile: 0.95),
+            fieldP95Seconds: percentile(fieldLatencies, percentile: 0.95),
             localeResults: localeResults,
             predictions: predictions,
             memoryBeforeLoad: memoryBeforeLoad,
@@ -611,6 +665,7 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
         try attach(report, name: "mlx-gemma3-1b-golden-command-benchmark.json")
 
         XCTAssertGreaterThanOrEqual(accuracy, dataset.minimumPipelineCommandAccuracy)
+        XCTAssertGreaterThanOrEqual(fieldAccuracy, dataset.minimumPipelineCommandAccuracy)
         XCTAssertEqual(correctClarifications, expectedClarifications)
         XCTAssertLessThanOrEqual(
             highRiskFalseExecutions,
@@ -618,6 +673,7 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
         )
         XCTAssertLessThanOrEqual(report.overallP95Seconds, 2.0)
         XCTAssertLessThanOrEqual(report.commandP95Seconds, 2.0)
+        XCTAssertLessThanOrEqual(report.fieldP95Seconds, 2.0)
     }
 
     private func requireBenchmarkOptIn() throws {
@@ -702,6 +758,22 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
             CommandGoldenDataset.self,
             from: Data(contentsOf: url)
         )
+    }
+
+    private func expectedFieldValue(
+        for field: LocalCommandControlledField,
+        in example: CommandGoldenExample
+    ) -> String? {
+        switch field {
+        case .historyQuery:
+            return example.expectedArguments?["q"]
+        case .reminderTitle, .draftTitle:
+            return example.expectedArguments?["title"]
+        case .draftBody, .messageBody:
+            return example.expectedArguments?["body"]
+        case .messageRecipient:
+            return example.expectedArguments?["recipient"]
+        }
     }
 
     private func dot(_ lhs: [Float], _ rhs: [Float]) -> Float {

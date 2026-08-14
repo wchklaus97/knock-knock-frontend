@@ -270,6 +270,235 @@ final class VoiceCommandGoldenSetTests: XCTestCase {
         }
     }
 
+    func testControlledFieldPipelineAcceptsGoldenValuesAndFailsClosed() throws {
+        let dataset = try Self.loadDataset()
+        let referenceMilliseconds = try XCTUnwrap(
+            LocalReminderDueAt.parseMilliseconds(dataset.referenceNow)
+        )
+        var evaluatedCommands = 0
+        var correctCommands = 0
+        var expectedClarifications = 0
+        var correctClarifications = 0
+        var highRiskFalseExecutions = 0
+        var localeTotals: [String: Int] = [:]
+        var localeCorrect: [String: Int] = [:]
+
+        for example in dataset.examples {
+            if example.expectedOutcome == "clarification" {
+                expectedClarifications += 1
+                do {
+                    guard let intent = try LocalVoiceUtterancePreflight.intentHint(
+                        for: example.transcript
+                    ) else {
+                        throw LocalCommandEnvelopeCanonicalizerError.clarificationRequired(
+                            .unsupportedIntent
+                        )
+                    }
+                    _ = try LocalCommandControlledFieldAssembler.arguments(
+                        for: intent,
+                        extractedValues: [:],
+                        transcript: example.transcript,
+                        referenceMilliseconds: referenceMilliseconds,
+                        timezone: try XCTUnwrap(TimeZone(identifier: example.timezone))
+                    )
+                    XCTFail("\(example.id) must ask for clarification")
+                } catch {
+                    XCTAssertTrue(
+                        LocalVoiceCommandErrorPolicy.requiresClarification(error),
+                        "\(example.id): \(error)"
+                    )
+                    correctClarifications += 1
+                }
+                continue
+            }
+
+            evaluatedCommands += 1
+            localeTotals[example.locale, default: 0] += 1
+            let intent = try XCTUnwrap(
+                try LocalVoiceUtterancePreflight.intentHint(for: example.transcript),
+                example.id
+            )
+            XCTAssertEqual(intent, example.expectedIntent, example.id)
+            let requests = try LocalCommandControlledFieldPlan.requests(
+                for: intent,
+                transcript: example.transcript
+            )
+            var values: [LocalCommandControlledField: String] = [:]
+            for request in requests {
+                let expectedValue = try XCTUnwrap(
+                    expectedValue(for: request.field, in: example),
+                    "\(example.id) lacks \(request.field.rawValue)"
+                )
+                let responseData = try JSONSerialization.data(
+                    withJSONObject: ["value": expectedValue],
+                    options: [.sortedKeys]
+                )
+                let response = try XCTUnwrap(String(data: responseData, encoding: .utf8))
+                if let parsed = try LocalCommandControlledFieldOutputParser.value(
+                    from: response,
+                    request: request,
+                    transcript: example.transcript
+                ) {
+                    values[request.field] = parsed
+                }
+            }
+            let arguments = try LocalCommandControlledFieldAssembler.arguments(
+                for: intent,
+                extractedValues: values,
+                transcript: example.transcript,
+                referenceMilliseconds: referenceMilliseconds,
+                timezone: try XCTUnwrap(TimeZone(identifier: example.timezone))
+            )
+            let semanticDraft = try JSONSerialization.data(
+                withJSONObject: [
+                    "intent": intent,
+                    "args": arguments,
+                    "confidence": 0.9,
+                ],
+                options: [.sortedKeys]
+            )
+            let canonicalData = try LocalCommandEnvelopeCanonicalizer(
+                makeIdentifier: { "controlled_\(example.id)" }
+            ).canonicalize(
+                modelOutput: semanticDraft,
+                context: .init(
+                    modelVersion: "controlled-field-test",
+                    localeIdentifier: example.locale,
+                    timezoneIdentifier: example.timezone
+                ),
+                validationMilliseconds: referenceMilliseconds
+            )
+            let envelope = try CommandEnvelope.decodeStrict(from: canonicalData)
+            var expectedArguments = (example.expectedArguments ?? [:]).mapValues(JSONValue.string)
+            if let expectedDueAt = example.expectedDueAt {
+                expectedArguments["due_at"] = .string(expectedDueAt)
+            }
+            let expectedConfirmation = example.backendConfirmationRequired
+                ?? (example.expectedIntent == "send_message")
+            let correct = envelope.intent == example.expectedIntent
+                && envelope.args == expectedArguments
+                && envelope.needsConfirmation == expectedConfirmation
+                && envelope.riskLevel == (expectedConfirmation ? .high : .low)
+            if correct {
+                correctCommands += 1
+                localeCorrect[example.locale, default: 0] += 1
+            }
+            if envelope.intent == "send_message", example.expectedIntent != "send_message" {
+                highRiskFalseExecutions += 1
+            }
+            XCTAssertTrue(correct, example.id)
+        }
+
+        let accuracy = Double(correctCommands) / Double(max(evaluatedCommands, 1))
+        XCTAssertGreaterThanOrEqual(accuracy, dataset.minimumPipelineCommandAccuracy)
+        XCTAssertEqual(correctClarifications, expectedClarifications)
+        XCTAssertEqual(highRiskFalseExecutions, dataset.maximumHighRiskFalseExecutions)
+        for locale in ["en-HK", "zh-Hans-HK", "yue-Hant-HK"] {
+            let total = localeTotals[locale, default: 0]
+            XCTAssertGreaterThan(total, 0)
+            XCTAssertGreaterThanOrEqual(
+                Double(localeCorrect[locale, default: 0]) / Double(max(total, 1)),
+                dataset.minimumPipelineCommandAccuracy,
+                locale
+            )
+        }
+    }
+
+    func testReleaseDeterministicFallbackMeetsGoldenSafetyGate() throws {
+        let dataset = try Self.loadDataset()
+        let referenceMilliseconds = try XCTUnwrap(
+            LocalReminderDueAt.parseMilliseconds(dataset.referenceNow)
+        )
+        var evaluatedCommands = 0
+        var correctCommands = 0
+        var expectedClarifications = 0
+        var correctClarifications = 0
+        var highRiskFalseExecutions = 0
+        var localeTotals: [String: Int] = [:]
+        var localeCorrect: [String: Int] = [:]
+
+        for example in dataset.examples {
+            let generator = DeterministicCommandGenerator(
+                locale: Locale(identifier: example.locale),
+                timezone: try XCTUnwrap(TimeZone(identifier: example.timezone)),
+                identifierFactory: { "rules_\(example.id)" },
+                nowMilliseconds: { referenceMilliseconds }
+            )
+            var result: Result<Data, Error>?
+            generator.generateCommand(for: example.transcript) { result = $0 }
+            let resolved = try XCTUnwrap(result, example.id)
+
+            if example.expectedOutcome == "clarification" {
+                expectedClarifications += 1
+                switch resolved {
+                case .success:
+                    XCTFail("\(example.id) must ask for clarification")
+                case let .failure(error):
+                    XCTAssertTrue(
+                        LocalVoiceCommandErrorPolicy.requiresClarification(error),
+                        "\(example.id): \(error)"
+                    )
+                    correctClarifications += 1
+                }
+                continue
+            }
+
+            evaluatedCommands += 1
+            localeTotals[example.locale, default: 0] += 1
+            guard case let .success(data) = resolved else { continue }
+            let envelope = try CommandEnvelope.decodeStrict(from: data)
+            var expectedArguments = (example.expectedArguments ?? [:]).mapValues(JSONValue.string)
+            if let expectedDueAt = example.expectedDueAt {
+                expectedArguments["due_at"] = .string(expectedDueAt)
+            }
+            let expectedConfirmation = example.backendConfirmationRequired
+                ?? (example.expectedIntent == "send_message")
+            let correct = envelope.intent == example.expectedIntent
+                && envelope.args == expectedArguments
+                && envelope.needsConfirmation == expectedConfirmation
+                && envelope.riskLevel == (expectedConfirmation ? .high : .low)
+                && envelope.modelVersion == DeterministicCommandGenerator.version
+            if correct {
+                correctCommands += 1
+                localeCorrect[example.locale, default: 0] += 1
+            }
+            if envelope.intent == "send_message", example.expectedIntent != "send_message" {
+                highRiskFalseExecutions += 1
+            }
+            XCTAssertTrue(correct, example.id)
+        }
+
+        let accuracy = Double(correctCommands) / Double(max(evaluatedCommands, 1))
+        XCTAssertGreaterThanOrEqual(accuracy, dataset.minimumPipelineCommandAccuracy)
+        XCTAssertEqual(correctClarifications, expectedClarifications)
+        XCTAssertEqual(highRiskFalseExecutions, dataset.maximumHighRiskFalseExecutions)
+        for locale in ["en-HK", "zh-Hans-HK", "yue-Hant-HK"] {
+            XCTAssertGreaterThan(localeTotals[locale, default: 0], 0)
+            XCTAssertGreaterThanOrEqual(
+                Double(localeCorrect[locale, default: 0])
+                    / Double(max(localeTotals[locale, default: 0], 1)),
+                dataset.minimumPipelineCommandAccuracy,
+                locale
+            )
+        }
+    }
+
+    private func expectedValue(
+        for field: LocalCommandControlledField,
+        in example: VoiceCommandGoldenExample
+    ) -> String? {
+        switch field {
+        case .historyQuery:
+            return example.expectedArguments?["q"]
+        case .reminderTitle, .draftTitle:
+            return example.expectedArguments?["title"]
+        case .draftBody, .messageBody:
+            return example.expectedArguments?["body"]
+        case .messageRecipient:
+            return example.expectedArguments?["recipient"]
+        }
+    }
+
     fileprivate static func loadDataset() throws -> VoiceCommandGoldenDataset {
         let bundle = Bundle(for: VoiceCommandGoldenSetTests.self)
         let url = try XCTUnwrap(
@@ -624,6 +853,10 @@ final class VoiceModelGoldenEvaluationTests: XCTestCase {
         )
         XCTAssertLessThanOrEqual(orderedLatencies[p95Index], maximumP95)
         XCTAssertLessThanOrEqual(orderedCommandLatencies[commandP95Index], maximumP95)
+        XCTAssertTrue(
+            LocalVoiceRuntimePolicy.signedGemmaQualifiedForRelease,
+            "Signed Gemma remains quarantined until the strict raw-field qualification gate passes."
+        )
     }
 
     private static func generate(
