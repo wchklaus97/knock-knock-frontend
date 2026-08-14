@@ -15,7 +15,7 @@ Swift UI / Audio
 
 手机端不再以 Rust Candle 为目标。Backend 继续使用 Rust，并且仍是权限、风险、用户归属、幂等和执行结果的唯一权威来源。
 
-当前主 App 的最低版本仍是 iOS 15。官方 MLX Swift 最低支持 iOS 16，所以第一阶段只新增独立的 iOS 16 qualification target；在验证通过前，不提高主 App deployment target，也不替换现有 LiteRT 路径。
+当前主 App 的最低版本仍是 iOS 15。Gemma 4 所需的最新版官方 MLX Swift LM 最低支持 iOS 17，所以模型实验只存在于独立的 iOS 17 qualification targets；在验证通过前，不提高主 App deployment target，也不替换正式规则路径。
 
 ## Decision
 
@@ -29,16 +29,17 @@ Swift UI / Audio
 
 | Component | Pinned version/model | Reason |
 |---|---|---|
-| MLX Swift | `0.29.1` | Last compatible line used by the selected iOS 16 LM package |
-| MLX Swift LM | `2.29.3` | Supports iOS 16, MLXEmbedders, and Gemma 3 1B |
+| MLX Swift | `0.31.4` | Exact version required by the pinned native Gemma 4 runtime |
+| MLX Swift LM | `3.31.4` | Official native Gemma 4 E2B support; qualification target only |
 | Memory embedding | `intfloat/multilingual-e5-small` | Official MLXEmbedders registry entry; multilingual semantic retrieval |
-| Argument model | `mlx-community/gemma-3-1b-it-qat-4bit` | Existing Gemma 3 1B product direction with an MLX model implementation |
+| Rejected baseline | `mlx-community/gemma-3-1b-it-qat-4bit` | Preserved for reproducible comparison; not release-eligible |
+| New candidate | `mlx-community/gemma-4-e2b-it-4bit` | Native official-registry candidate for iPhone 17 Pro Max qualification |
 
-The latest stable MLX Swift line currently requires iOS 17 and a newer Swift toolchain. It is not used for this qualification phase.
+The main application does not link these packages. Updating the qualification runtime therefore does not raise the iOS 15 product floor.
 
 ## Isolation
 
-`VoiceAgentBridgeMLXQualification` is a separate test scheme and links MLX only into `VoiceAgentBridgeMLXTests`.
+`VoiceAgentBridgeMLXQualification` and `VoiceAgentBridgeGemma4Qualification` are separate test schemes. Gemma 4 runs in the dedicated `VoiceAgentBridgeGemma4Tests` target. MLX remains outside the production application target.
 
 - Normal application builds do not link MLX yet.
 - An `otool` check of the generated physical-device host app showed only the existing
@@ -46,6 +47,7 @@ The latest stable MLX Swift line currently requires iOS 17 and a newer Swift too
 - Normal unit/UI test schemes do not run MLX qualification.
 - Tests require explicit `KNOCK_RUN_MLX_BENCHMARK=1`.
 - Tests accept local model directories only. They do not download models from the network.
+- The Gemma 4 scheme fixes `KNOCK_MLX_GEMMA_MODEL_ID` to the allowlisted E2B model. Unknown model IDs or mismatched `config.json` model types fail the test.
 - Simulator inference requires a second explicit diagnostic flag and labels its report as
   non-qualifying. Device release gates can only be satisfied by physical-iPhone reports.
 - Synthetic command fixtures are used; user transcripts and raw recordings are not logged.
@@ -84,6 +86,7 @@ These are small synthetic engineering benchmarks, not production accuracy claims
 | iPhone 17 Pro Max | multilingual E5, 30 retrieval queries | Recall@1 30/30; each locale 10/10 | 1.266 s | 90.9 ms | 541 MB |
 | iPhone 17 Pro Max | Gemma 3 1B, one reminder safety smoke | strict canonical envelope passed | 2.628 s | 1.786 s generation | 1,026 MB |
 | iPhone 13 Pro | Gemma 3 1B, one reminder safety smoke | strict canonical envelope passed; latency gate failed | 4.388 s | 4.148 s generation | 1,026 MB |
+| iPhone 17 Pro Max | Gemma 4 E2B, English controlled-field shard | 7/8 commands; 10/11 fields; 4/4 clarifications; rejected | 2.805 s | 0.770 s command p95 | 2,849 MB |
 
 The first local-directory Gemma run repeated `<end_of_turn>` because constructing a generic local
 `ModelConfiguration(directory:)` omitted the registry's extra EOS token. Qualification must set
@@ -140,6 +143,51 @@ without field examples became worse: 0/8 exact commands and 3/11 exact fields. T
 discarded. Mandarin and Cantonese were not run because failure of the English shard already blocks
 qualification.
 
+### Gemma 4 E2B qualification candidate (2026-08-14)
+
+Gemma 4 is an isolated replacement experiment, not a production migration. The candidate is
+`mlx-community/gemma-4-e2b-it-4bit`, loaded by the native Gemma 4 implementation in
+`mlx-swift-lm 3.31.4`. It uses the same one-field-per-request protocol, strict raw-field scoring,
+32-case multilingual fixture, and backend safety boundary as the rejected Gemma 3 baseline.
+
+The candidate must pass all of these gates before it can enter non-authoritative shadow mode:
+
+- at least 95% exact commands and exact raw fields;
+- every required clarification correct;
+- zero high-risk false executions;
+- overall, command, and field p95 at most 2 seconds;
+- successful cold load, cancellation, repeated-run, memory, and thermal checks on iPhone 17 Pro Max;
+- a separate multilingual holdout and human-recording pipeline.
+
+The local cached weight file is 3,581,101,896 bytes with SHA-256
+`e9bea0584546fafb5ff83a1132a6c4662a8498cc6a5bcda52fc6ca562b7bafab`. Model files are ignored
+by Git and must not be added to a commit or application release bundle.
+
+Physical iPhone 17 Pro Max evidence confirms that the native runtime can open the model and
+generate a strictly grounded reminder field. The smoke loaded in 2.861 seconds, generated in
+3.150 seconds, used about 2,624 MB active MLX memory, and peaked at about 2,846 MB. The complete
+English shard then produced:
+
+| Metric | Result | Required |
+|---|---:|---:|
+| Exact commands | 7/8 (87.5%) | >=95% |
+| Exact raw fields | 10/11 (90.9%) | >=95% |
+| Required clarifications | 4/4 | 4/4 |
+| High-risk false executions | 0 | 0 |
+| Load | 2.805 s | recorded |
+| Command/overall p95 | 0.770 s | <=2 s |
+| Active / peak MLX memory | 2,624 / 2,849 MB | recorded |
+
+The sole strict failure dropped `I will` from the message body `I will arrive ten minutes late`.
+That is a semantic mutation, so deterministic grounding rejected it instead of hiding the error.
+Because the English shard already failed both 95% gates, Mandarin and Cantonese expansion was
+intentionally stopped. Gemma 4 therefore has status **rejected for Release and shadow mode** even
+though it can run on the device. Release remains deterministic on every device.
+
+The simulator compiled and exposed the official Gemma 4 registry entry, but attempting model
+startup hit a simulator Metal/runtime assertion before weight loading. Simulator model results are
+not qualification evidence; the physical-device result above is authoritative.
+
 Release therefore defaults every device, including iPhone 17 Pro Max, to
 `DeterministicCommandGenerator`. The signed Gemma path remains compiled for qualification but is
 guarded by `signedGemmaQualifiedForRelease = false`; a valid signature, successful download, and
@@ -155,10 +203,15 @@ passed 205 tests with 9 expected opt-in skips and zero failures. Coverage includ
 people/time/amount clarification, high-risk confirmation, injection, duplicate/extra keys, strict
 timestamps, controlled fields, and the rules-first release fallback.
 
+After the Gemma 4 target and package upgrade, the focused main-App regression selection
+(`LocalCommandEnvelopeCanonicalizerTests`, `ModelManifestTests`, and
+`VoiceCommandGoldenSetTests`) passed 40/40 tests on the iPhone 17 simulator with zero failures.
+
 Model weight SHA-256 values used for this qualification:
 
 - `intfloat/multilingual-e5-small`: `1a55775f53449dac10a2bcbc312469fac40b96d53198c407081a831f81c98477`
 - `mlx-community/gemma-3-1b-it-qat-4bit`: `b6010f6b03a83f973ca8708eb5784d5b0f80c0e7e9143dbb4c95d0eefe39c837`
+- `mlx-community/gemma-4-e2b-it-4bit`: `e9bea0584546fafb5ff83a1132a6c4662a8498cc6a5bcda52fc6ca562b7bafab`
 
 ### Device validation
 
@@ -175,7 +228,7 @@ Model weight SHA-256 values used for this qualification:
 4. Fix the final-transcript-only, classifier timeout, and cancellation race gates.
 5. Enable fallback for read-only `search_history` only.
 6. Expand to reminder/draft, then confirmed message sending.
-7. After both physical devices pass, decide whether to raise the main App floor to iOS 16.
+7. Only if the product later adopts MLX in Release, decide whether to raise the main App floor from iOS 15. Gemma 4 itself requires iOS 17 in this stack.
 8. Only after release parity and rollback testing, remove the device-side LiteRT integration.
 
 Current device policy from the measured evidence:

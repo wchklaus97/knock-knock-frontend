@@ -29,9 +29,9 @@
             buildForAnalyzing = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "0145FD9B4A66B1721C15B279"
-               BuildableName = "VoiceAgentBridgeMLXTests.xctest"
-               BlueprintName = "VoiceAgentBridgeMLXTests"
+               BlueprintIdentifier = "C92518EE656D0AFC38BD6B69"
+               BuildableName = "VoiceAgentBridgeGemma4Tests.xctest"
+               BlueprintName = "VoiceAgentBridgeGemma4Tests"
                ReferencedContainer = "container:VoiceAgentBridge.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -58,9 +58,9 @@
             parallelizable = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "0145FD9B4A66B1721C15B279"
-               BuildableName = "VoiceAgentBridgeMLXTests.xctest"
-               BlueprintName = "VoiceAgentBridgeMLXTests"
+               BlueprintIdentifier = "C92518EE656D0AFC38BD6B69"
+               BuildableName = "VoiceAgentBridgeGemma4Tests.xctest"
+               BlueprintName = "VoiceAgentBridgeGemma4Tests"
                ReferencedContainer = "container:VoiceAgentBridge.xcodeproj">
             </BuildableReference>
          </TestableReference>
@@ -85,7 +85,7 @@
          </EnvironmentVariable>
          <EnvironmentVariable
             key = "KNOCK_MLX_GEMMA_MODEL_ID"
-            value = "$(KNOCK_MLX_GEMMA_MODEL_ID)"
+            value = "mlx-community/gemma-4-e2b-it-4bit"
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
