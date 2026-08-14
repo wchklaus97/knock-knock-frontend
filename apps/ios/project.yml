@@ -10,10 +10,13 @@ packages:
     path: ThirdParty/LiteRTLM
   MLXSwift:
     url: https://github.com/ml-explore/mlx-swift
-    exactVersion: 0.29.1
+    exactVersion: 0.31.4
   MLXSwiftLM:
     url: https://github.com/ml-explore/mlx-swift-lm
-    exactVersion: 2.29.3
+    exactVersion: 3.31.4
+  SwiftTransformers:
+    url: https://github.com/huggingface/swift-transformers
+    exactVersion: 1.3.3
   SherpaOnnx:
     url: https://github.com/k2-fsa/sherpa-onnx
     exactVersion: 1.13.5
@@ -149,7 +152,7 @@ targets:
   VoiceAgentBridgeMLXTests:
     type: bundle.unit-test
     platform: iOS
-    deploymentTarget: "16.0"
+    deploymentTarget: "17.0"
     sources:
       - path: VoiceAgentBridgeMLXTests
         excludes:
@@ -169,11 +172,49 @@ targets:
         product: MLXLLM
       - package: MLXSwiftLM
         product: MLXLMCommon
+      - package: MLXSwiftLM
+        product: MLXHuggingFace
+      - package: SwiftTransformers
+        product: Tokenizers
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: hk.knockknock.app.mlx-tests
         GENERATE_INFOPLIST_FILE: YES
-        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        DEVELOPMENT_TEAM: TXKDW2YS44
+
+  VoiceAgentBridgeGemma4Tests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: VoiceAgentBridgeMLXTests
+        excludes:
+          - LocalModels
+      - path: VoiceAgentBridgeMLXTests/LocalModels
+        type: folder
+        buildPhase: resources
+      - path: VoiceAgentBridgeTests/Fixtures/VoiceCommandGoldenSet.v1.json
+        buildPhase: resources
+    dependencies:
+      - target: VoiceAgentBridge
+      - package: MLXSwift
+        product: MLX
+      - package: MLXSwiftLM
+        product: MLXEmbedders
+      - package: MLXSwiftLM
+        product: MLXLLM
+      - package: MLXSwiftLM
+        product: MLXLMCommon
+      - package: MLXSwiftLM
+        product: MLXHuggingFace
+      - package: SwiftTransformers
+        product: Tokenizers
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: hk.knockknock.app.gemma4-tests
+        GENERATE_INFOPLIST_FILE: YES
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
         DEVELOPMENT_TEAM: TXKDW2YS44
 
 schemes:
@@ -206,5 +247,23 @@ schemes:
         KNOCK_RUN_MLX_BENCHMARK: "$(KNOCK_RUN_MLX_BENCHMARK)"
         KNOCK_MLX_EMBEDDER_DIR: "$(KNOCK_MLX_EMBEDDER_DIR)"
         KNOCK_MLX_GEMMA_DIR: "$(KNOCK_MLX_GEMMA_DIR)"
+        KNOCK_MLX_GEMMA_MODEL_ID: "$(KNOCK_MLX_GEMMA_MODEL_ID)"
+        KNOCK_MLX_GOLDEN_LOCALES: "$(KNOCK_MLX_GOLDEN_LOCALES)"
+        KNOCK_ALLOW_MLX_SIMULATOR_DIAGNOSTIC: "$(KNOCK_ALLOW_MLX_SIMULATOR_DIAGNOSTIC)"
+
+  VoiceAgentBridgeGemma4Qualification:
+    build:
+      targets:
+        VoiceAgentBridge: all
+        VoiceAgentBridgeGemma4Tests: [test]
+    test:
+      targets:
+        - name: VoiceAgentBridgeGemma4Tests
+          parallelizable: false
+      environmentVariables:
+        KNOCK_RUN_MLX_BENCHMARK: "$(KNOCK_RUN_MLX_BENCHMARK)"
+        KNOCK_MLX_EMBEDDER_DIR: "$(KNOCK_MLX_EMBEDDER_DIR)"
+        KNOCK_MLX_GEMMA_DIR: "$(KNOCK_MLX_GEMMA_DIR)"
+        KNOCK_MLX_GEMMA_MODEL_ID: "mlx-community/gemma-4-e2b-it-4bit"
         KNOCK_MLX_GOLDEN_LOCALES: "$(KNOCK_MLX_GOLDEN_LOCALES)"
         KNOCK_ALLOW_MLX_SIMULATOR_DIAGNOSTIC: "$(KNOCK_ALLOW_MLX_SIMULATOR_DIAGNOSTIC)"

@@ -1,12 +1,72 @@
 import Foundation
 import MLX
 import MLXEmbedders
+import MLXHuggingFace
 import MLXLLM
 import MLXLMCommon
+import Tokenizers
 import XCTest
 @testable import VoiceAgentBridge
 
 final class MLXLocalRuntimeQualificationTests: XCTestCase {
+    private static let qualificationPackageVersion =
+        "mlx-swift-lm 3.31.4 / mlx-swift 0.31.4"
+
+    private enum GemmaCandidate: String {
+        case gemma3_1B = "mlx-community/gemma-3-1b-it-qat-4bit"
+        case gemma4_E2B = "mlx-community/gemma-4-e2b-it-4bit"
+
+        var extraEOSTokens: Set<String> {
+            switch self {
+            case .gemma3_1B:
+                return ["<end_of_turn>"]
+            case .gemma4_E2B:
+                return ["<turn|>"]
+            }
+        }
+
+        var trustedModelVersion: String {
+            switch self {
+            case .gemma3_1B:
+                return "mlx-gemma-3-1b-it-qat-4bit"
+            case .gemma4_E2B:
+                return "mlx-gemma-4-e2b-it-4bit-qualification"
+            }
+        }
+
+        var attachmentStem: String {
+            switch self {
+            case .gemma3_1B:
+                return "mlx-gemma3-1b"
+            case .gemma4_E2B:
+                return "mlx-gemma4-e2b"
+            }
+        }
+
+        var acceptedModelTypes: Set<String> {
+            switch self {
+            case .gemma3_1B:
+                return ["gemma3", "gemma3_text"]
+            case .gemma4_E2B:
+                return ["gemma4", "gemma4_text", "gemma4_unified"]
+            }
+        }
+    }
+
+    private enum QualificationConfigurationError: LocalizedError {
+        case unsupportedModelID(String)
+        case unexpectedModelType(expected: String, actual: String)
+
+        var errorDescription: String? {
+            switch self {
+            case .unsupportedModelID(let modelID):
+                return "Model \(modelID) is not allowlisted for MLX qualification."
+            case .unexpectedModelType(let expected, let actual):
+                return "Expected \(expected), but config.json declares \(actual)."
+            }
+        }
+    }
+
     private struct RetrievalDocument {
         let id: String
         let text: String
@@ -197,12 +257,20 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
 
     func testPinnedRuntimeExposesRequiredModels() {
         XCTAssertEqual(
-            MLXEmbedders.ModelConfiguration.multilingual_e5_small.name,
+            EmbedderRegistry.multilingual_e5_small.name,
             "intfloat/multilingual-e5-small"
         )
         XCTAssertEqual(
             LLMRegistry.gemma3_1B_qat_4bit.name,
             "mlx-community/gemma-3-1b-it-qat-4bit"
+        )
+        XCTAssertEqual(
+            LLMRegistry.gemma4_e2b_it_4bit.name,
+            "mlx-community/gemma-4-e2b-it-4bit"
+        )
+        XCTAssertFalse(
+            LocalVoiceRuntimePolicy.signedGemmaQualifiedForRelease,
+            "Gemma 4 is qualification-only and must not enable the production runtime."
         )
     }
 
@@ -211,14 +279,15 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
         try requirePhysicalDeviceForInference()
         let directory = try validatedLocalModelDirectory(environmentKey: "KNOCK_MLX_EMBEDDER_DIR")
 
-        GPU.clearCache()
-        let memoryBeforeLoad = GPU.snapshot()
+        Memory.clearCache()
+        let memoryBeforeLoad = Memory.snapshot()
         let loadStarted = CFAbsoluteTimeGetCurrent()
-        let container = try await MLXEmbedders.loadModelContainer(
-            configuration: .init(directory: directory)
+        let container = try await EmbedderModelFactory.shared.loadContainer(
+            from: directory,
+            using: #huggingFaceTokenizerLoader()
         )
         let loadSeconds = CFAbsoluteTimeGetCurrent() - loadStarted
-        let memoryAfterLoad = GPU.snapshot()
+        let memoryAfterLoad = Memory.snapshot()
 
         let documentVectors = await embed(
             documents.map { "passage: \($0.text)" },
@@ -274,7 +343,7 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
         let report = RetrievalReport(
             runtime: "MLX Swift",
             executionEnvironment: executionEnvironment,
-            packageVersion: "mlx-swift-lm 2.29.3 / mlx-swift 0.29.1",
+            packageVersion: Self.qualificationPackageVersion,
             model: "intfloat/multilingual-e5-small",
             queryCount: queries.count,
             correctCount: correct,
@@ -287,7 +356,7 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
             predictions: predictions,
             memoryBeforeLoad: memoryBeforeLoad,
             memoryAfterLoad: memoryAfterLoad,
-            memoryAfterBenchmark: GPU.snapshot()
+            memoryAfterBenchmark: Memory.snapshot()
         )
         try attach(report, name: "mlx-multilingual-e5-memory-retrieval.json")
 
@@ -301,7 +370,8 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
     func testLocalGemmaProducesStrictCommandEnvelope() async throws {
         try requireBenchmarkOptIn()
         try requirePhysicalDeviceForInference()
-        let directory = try validatedLocalModelDirectory(environmentKey: "KNOCK_MLX_GEMMA_DIR")
+        let candidate = try selectedGemmaCandidate()
+        let directory = try validatedGemmaDirectory(candidate: candidate)
         let transcript = "Remind me tomorrow at 9 AM to call John."
         let locale = "en-HK"
         let timezone = "Asia/Hong_Kong"
@@ -310,16 +380,15 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
             try LocalVoiceUtterancePreflight.intentHint(for: transcript)
         )
 
-        GPU.clearCache()
-        let memoryBeforeLoad = GPU.snapshot()
+        Memory.clearCache()
+        let memoryBeforeLoad = Memory.snapshot()
         let loadStarted = CFAbsoluteTimeGetCurrent()
-        let configuration = MLXLMCommon.ModelConfiguration(
-            directory: directory,
-            extraEOSTokens: ["<end_of_turn>"]
+        let container = try await LLMModelFactory.shared.loadContainer(
+            from: directory,
+            using: #huggingFaceTokenizerLoader()
         )
-        let container = try await LLMModelFactory.shared.loadContainer(configuration: configuration)
         let loadSeconds = CFAbsoluteTimeGetCurrent() - loadStarted
-        let memoryAfterLoad = GPU.snapshot()
+        let memoryAfterLoad = Memory.snapshot()
 
         let generationStarted = CFAbsoluteTimeGetCurrent()
         var extractedValues: [LocalCommandControlledField: String] = [:]
@@ -351,12 +420,12 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
         }
         let output = fieldOutputs.joined(separator: "\n")
         let generationSeconds = CFAbsoluteTimeGetCurrent() - generationStarted
-        let memoryAfterGeneration = GPU.snapshot()
+        let memoryAfterGeneration = Memory.snapshot()
         try attach(GemmaSmokeReport(
             runtime: "MLX Swift",
             executionEnvironment: executionEnvironment,
-            packageVersion: "mlx-swift-lm 2.29.3 / mlx-swift 0.29.1",
-            model: "mlx-community/gemma-3-1b-it-qat-4bit",
+            packageVersion: Self.qualificationPackageVersion,
+            model: candidate.rawValue,
             loadSeconds: loadSeconds,
             generationSeconds: generationSeconds,
             rawOutput: output,
@@ -365,7 +434,7 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
             memoryBeforeLoad: memoryBeforeLoad,
             memoryAfterLoad: memoryAfterLoad,
             memoryAfterGeneration: memoryAfterGeneration
-        ), name: "mlx-gemma3-1b-command-envelope-raw.json")
+        ), name: "\(candidate.attachmentStem)-command-envelope-raw.json")
 
         guard let trustedTimezone = TimeZone(identifier: timezone) else {
             throw LocalVoiceAdapterError.invalidModelOutput
@@ -399,7 +468,7 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
         ).canonicalize(
             modelOutput: semanticDraft,
             context: .init(
-                modelVersion: "mlx-gemma-3-1b-it-qat-4bit",
+                modelVersion: candidate.trustedModelVersion,
                 localeIdentifier: locale,
                 timezoneIdentifier: timezone
             ),
@@ -409,8 +478,8 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
         try attach(GemmaSmokeReport(
             runtime: "MLX Swift",
             executionEnvironment: executionEnvironment,
-            packageVersion: "mlx-swift-lm 2.29.3 / mlx-swift 0.29.1",
-            model: "mlx-community/gemma-3-1b-it-qat-4bit",
+            packageVersion: Self.qualificationPackageVersion,
+            model: candidate.rawValue,
             loadSeconds: loadSeconds,
             generationSeconds: generationSeconds,
             rawOutput: output,
@@ -419,7 +488,7 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
             memoryBeforeLoad: memoryBeforeLoad,
             memoryAfterLoad: memoryAfterLoad,
             memoryAfterGeneration: memoryAfterGeneration
-        ), name: "mlx-gemma3-1b-command-envelope-validated.json")
+        ), name: "\(candidate.attachmentStem)-command-envelope-validated.json")
 
         XCTAssertEqual(envelope.schemaVersion, 1)
         XCTAssertEqual(envelope.intent, "create_reminder")
@@ -434,7 +503,8 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
     func testLocalGemmaMeetsGoldenCommandSafetyGates() async throws {
         try requireBenchmarkOptIn()
         try requirePhysicalDeviceForInference()
-        let directory = try validatedLocalModelDirectory(environmentKey: "KNOCK_MLX_GEMMA_DIR")
+        let candidate = try selectedGemmaCandidate()
+        let directory = try validatedGemmaDirectory(candidate: candidate)
         let dataset = try loadCommandGoldenDataset()
         let selectedLocales = Set(
             (ProcessInfo.processInfo.environment["KNOCK_MLX_GOLDEN_LOCALES"] ?? "")
@@ -453,16 +523,15 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
             LocalReminderDueAt.parseMilliseconds(dataset.referenceNow)
         )
 
-        GPU.clearCache()
-        let memoryBeforeLoad = GPU.snapshot()
+        Memory.clearCache()
+        let memoryBeforeLoad = Memory.snapshot()
         let loadStarted = CFAbsoluteTimeGetCurrent()
-        let configuration = MLXLMCommon.ModelConfiguration(
-            directory: directory,
-            extraEOSTokens: ["<end_of_turn>"]
+        let container = try await LLMModelFactory.shared.loadContainer(
+            from: directory,
+            using: #huggingFaceTokenizerLoader()
         )
-        let container = try await LLMModelFactory.shared.loadContainer(configuration: configuration)
         let loadSeconds = CFAbsoluteTimeGetCurrent() - loadStarted
-        let memoryAfterLoad = GPU.snapshot()
+        let memoryAfterLoad = Memory.snapshot()
 
         var evaluatedCommands = 0
         var correctCommands = 0
@@ -558,7 +627,7 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
                 ).canonicalize(
                     modelOutput: semanticDraft,
                     context: .init(
-                        modelVersion: "mlx-gemma-3-1b-it-qat-4bit",
+                        modelVersion: candidate.trustedModelVersion,
                         localeIdentifier: example.locale,
                         timezoneIdentifier: example.timezone
                     ),
@@ -632,7 +701,7 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
                 canonicalEnvelopeJSON: canonicalEnvelopeJSON,
                 error: errorDescription
             ))
-            GPU.clearCache()
+            Memory.clearCache()
         }
 
         let accuracy = Double(correctCommands) / Double(max(1, evaluatedCommands))
@@ -640,8 +709,8 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
         let report = CommandBenchmarkReport(
             runtime: "MLX Swift",
             executionEnvironment: executionEnvironment,
-            packageVersion: "mlx-swift-lm 2.29.3 / mlx-swift 0.29.1",
-            model: "mlx-community/gemma-3-1b-it-qat-4bit",
+            packageVersion: Self.qualificationPackageVersion,
+            model: candidate.rawValue,
             exampleCount: selectedExamples.count,
             evaluatedCommands: evaluatedCommands,
             correctCommands: correctCommands,
@@ -660,9 +729,12 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
             predictions: predictions,
             memoryBeforeLoad: memoryBeforeLoad,
             memoryAfterLoad: memoryAfterLoad,
-            memoryAfterBenchmark: GPU.snapshot()
+            memoryAfterBenchmark: Memory.snapshot()
         )
-        try attach(report, name: "mlx-gemma3-1b-golden-command-benchmark.json")
+        try attach(
+            report,
+            name: "\(candidate.attachmentStem)-golden-command-benchmark.json"
+        )
 
         XCTAssertGreaterThanOrEqual(accuracy, dataset.minimumPipelineCommandAccuracy)
         XCTAssertGreaterThanOrEqual(fieldAccuracy, dataset.minimumPipelineCommandAccuracy)
@@ -745,6 +817,35 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
         return directory
     }
 
+    private func selectedGemmaCandidate() throws -> GemmaCandidate {
+        let configured = ProcessInfo.processInfo.environment["KNOCK_MLX_GEMMA_MODEL_ID"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let modelID = configured.flatMap { $0.isEmpty ? nil : $0 }
+            ?? GemmaCandidate.gemma3_1B.rawValue
+        guard let candidate = GemmaCandidate(rawValue: modelID) else {
+            throw QualificationConfigurationError.unsupportedModelID(modelID)
+        }
+        return candidate
+    }
+
+    private func validatedGemmaDirectory(candidate: GemmaCandidate) throws -> URL {
+        let directory = try validatedLocalModelDirectory(
+            environmentKey: "KNOCK_MLX_GEMMA_DIR"
+        )
+        let configurationURL = directory.appendingPathComponent("config.json")
+        let object = try JSONSerialization.jsonObject(with: Data(contentsOf: configurationURL))
+        guard let configuration = object as? [String: Any],
+              let modelType = configuration["model_type"] as? String,
+              candidate.acceptedModelTypes.contains(modelType) else {
+            let actual = ((object as? [String: Any])?["model_type"] as? String) ?? "missing"
+            throw QualificationConfigurationError.unexpectedModelType(
+                expected: candidate.acceptedModelTypes.sorted().joined(separator: " or "),
+                actual: actual
+            )
+        }
+        return directory
+    }
+
     private func loadCommandGoldenDataset() throws -> CommandGoldenDataset {
         let bundle = Bundle(for: Self.self)
         guard let url = bundle.url(
@@ -784,10 +885,12 @@ final class MLXLocalRuntimeQualificationTests: XCTestCase {
 
     private func embed(
         _ texts: [String],
-        using container: MLXEmbedders.ModelContainer
+        using container: EmbedderModelContainer
     ) async -> [[Float]] {
-        await container.perform {
-            (model: EmbeddingModel, tokenizer, pooling) -> [[Float]] in
+        await container.perform { context -> [[Float]] in
+            let model = context.model
+            let tokenizer = context.tokenizer
+            let pooling = context.pooling
             let encoded = texts.map { tokenizer.encode(text: $0, addSpecialTokens: true) }
             let maximumLength = encoded.reduce(into: 16) { current, tokens in
                 current = max(current, tokens.count)
