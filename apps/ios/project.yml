@@ -71,8 +71,19 @@ targets:
       - name: Strip MLX shadow framework from Release
         basedOnDependencyAnalysis: false
         script: |
-          if [ "${CONFIGURATION}" = "Release" ]; then
-            rm -rf "${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/KnockKnockMemoryShadow.framework"
+          if [ "${CONFIGURATION}" != "Release" ]; then
+            exit 0
+          fi
+          FRAMEWORK="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/KnockKnockMemoryShadow.framework"
+          WEIGHTS="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/e5-small"
+          rm -rf "${FRAMEWORK}" "${WEIGHTS}"
+          if [ -d "${FRAMEWORK}" ]; then
+            echo "error: Release still contains KnockKnockMemoryShadow.framework" >&2
+            exit 1
+          fi
+          if [ -d "${WEIGHTS}" ]; then
+            echo "error: Release still contains e5-small weights" >&2
+            exit 1
           fi
     preBuildScripts:
       - name: Validate Release Voice Model Trust Key
@@ -100,6 +111,7 @@ targets:
         Staging:
           CODE_SIGN_IDENTITY: "Apple Development"
           OTHER_LDFLAGS: $(inherited) -weak_framework KnockKnockMemoryShadow
+          IPHONEOS_DEPLOYMENT_TARGET: "17.0"
         Release:
           CODE_SIGN_IDENTITY: "Apple Distribution"
       entitlements:

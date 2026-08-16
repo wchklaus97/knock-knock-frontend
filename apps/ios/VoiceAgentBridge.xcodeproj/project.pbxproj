@@ -754,7 +754,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "if [ \"${CONFIGURATION}\" = \"Release\" ]; then\n  rm -rf \"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/KnockKnockMemoryShadow.framework\"\nfi\n";
+			shellScript = "if [ \"${CONFIGURATION}\" != \"Release\" ]; then\n  exit 0\nfi\nFRAMEWORK=\"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/KnockKnockMemoryShadow.framework\"\nWEIGHTS=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/e5-small\"\nrm -rf \"${FRAMEWORK}\" \"${WEIGHTS}\"\nif [ -d \"${FRAMEWORK}\" ]; then\n  echo \"error: Release still contains KnockKnockMemoryShadow.framework\" >&2\n  exit 1\nfi\nif [ -d \"${WEIGHTS}\" ]; then\n  echo \"error: Release still contains e5-small weights\" >&2\n  exit 1\nfi\n";
 		};
 		3EED9C08FD36CE5C8D6031C2 /* Validate Release Voice Model Trust Key */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -1508,6 +1508,7 @@
 				DEVELOPMENT_TEAM = TXKDW2YS44;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = VoiceAgentBridge/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

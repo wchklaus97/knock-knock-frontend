@@ -102,6 +102,7 @@ final class AppStore: ObservableObject {
     private let localStore: SQLiteStore
     private let memorySnapshotLoader: MemorySnapshotLoader
     private let memoryShadow: MemoryShadowEvaluating
+    private let memoryShadowIsAllowed: @Sendable () -> Bool
     /// One shared speaker owns both backend result announcements and local
     /// clarification prompts. Push-to-talk can therefore stop any in-flight
     /// speech before opening the microphone, and scope changes cannot leave a
@@ -236,11 +237,19 @@ final class AppStore: ObservableObject {
         backgroundReconciliationDispatcher: BackgroundReconciliationDispatcher = .shared,
         client: APIClient = APIClient(),
         memorySnapshotLoader: MemorySnapshotLoader? = nil,
-        memoryShadow: MemoryShadowEvaluating = BundledMLXMemoryShadowEvaluator()
+        memoryShadow: MemoryShadowEvaluating = BundledMLXMemoryShadowEvaluator(),
+        memoryShadowIsAllowed: @escaping @Sendable () -> Bool = {
+            let read: () -> Bool = { UIApplication.shared.applicationState == .active }
+            if Thread.isMainThread {
+                return read()
+            }
+            return DispatchQueue.main.sync(execute: read)
+        }
     ) {
         self.client = client
         self.localStore = localStore
         self.memoryShadow = memoryShadow
+        self.memoryShadowIsAllowed = memoryShadowIsAllowed
         self.memorySnapshotLoader = memorySnapshotLoader ?? {
             try await client.listMemories()
         }
@@ -757,11 +766,13 @@ final class AppStore: ObservableObject {
             throw APIClientError.network("Memory snapshot could not be saved atomically.")
         }
         memories = snapshot
-        memoryShadow.evaluate(
-            memories: snapshot.map {
-                MemoryShadowInput(memoryID: $0.memory_id, displayText: $0.display_text)
-            }
-        )
+        if memoryShadowIsAllowed() {
+            memoryShadow.evaluate(
+                memories: snapshot.map {
+                    MemoryShadowInput(memoryID: $0.memory_id, displayText: $0.display_text)
+                }
+            )
+        }
         return true
     }
 
@@ -1503,6 +1514,8 @@ final class AppStore: ObservableObject {
         messagesBySession = [:]
         retrievalsBySession = [:]
         memories = []
+        memoryShadow.cancel()
+        MemoryShadowCacheFiles.removeReports()
         pendingOperations = []
         pendingCommandConfirmation = nil
         latestCommandResponse = nil
