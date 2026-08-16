@@ -84,7 +84,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var messagesBySession: [String: [SessionMessage]] = [:]
     @Published private(set) var retrievalsBySession: [String: [RetrievalItem]] = [:]
     /// REST/cache snapshot only. No product UI consumes this state yet, and
-    /// qualification shadow hits are never written here.
+    /// E5 shadow hits are never written here.
     @Published private(set) var memories: [MemoryItem] = []
     @Published private(set) var pendingOperations: [PendingOperation] = []
     @Published var pendingCommandConfirmation: PendingCommandConfirmation? = nil
@@ -101,6 +101,7 @@ final class AppStore: ObservableObject {
     let client: APIClient
     private let localStore: SQLiteStore
     private let memorySnapshotLoader: MemorySnapshotLoader
+    private let memoryShadow: MemoryShadowEvaluating
     /// One shared speaker owns both backend result announcements and local
     /// clarification prompts. Push-to-talk can therefore stop any in-flight
     /// speech before opening the microphone, and scope changes cannot leave a
@@ -234,10 +235,12 @@ final class AppStore: ObservableObject {
         commandSynthesizer: VoiceSynthesizing = SystemVoiceSynthesizer(),
         backgroundReconciliationDispatcher: BackgroundReconciliationDispatcher = .shared,
         client: APIClient = APIClient(),
-        memorySnapshotLoader: MemorySnapshotLoader? = nil
+        memorySnapshotLoader: MemorySnapshotLoader? = nil,
+        memoryShadow: MemoryShadowEvaluating = BundledMLXMemoryShadowEvaluator()
     ) {
         self.client = client
         self.localStore = localStore
+        self.memoryShadow = memoryShadow
         self.memorySnapshotLoader = memorySnapshotLoader ?? {
             try await client.listMemories()
         }
@@ -754,6 +757,11 @@ final class AppStore: ObservableObject {
             throw APIClientError.network("Memory snapshot could not be saved atomically.")
         }
         memories = snapshot
+        memoryShadow.evaluate(
+            memories: snapshot.map {
+                MemoryShadowInput(memoryID: $0.memory_id, displayText: $0.display_text)
+            }
+        )
         return true
     }
 

@@ -545,6 +545,70 @@ final class AppStoreStructuredMemoryTests: XCTestCase {
         }
     }
 
+    func testMemoryShadowReceivesOnlyDisplayTextAndDoesNotChangeSnapshotOrCommands() async {
+        let apiBase = URL(string: "https://shadow.example.test")!
+        await withMemoryContext(userID: "user_shadow", apiBaseURL: apiBase) {
+            let url = temporarySQLiteURL("shadow")
+            defer { removeSQLiteArtifacts(at: url) }
+            let localStore = SQLiteStore(databaseURL: url)
+            let recorder = RecordingMemoryShadowEvaluator()
+            let secretValue = JSONValue.object(["password": .string("must-not-reach-shadow")])
+            let snapshot = StructuredMemoryTestSupport.memory(
+                "memory_shadow",
+                displayText: "Prefers tea",
+                value: secretValue
+            )
+            let appStore = makeAppStore(
+                localStore: localStore,
+                memoryShadow: recorder
+            ) { [snapshot] }
+            appStore.token = "memory-shadow-token"
+            defer { appStore.token = nil }
+
+            let replaced = try? await appStore.refreshMemorySnapshot()
+
+            XCTAssertEqual(replaced, true)
+            XCTAssertEqual(appStore.memories, [snapshot])
+            XCTAssertEqual(appStore.pendingCommandConfirmation, nil)
+            XCTAssertEqual(appStore.latestCommandResponse, nil)
+            XCTAssertEqual(recorder.inputs, [
+                [MemoryShadowInput(memoryID: "memory_shadow", displayText: "Prefers tea")]
+            ])
+            XCTAssertEqual(
+                Mirror(reflecting: recorder.inputs[0][0]).children.map(\.label),
+                ["memoryID", "displayText"]
+            )
+        }
+    }
+
+    func testFailedMemorySnapshotDoesNotInvokeShadow() async {
+        let apiBase = URL(string: "https://shadow-failure.example.test")!
+        await withMemoryContext(userID: "user_shadow_fail", apiBaseURL: apiBase) {
+            let url = temporarySQLiteURL("shadow-fail")
+            defer { removeSQLiteArtifacts(at: url) }
+            let localStore = SQLiteStore(databaseURL: url)
+            let recorder = RecordingMemoryShadowEvaluator()
+            let appStore = makeAppStore(
+                localStore: localStore,
+                memoryShadow: recorder
+            ) {
+                throw StructuredMemoryTestError.pageFailed
+            }
+            appStore.token = "memory-shadow-fail-token"
+            defer { appStore.token = nil }
+
+            do {
+                _ = try await appStore.refreshMemorySnapshot()
+                XCTFail("Snapshot loader failure must propagate")
+            } catch StructuredMemoryTestError.pageFailed {
+                XCTAssertTrue(recorder.inputs.isEmpty)
+                XCTAssertEqual(appStore.latestCommandResponse, nil)
+            } catch {
+                XCTFail("Unexpected snapshot error: \(error)")
+            }
+        }
+    }
+
     func testSnapshotLoaderFailureThrowsAndPreservesBothSnapshots() async {
         let apiBase = URL(string: "https://loader-failure.example.test")!
         await withMemoryContext(userID: "user_failed_page", apiBaseURL: apiBase) {
@@ -844,6 +908,7 @@ final class AppStoreStructuredMemoryTests: XCTestCase {
     private func makeAppStore(
         localStore: SQLiteStore,
         client: APIClient = APIClient(),
+        memoryShadow: MemoryShadowEvaluating = NoOpMemoryShadowEvaluator(),
         loader: @escaping AppStore.MemorySnapshotLoader
     ) -> AppStore {
         AppStore(
@@ -851,7 +916,8 @@ final class AppStoreStructuredMemoryTests: XCTestCase {
             commandSynthesizer: StructuredMemorySilentSynthesizer(),
             backgroundReconciliationDispatcher: BackgroundReconciliationDispatcher(),
             client: client,
-            memorySnapshotLoader: loader
+            memorySnapshotLoader: loader,
+            memoryShadow: memoryShadow
         )
     }
 
@@ -971,6 +1037,14 @@ private final class StructuredMemoryReconciliationURLProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+}
+
+final class RecordingMemoryShadowEvaluator: MemoryShadowEvaluating, @unchecked Sendable {
+    private(set) var inputs: [[MemoryShadowInput]] = []
+
+    func evaluate(memories: [MemoryShadowInput]) {
+        inputs.append(memories)
+    }
 }
 
 private enum StructuredMemoryTestError: Error {

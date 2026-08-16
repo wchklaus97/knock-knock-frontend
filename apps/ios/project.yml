@@ -50,6 +50,30 @@ targets:
       - path: VoiceAgentBridge
     dependencies:
       - package: LiteRTLM
+      - target: KnockKnockMemoryShadow
+        embed: true
+        codeSign: true
+        link: false
+    postBuildScripts:
+      - name: Copy E5 weights for Debug shadow
+        basedOnDependencyAnalysis: false
+        script: |
+          if [ "${CONFIGURATION}" = "Release" ]; then
+            exit 0
+          fi
+          SRC="${SRCROOT}/VoiceAgentBridgeMLXTests/LocalModels/e5-small"
+          if [ ! -d "${SRC}" ]; then
+            exit 0
+          fi
+          DEST="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/e5-small"
+          mkdir -p "${DEST}"
+          rsync -a "${SRC}/" "${DEST}/"
+      - name: Strip MLX shadow framework from Release
+        basedOnDependencyAnalysis: false
+        script: |
+          if [ "${CONFIGURATION}" = "Release" ]; then
+            rm -rf "${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/KnockKnockMemoryShadow.framework"
+          fi
     preBuildScripts:
       - name: Validate Release Voice Model Trust Key
         basedOnDependencyAnalysis: false
@@ -67,8 +91,15 @@ targets:
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_ENTITLEMENTS: VoiceAgentBridge/VoiceAgentBridge.entitlements
       configs:
+        Debug:
+          # Late Bundle.load of this iOS 17 MLX framework hangs loadContainer on
+          # device. Weak-link so dyld initializes MLX at process start on iOS 17+,
+          # matching the working XCTest host. Release must not link; the
+          # post-build script still strips the embedded framework.
+          OTHER_LDFLAGS: $(inherited) -weak_framework KnockKnockMemoryShadow
         Staging:
           CODE_SIGN_IDENTITY: "Apple Development"
+          OTHER_LDFLAGS: $(inherited) -weak_framework KnockKnockMemoryShadow
         Release:
           CODE_SIGN_IDENTITY: "Apple Distribution"
       entitlements:
@@ -132,6 +163,32 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         DEVELOPMENT_TEAM: TXKDW2YS44
 
+  KnockKnockMemoryShadow:
+    type: framework
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: KnockKnockMemoryShadow
+    dependencies:
+      - package: MLXSwift
+        product: MLX
+      - package: MLXSwiftLM
+        product: MLXEmbedders
+      - package: MLXSwiftLM
+        product: MLXLMCommon
+      - package: MLXSwiftLM
+        product: MLXHuggingFace
+      - package: SwiftTransformers
+        product: Tokenizers
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: hk.knockknock.app.memory-shadow
+        GENERATE_INFOPLIST_FILE: YES
+        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+        DEFINES_MODULE: YES
+        SKIP_INSTALL: YES
+        DEVELOPMENT_TEAM: TXKDW2YS44
+
   VoiceAgentBridgeSenseVoiceTests:
     type: bundle.unit-test
     platform: iOS
@@ -164,6 +221,7 @@ targets:
         buildPhase: resources
     dependencies:
       - target: VoiceAgentBridge
+      - target: KnockKnockMemoryShadow
       - package: MLXSwift
         product: MLX
       - package: MLXSwiftLM
@@ -198,6 +256,7 @@ targets:
         buildPhase: resources
     dependencies:
       - target: VoiceAgentBridge
+      - target: KnockKnockMemoryShadow
       - package: MLXSwift
         product: MLX
       - package: MLXSwiftLM
