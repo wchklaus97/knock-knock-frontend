@@ -62,6 +62,10 @@ final class VoiceGenerationWaiter: @unchecked Sendable {
     }
 
     func cancel() {
+        fail(with: CancellationError())
+    }
+
+    func fail(with error: Error) {
         var actionToInvoke: (() -> Void)?
         var continuationToResume: CheckedContinuation<Data, Error>?
 
@@ -78,11 +82,11 @@ final class VoiceGenerationWaiter: @unchecked Sendable {
         case .finished:
             break
         }
-        continuationToResume = resolveLocked(.failure(CancellationError()))
+        continuationToResume = resolveLocked(.failure(error))
         lock.unlock()
 
         actionToInvoke?()
-        continuationToResume?.resume(throwing: CancellationError())
+        continuationToResume?.resume(with: .failure(error))
     }
 
     private func finishStartingOperation() {
@@ -133,6 +137,17 @@ final class VoiceGenerationWaiter: @unchecked Sendable {
     }
 }
 
+enum LocalVoiceCommandControllerError: LocalizedError, Equatable {
+    case generationTimedOut
+
+    var errorDescription: String? {
+        switch self {
+        case .generationTimedOut:
+            return "Voice command generation timed out."
+        }
+    }
+}
+
 /// Main-thread coordinator for the user-visible push-to-talk flow. It owns no
 /// executable action: capture produces a transcript, the local model produces
 /// an envelope, and only a current, uncancelled operation may submit it.
@@ -161,12 +176,15 @@ final class LocalVoiceCommandController: ObservableObject {
     private let operationIsAllowed: () -> Bool
     private let permissionsAreGranted: PermissionStatusProvider
     private let requestPermissions: PermissionRequester
+    private let generationTimeoutNanoseconds: UInt64
 
     private var pressActive = false
     private var nextSessionID: UInt64 = 0
     private var activeSessionID: UInt64?
     private var processingTask: Task<Void, Never>?
     private var generationWaiter: VoiceGenerationWaiter?
+    private var generationTimeoutTask: Task<Void, Never>?
+    private var finalTranscript = ""
 
     init(
         generator: LocalCommandGenerating,
@@ -180,7 +198,8 @@ final class LocalVoiceCommandController: ObservableObject {
         },
         requestPermissions: @escaping PermissionRequester = { completion in
             PushToTalkVoiceCapture.requestPermissions(completion: completion)
-        }
+        },
+        generationTimeoutNanoseconds: UInt64 = 15_000_000_000
     ) {
         self.capture = capture
         self.generator = generator
@@ -189,9 +208,11 @@ final class LocalVoiceCommandController: ObservableObject {
         self.operationIsAllowed = operationIsAllowed
         self.permissionsAreGranted = permissionsAreGranted
         self.requestPermissions = requestPermissions
+        self.generationTimeoutNanoseconds = generationTimeoutNanoseconds
     }
 
     deinit {
+        generationTimeoutTask?.cancel()
         generationWaiter?.cancel()
         processingTask?.cancel()
         capture.abort()
@@ -211,6 +232,7 @@ final class LocalVoiceCommandController: ObservableObject {
         activeSessionID = sessionID
         pressActive = true
         transcript = ""
+        finalTranscript = ""
 
         if permissionsAreGranted() {
             startCapture(sessionID: sessionID)
@@ -265,6 +287,7 @@ final class LocalVoiceCommandController: ObservableObject {
         synthesizer.stop()
         state = .idle
         transcript = ""
+        finalTranscript = ""
     }
 
     private func startCapture(sessionID: UInt64) {
@@ -272,9 +295,12 @@ final class LocalVoiceCommandController: ObservableObject {
         state = .listening
         do {
             try capture.start(
-                onTranscript: { [weak self] partial in
+                onTranscript: { [weak self] transcript in
                     guard let self, self.isCurrent(sessionID), self.state == .listening else { return }
-                    self.transcript = partial.text
+                    self.transcript = transcript.text
+                    if transcript.isFinal {
+                        self.finalTranscript = transcript.text
+                    }
                 },
                 onStop: { [weak self] _ in
                     guard let self else { return }
@@ -298,7 +324,7 @@ final class LocalVoiceCommandController: ObservableObject {
         guard isCurrent(sessionID), state == .listening else { return }
         pressActive = false
 
-        let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = finalTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             finishWithClarification(sessionID: sessionID)
             return
@@ -309,6 +335,7 @@ final class LocalVoiceCommandController: ObservableObject {
         generationWaiter = waiter
         let generator = self.generator
         let submit = self.submit
+        startGenerationTimeout(waiter: waiter)
 
         processingTask = Task { @MainActor [weak self] in
             do {
@@ -317,6 +344,7 @@ final class LocalVoiceCommandController: ObservableObject {
                 } onCancel: {
                     generator.cancelGeneration()
                 }
+                self?.clearGenerationTimeout()
                 self?.generationWaiter = nil
                 try Task.checkCancellation()
                 guard self?.isCurrent(sessionID) == true else { return }
@@ -337,8 +365,10 @@ final class LocalVoiceCommandController: ObservableObject {
                 guard self?.isCurrent(sessionID) == true else { return }
                 self?.finishWithSubmission(response, sessionID: sessionID)
             } catch is CancellationError {
+                self?.clearGenerationTimeout()
                 return
             } catch {
+                self?.clearGenerationTimeout()
                 guard self?.isCurrent(sessionID) == true else { return }
                 if LocalVoiceCommandErrorPolicy.requiresClarification(error) {
                     self?.finishWithClarification(sessionID: sessionID)
@@ -352,6 +382,7 @@ final class LocalVoiceCommandController: ObservableObject {
     private func finishWithClarification(sessionID: UInt64) {
         guard isCurrent(sessionID) else { return }
         activeSessionID = nil
+        clearGenerationTimeout()
         processingTask = nil
         generationWaiter = nil
         state = .clarificationRequired
@@ -361,6 +392,7 @@ final class LocalVoiceCommandController: ObservableObject {
     private func finishWithSubmission(_ response: CommandResponse, sessionID: UInt64) {
         guard isCurrent(sessionID) else { return }
         activeSessionID = nil
+        clearGenerationTimeout()
         processingTask = nil
         generationWaiter = nil
         state = .submitted(response.command_id)
@@ -384,9 +416,30 @@ final class LocalVoiceCommandController: ObservableObject {
         synthesizer.stop()
         state = .idle
         transcript = ""
+        finalTranscript = ""
+    }
+
+    private func startGenerationTimeout(waiter: VoiceGenerationWaiter) {
+        clearGenerationTimeout()
+        let timeoutNanoseconds = generationTimeoutNanoseconds
+        guard timeoutNanoseconds > 0 else { return }
+        generationTimeoutTask = Task {
+            do {
+                try await Task.sleep(nanoseconds: timeoutNanoseconds)
+            } catch {
+                return
+            }
+            waiter.fail(with: LocalVoiceCommandControllerError.generationTimedOut)
+        }
+    }
+
+    private func clearGenerationTimeout() {
+        generationTimeoutTask?.cancel()
+        generationTimeoutTask = nil
     }
 
     private func cancelProcessing() {
+        clearGenerationTimeout()
         generationWaiter?.cancel()
         processingTask?.cancel()
         generationWaiter = nil
