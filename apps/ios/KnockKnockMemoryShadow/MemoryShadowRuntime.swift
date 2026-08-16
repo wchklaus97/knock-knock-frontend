@@ -4,8 +4,8 @@ import MLX
 import MLXEmbedders
 import MLXHuggingFace
 import MLXLMCommon
-import os.log
 import Tokenizers
+import os.log
 
 /// In-app Objective-C entry for Debug/Staging. The main application must not
 /// import this module; it loads the class by name so Release can omit the
@@ -15,20 +15,56 @@ import Tokenizers
 public final class MemoryShadowRuntime: NSObject {
     public static let expectedE5ModelSHA256 =
         "1a55775f53449dac10a2bcbc312469fac40b96d53198c407081a831f81c98477"
+    public static let maxMemoriesPerRun = 32
 
     private static let logger = Logger(
         subsystem: "hk.knockknock.app",
         category: "memory-shadow"
     )
-    private static var evaluateTask: Task<Void, Never>?
-    private static var lastSignature: String?
+    private static let gate = EvaluationGate()
+
+    public enum JSONError: Error, Equatable, Sendable {
+        case invalidPayload
+    }
+
+    public static func parseDisplayTextsJSON(_ json: NSString) throws -> [MemoryShadowMemoryFixture] {
+        guard let data = (json as String).data(using: .utf8),
+              let raw = try JSONSerialization.jsonObject(with: data) as? [Any]
+        else {
+            throw JSONError.invalidPayload
+        }
+        var parsed: [MemoryShadowMemoryFixture] = []
+        parsed.reserveCapacity(raw.count)
+        for item in raw {
+            let dictionary = (item as? [String: Any])
+                ?? (item as? NSDictionary as? [String: Any])
+            guard let memoryID = dictionary?["memoryID"] as? String,
+                  let displayText = dictionary?["displayText"] as? String
+            else {
+                throw JSONError.invalidPayload
+            }
+            parsed.append(MemoryShadowMemoryFixture(memoryID: memoryID, displayText: displayText))
+        }
+        return parsed
+    }
+
+    public static func signature(for memories: [MemoryShadowMemoryFixture]) -> String {
+        memories
+            .map { "\($0.memoryID)\u{1e}\($0.displayText)" }
+            .sorted()
+            .joined(separator: "\n")
+    }
 
     @objc(evaluateDisplayTextsJSON:)
     public static func evaluateDisplayTextsJSON(_ json: NSString) {
         writeDebug(["stage": "json-entered", "jsonBytes": json.length])
-        let inputs = decode(json)
-        writeDebug(["stage": "json-decoded", "count": inputs.count])
-        schedule(inputs)
+        do {
+            let inputs = try parseDisplayTextsJSON(json)
+            writeDebug(["stage": "json-decoded", "count": inputs.count])
+            schedule(inputs)
+        } catch {
+            writeDebug(["stage": "json-invalid", "jsonBytes": json.length])
+        }
     }
 
     @objc(evaluateDisplayTexts:)
@@ -43,48 +79,23 @@ public final class MemoryShadowRuntime: NSObject {
         schedule(inputs)
     }
 
-    private static func decode(_ json: NSString) -> [MemoryShadowMemoryFixture] {
-        guard let data = (json as String).data(using: .utf8),
-              let raw = try? JSONSerialization.jsonObject(with: data) as? [Any]
-        else { return [] }
-        return raw.compactMap { item in
-            let dictionary = (item as? [String: Any])
-                ?? (item as? NSDictionary as? [String: Any])
-            guard let memoryID = dictionary?["memoryID"] as? String,
-                  let displayText = dictionary?["displayText"] as? String
-            else { return nil }
-            return MemoryShadowMemoryFixture(memoryID: memoryID, displayText: displayText)
-        }
+    @objc(cancelEvaluation)
+    public static func cancelEvaluation() {
+        Task { await gate.cancel() }
+        writeDebug(["stage": "cancelled-by-host"])
     }
 
     private static func schedule(_ inputs: [MemoryShadowMemoryFixture]) {
-        let signature = inputs.map(\.memoryID).sorted().joined(separator: ",")
-        if evaluateTask != nil, lastSignature == signature {
-            writeDebug(["stage": "already-running", "count": inputs.count])
-            return
-        }
-        lastSignature = signature
-        evaluateTask = Task.detached(priority: .userInitiated) {
-            await run(memories: inputs)
+        let signature = signature(for: inputs)
+        Task {
+            await gate.replace(signature: signature) {
+                await run(memories: inputs)
+            }
         }
     }
 
     private static func writeDebug(_ payload: [String: Any]) {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-        guard let directory = caches?.appendingPathComponent("KnockKnock", isDirectory: true) else {
-            return
-        }
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        guard JSONSerialization.isValidJSONObject(payload),
-              let data = try? JSONSerialization.data(
-                withJSONObject: payload,
-                options: [.prettyPrinted, .sortedKeys]
-              )
-        else { return }
-        try? data.write(
-            to: directory.appendingPathComponent("memory-shadow-debug.json"),
-            options: .atomic
-        )
+        MemoryShadowReportStore.writeJSON(payload, fileName: "memory-shadow-debug.json")
     }
 
     private static func run(memories: [MemoryShadowMemoryFixture]) async {
@@ -103,39 +114,43 @@ public final class MemoryShadowRuntime: NSObject {
             return
         }
         do {
+            try Task.checkCancellation()
             let sha = try weightSHA256(in: directory)
             guard sha == expectedE5ModelSHA256 else {
                 writeDebug(["stage": "sha-mismatch"])
                 logger.error("Skipping in-app E5 shadow; weight SHA-256 did not match the pin.")
                 return
             }
+            try Task.checkCancellation()
             writeDebug(["stage": "loading-model", "count": memories.count])
             let container = try await EmbedderModelFactory.shared.loadContainer(
                 from: directory,
                 using: #huggingFaceTokenizerLoader()
             )
+            try Task.checkCancellation()
             writeDebug(["stage": "model-loaded", "count": memories.count])
+            let considered = Array(memories.prefix(maxMemoriesPerRun))
             let shadow = MultilingualE5ReadOnlyShadow(container: container)
-            let queries = memories.map { memory in
-                MemoryShadowQueryFixture(
-                    queryID: "self-\(memory.memoryID)",
-                    locale: "und",
-                    expectedMemoryID: memory.memoryID,
-                    displayText: memory.displayText
-                )
-            }
-            let report = try await shadow.makeReport(
-                fixture: MemoryShadowFixture(memories: memories, queries: queries)
+            let started = CFAbsoluteTimeGetCurrent()
+            _ = try await shadow.embedPassages(considered.map(\.displayText))
+            let elapsed = CFAbsoluteTimeGetCurrent() - started
+            try Task.checkCancellation()
+            let report = InAppLatencyReport(
+                memoryCount: memories.count,
+                consideredCount: considered.count,
+                p50Seconds: elapsed,
+                p95Seconds: elapsed
             )
-            try write(report)
+            try MemoryShadowReportStore.writeEncodable(
+                report,
+                fileName: "memory-shadow-last.json"
+            )
             writeDebug([
                 "stage": "wrote-report",
-                "queryCount": report.queryCount,
-                "recallAtOne": report.recallAtOne,
+                "memoryCount": report.memoryCount,
+                "consideredCount": report.consideredCount,
             ])
-            logger.info(
-                "Wrote private E5 shadow report. recall@1=\(report.recallAtOne, privacy: .public)"
-            )
+            logger.info("Wrote private E5 shadow latency report.")
         } catch is CancellationError {
             writeDebug(["stage": "cancelled"])
             return
@@ -169,11 +184,14 @@ public final class MemoryShadowRuntime: NSObject {
     private static func isValidModelDirectory(_ directory: URL) -> Bool {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
-              isDirectory.boolValue,
-              FileManager.default.fileExists(
-                atPath: directory.appendingPathComponent("config.json").path
-              )
+              isDirectory.boolValue
         else { return false }
+        let required = ["config.json", "tokenizer.json", "tokenizer_config.json"]
+        for name in required {
+            guard FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(name).path
+            ) else { return false }
+        }
         let files = (try? FileManager.default.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: nil
@@ -195,24 +213,98 @@ public final class MemoryShadowRuntime: NSObject {
         defer { try? handle.close() }
         var hasher = SHA256()
         while true {
+            try Task.checkCancellation()
             let chunk = try handle.read(upToCount: 1024 * 1024) ?? Data()
             guard !chunk.isEmpty else { break }
             hasher.update(data: chunk)
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
+}
 
-    private static func write(_ report: MemoryShadowQualificationReport) throws {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-        guard let directory = caches?.appendingPathComponent("KnockKnock", isDirectory: true) else {
+@available(iOS 17.0, *)
+private actor EvaluationGate {
+    private var task: Task<Void, Never>?
+    private var signature: String?
+
+    func replace(signature: String, operation: @escaping @Sendable () async -> Void) {
+        if task != nil, self.signature == signature {
+            MemoryShadowReportStore.writeJSON(
+                ["stage": "already-running"],
+                fileName: "memory-shadow-debug.json"
+            )
             return
         }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        task?.cancel()
+        self.signature = signature
+        let started = Task.detached(priority: .utility) {
+            await operation()
+        }
+        task = started
+        Task {
+            _ = await started.result
+            await self.clear(if: started)
+        }
+    }
+
+    func cancel() {
+        task?.cancel()
+        task = nil
+        signature = nil
+    }
+
+    private func clear(if finished: Task<Void, Never>) {
+        if task == finished {
+            task = nil
+        }
+    }
+}
+
+struct InAppLatencyReport: Codable, Equatable, Sendable {
+    let memoryCount: Int
+    let consideredCount: Int
+    let p50Seconds: Double
+    let p95Seconds: Double
+}
+
+enum MemoryShadowReportStore {
+    static let fileNames = [
+        "memory-shadow-last.json",
+        "memory-shadow-debug.json",
+        "memory-shadow-host.json",
+    ]
+
+    static var directory: URL? {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("KnockKnock", isDirectory: true)
+    }
+
+    static func removeReports() {
+        guard let directory else { return }
+        for name in fileNames {
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
+        }
+    }
+
+    static func writeJSON(_ payload: [String: Any], fileName: String) {
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(
+                withJSONObject: payload,
+                options: [.prettyPrinted, .sortedKeys]
+              )
+        else { return }
+        write(data, fileName: fileName)
+    }
+
+    static func writeEncodable<T: Encodable>(_ value: T, fileName: String) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(report).write(
-            to: directory.appendingPathComponent("memory-shadow-last.json"),
-            options: .atomic
-        )
+        try write(encoder.encode(value), fileName: fileName)
+    }
+
+    private static func write(_ data: Data, fileName: String) {
+        guard let directory else { return }
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try? data.write(to: directory.appendingPathComponent(fileName), options: .atomic)
     }
 }

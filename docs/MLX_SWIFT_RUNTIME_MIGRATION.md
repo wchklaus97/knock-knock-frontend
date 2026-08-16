@@ -42,8 +42,8 @@ The main application does not link these packages. Updating the qualification ru
 `VoiceAgentBridgeMLXQualification` and `VoiceAgentBridgeGemma4Qualification` are separate test schemes. Gemma 4 runs in the dedicated `VoiceAgentBridgeGemma4Tests` target. In-app E5 lives in the iOS 17 `KnockKnockMemoryShadow` framework. The main application does not import MLX or that module.
 
 - Release application builds do not link or ship MLX. The shadow framework is stripped from the Release bundle.
-- Debug/Staging may embed `KnockKnockMemoryShadow` and weak-link it so MLX initializes at process start on iOS 17+. The host still loads `KKMemoryShadowRuntime` by class name after a Memory snapshot refresh. Missing weights, iOS 15, or a SHA mismatch are silent no-ops. Late `Bundle.load` of this framework hangs `loadContainer` on device.
-- The shadow may read `display_text` only and may only write `Caches/KnockKnock/memory-shadow-last.json`. It cannot change UI, CommandEnvelope, ranking, or execution.
+- Debug/Staging may embed `KnockKnockMemoryShadow` and weak-link it so MLX initializes at process start on iOS 17+. Staging's deployment target is iOS 17; do not upload Staging to App Store Connect. The host still loads `KKMemoryShadowRuntime` by class name after a Memory snapshot refresh, and only while the app is active. Missing weights, iOS 15 Debug, or a SHA mismatch are silent no-ops. Late `Bundle.load` of this framework hangs `loadContainer` on device and is not used.
+- The shadow may read `display_text` only and may only write `Caches/KnockKnock/memory-shadow-last.json` (latency and counts, not retrieval recall). Logout deletes those files. It cannot change UI, CommandEnvelope, ranking, or execution.
 - Normal unit/UI test schemes do not run MLX qualification.
 - Qualification tests require explicit `KNOCK_RUN_MLX_BENCHMARK=1`.
 - Tests accept local model directories only. They do not download models from the network.
@@ -245,9 +245,7 @@ Current device policy from the measured evidence:
 - iPhone 17 Pro Max also remains rules-first in Release. Gemma may enter non-authoritative shadow
   mode only after the raw-field gate passes every locale shard and a separate holdout. It is not
   currently production-eligible.
-- Multilingual E5 now has an in-app read-only shadow on Debug/Staging iOS 17+ when pinned
-  local weights are present. A retrieved memory is context only, is never shown in UI, and
-  can never authorize an action. Production ranking remains unauthorized (D42).
+- Multilingual E5 now has an in-app read-only shadow on Debug iOS 17+ and Staging (iOS 17) when pinned local weights are present. A retrieved memory is context only, is never shown in UI, and can never authorize an action. The in-app report records load latency, not retrieval recall. Production ranking remains unauthorized (D42).
 
 ## Rollback
 

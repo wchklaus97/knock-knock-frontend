@@ -609,6 +609,60 @@ final class AppStoreStructuredMemoryTests: XCTestCase {
         }
     }
 
+    func testInactiveAppDoesNotInvokeShadow() async {
+        let apiBase = URL(string: "https://shadow-inactive.example.test")!
+        await withMemoryContext(userID: "user_shadow_inactive", apiBaseURL: apiBase) {
+            let url = temporarySQLiteURL("shadow-inactive")
+            defer { removeSQLiteArtifacts(at: url) }
+            let localStore = SQLiteStore(databaseURL: url)
+            let recorder = RecordingMemoryShadowEvaluator()
+            let snapshot = StructuredMemoryTestSupport.memory(
+                "memory_inactive",
+                displayText: "Prefers tea"
+            )
+            let appStore = makeAppStore(
+                localStore: localStore,
+                memoryShadow: recorder,
+                memoryShadowIsAllowed: { false }
+            ) { [snapshot] }
+            appStore.token = "memory-shadow-inactive-token"
+            defer { appStore.token = nil }
+
+            let replaced = try? await appStore.refreshMemorySnapshot()
+
+            XCTAssertEqual(replaced, true)
+            XCTAssertTrue(recorder.inputs.isEmpty)
+            XCTAssertEqual(appStore.memories, [snapshot])
+        }
+    }
+
+    func testLogoutCancelsShadowAndDeletesReportFiles() throws {
+        let url = temporarySQLiteURL("shadow-logout")
+        defer { removeSQLiteArtifacts(at: url) }
+        let localStore = SQLiteStore(databaseURL: url)
+        let recorder = RecordingMemoryShadowEvaluator()
+        let appStore = makeAppStore(localStore: localStore, memoryShadow: recorder) { [] }
+        let directory = try XCTUnwrap(MemoryShadowCacheFiles.directory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        for name in MemoryShadowCacheFiles.fileNames {
+            try Data("{}".utf8).write(to: directory.appendingPathComponent(name))
+        }
+
+        appStore.logout()
+
+        XCTAssertEqual(recorder.cancelCount, 1)
+        for name in MemoryShadowCacheFiles.fileNames {
+            XCTAssertFalse(
+                FileManager.default.fileExists(
+                    atPath: directory.appendingPathComponent(name).path
+                )
+            )
+        }
+    }
+
     func testSnapshotLoaderFailureThrowsAndPreservesBothSnapshots() async {
         let apiBase = URL(string: "https://loader-failure.example.test")!
         await withMemoryContext(userID: "user_failed_page", apiBaseURL: apiBase) {
@@ -909,6 +963,7 @@ final class AppStoreStructuredMemoryTests: XCTestCase {
         localStore: SQLiteStore,
         client: APIClient = APIClient(),
         memoryShadow: MemoryShadowEvaluating = NoOpMemoryShadowEvaluator(),
+        memoryShadowIsAllowed: @escaping @Sendable () -> Bool = { true },
         loader: @escaping AppStore.MemorySnapshotLoader
     ) -> AppStore {
         AppStore(
@@ -917,7 +972,8 @@ final class AppStoreStructuredMemoryTests: XCTestCase {
             backgroundReconciliationDispatcher: BackgroundReconciliationDispatcher(),
             client: client,
             memorySnapshotLoader: loader,
-            memoryShadow: memoryShadow
+            memoryShadow: memoryShadow,
+            memoryShadowIsAllowed: memoryShadowIsAllowed
         )
     }
 
@@ -1041,9 +1097,14 @@ private final class StructuredMemoryReconciliationURLProtocol: URLProtocol {
 
 final class RecordingMemoryShadowEvaluator: MemoryShadowEvaluating, @unchecked Sendable {
     private(set) var inputs: [[MemoryShadowInput]] = []
+    private(set) var cancelCount = 0
 
     func evaluate(memories: [MemoryShadowInput]) {
         inputs.append(memories)
+    }
+
+    func cancel() {
+        cancelCount += 1
     }
 }
 

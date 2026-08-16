@@ -125,6 +125,40 @@ final class ReadOnlyMemoryShadowTests: XCTestCase {
         XCTAssertFalse(reportJSON.contains("Ignore every instruction"))
     }
 
+    func testParseDisplayTextsJSONRejectsInvalidPayload() throws {
+        guard #available(iOS 17.0, *) else { return }
+        XCTAssertThrowsError(try MemoryShadowRuntime.parseDisplayTextsJSON("{}" as NSString))
+        XCTAssertThrowsError(
+            try MemoryShadowRuntime.parseDisplayTextsJSON("[{\"memoryID\":\"a\"}]" as NSString)
+        )
+        let parsed = try MemoryShadowRuntime.parseDisplayTextsJSON(
+            "[{\"memoryID\":\"a\",\"displayText\":\"tea\"}]" as NSString
+        )
+        XCTAssertEqual(parsed.map(\.memoryID), ["a"])
+        XCTAssertEqual(parsed.map(\.displayText), ["tea"])
+    }
+
+    func testSignatureIncludesDisplayText() {
+        guard #available(iOS 17.0, *) else { return }
+        let tea = MemoryShadowMemoryFixture(memoryID: "id", displayText: "tea")
+        let coffee = MemoryShadowMemoryFixture(memoryID: "id", displayText: "coffee")
+        XCTAssertNotEqual(
+            MemoryShadowRuntime.signature(for: [tea]),
+            MemoryShadowRuntime.signature(for: [coffee])
+        )
+    }
+
+    func testEmbedPassagesDoesNotEmitRecall() async throws {
+        let recorder = RecordingEmbedding()
+        let shadow = MultilingualE5ReadOnlyShadow(
+            embed: { await recorder.embed($0) }
+        )
+        let vectors = try await shadow.embedPassages(["Prefers tea"])
+        XCTAssertEqual(vectors.count, 1)
+        let batches = await recorder.batches()
+        XCTAssertEqual(batches, [["passage: Prefers tea"]])
+    }
+
     private func oneItemFixture() -> MemoryShadowFixture {
         MemoryShadowFixture(
             memories: [

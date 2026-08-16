@@ -54,6 +54,20 @@ public final class MultilingualE5ReadOnlyShadow: MemoryShadowQualificationReport
         }
     }
 
+    public func embedPassages(_ texts: [String]) async throws -> [[Float]] {
+        guard !texts.isEmpty else {
+            throw MemoryShadowQualificationError.emptyMemories
+        }
+        let vectors = await embed(texts.map { "passage: \($0)" })
+        guard vectors.count == texts.count else {
+            throw MemoryShadowQualificationError.missingEmbedding(
+                expected: texts.count,
+                actual: vectors.count
+            )
+        }
+        return vectors
+    }
+
     public func makeReport(
         fixture: MemoryShadowFixture
     ) async throws -> MemoryShadowQualificationReport {
