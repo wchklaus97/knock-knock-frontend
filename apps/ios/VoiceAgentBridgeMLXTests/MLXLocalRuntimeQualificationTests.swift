@@ -8,6 +8,7 @@ import MLXLMCommon
 import Tokenizers
 import XCTest
 @testable import VoiceAgentBridge
+import KnockKnockMemoryShadow
 
 final class MLXLocalRuntimeQualificationTests: XCTestCase {
     private static let qualificationPackageVersion =

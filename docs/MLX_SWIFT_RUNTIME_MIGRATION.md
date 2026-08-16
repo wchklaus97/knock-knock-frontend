@@ -39,13 +39,13 @@ The main application does not link these packages. Updating the qualification ru
 
 ## Isolation
 
-`VoiceAgentBridgeMLXQualification` and `VoiceAgentBridgeGemma4Qualification` are separate test schemes. Gemma 4 runs in the dedicated `VoiceAgentBridgeGemma4Tests` target. MLX remains outside the production application target.
+`VoiceAgentBridgeMLXQualification` and `VoiceAgentBridgeGemma4Qualification` are separate test schemes. Gemma 4 runs in the dedicated `VoiceAgentBridgeGemma4Tests` target. In-app E5 lives in the iOS 17 `KnockKnockMemoryShadow` framework. The main application does not import MLX or that module.
 
-- Normal application builds do not link MLX yet.
-- An `otool` check of the generated physical-device host app showed only the existing
-  `CLiteRTLM` runtime; MLX resources and code were confined to the qualification test plug-in.
+- Release application builds do not link or ship MLX. The shadow framework is stripped from the Release bundle.
+- Debug/Staging may embed `KnockKnockMemoryShadow` and weak-link it so MLX initializes at process start on iOS 17+. The host still loads `KKMemoryShadowRuntime` by class name after a Memory snapshot refresh. Missing weights, iOS 15, or a SHA mismatch are silent no-ops. Late `Bundle.load` of this framework hangs `loadContainer` on device.
+- The shadow may read `display_text` only and may only write `Caches/KnockKnock/memory-shadow-last.json`. It cannot change UI, CommandEnvelope, ranking, or execution.
 - Normal unit/UI test schemes do not run MLX qualification.
-- Tests require explicit `KNOCK_RUN_MLX_BENCHMARK=1`.
+- Qualification tests require explicit `KNOCK_RUN_MLX_BENCHMARK=1`.
 - Tests accept local model directories only. They do not download models from the network.
 - The Gemma 4 scheme fixes `KNOCK_MLX_GEMMA_MODEL_ID` to the allowlisted E2B model. Unknown model IDs or mismatched `config.json` model types fail the test.
 - Simulator inference requires a second explicit diagnostic flag and labels its report as
@@ -83,10 +83,16 @@ These are small synthetic engineering benchmarks, not production accuracy claims
 | Device | Model/test | Result | Load | Warm p95 / generation | Peak MLX memory |
 |---|---|---:|---:|---:|---:|
 | iPhone 13 Pro | multilingual E5, 30 retrieval queries | Recall@1 30/30; each locale 10/10 | 1.867 s | 12.9 ms | 546 MB |
+| iPhone 13 Pro (2026-08-16 re-run, iOS `5b94d8f`) | multilingual E5, 30 retrieval queries | Recall@1 30/30; each locale 10/10 | 1.543 s | 113.3 ms | not in E5 attachment |
 | iPhone 17 Pro Max | multilingual E5, 30 retrieval queries | Recall@1 30/30; each locale 10/10 | 1.266 s | 90.9 ms | 541 MB |
 | iPhone 17 Pro Max | Gemma 3 1B, one reminder safety smoke | strict canonical envelope passed | 2.628 s | 1.786 s generation | 1,026 MB |
 | iPhone 13 Pro | Gemma 3 1B, one reminder safety smoke | strict canonical envelope passed; latency gate failed | 4.388 s | 4.148 s generation | 1,026 MB |
 | iPhone 17 Pro Max | Gemma 4 E2B, English controlled-field shard | 7/8 commands; 10/11 fields; 4/4 clarifications; rejected | 2.805 s | 0.770 s command p95 | 2,849 MB |
+
+The 2026-08-16 iPhone 13 Pro row is a report-only re-run of
+`testMultilingualE5MemoryRetrievalBenchmark` on SHA `5b94d8f`. It does not
+link MLX into the main app or enable Production retrieval. Peak MLX memory is
+omitted because `RetrievalReport` does not record a GPU snapshot.
 
 The first local-directory Gemma run repeated `<end_of_turn>` because constructing a generic local
 `ModelConfiguration(directory:)` omitted the registry's extra EOS token. Qualification must set
@@ -224,7 +230,8 @@ Model weight SHA-256 values used for this qualification:
 
 1. Compile and run the isolated package-surface smoke test.
 2. Stage signed local model directories and run memory-retrieval/Gemma qualification.
-3. Add MLX memory retrieval and Gemma parsing behind shadow mode; neither can change commands.
+3. Add MLX memory retrieval behind in-app shadow mode; it cannot change commands,
+   UI, ranking, or execution. Gemma parsing stays out of the application target.
 4. Fix the final-transcript-only, classifier timeout, and cancellation race gates.
 5. Enable fallback for read-only `search_history` only.
 6. Expand to reminder/draft, then confirmed message sending.
@@ -238,8 +245,9 @@ Current device policy from the measured evidence:
 - iPhone 17 Pro Max also remains rules-first in Release. Gemma may enter non-authoritative shadow
   mode only after the raw-field gate passes every locale shard and a separate holdout. It is not
   currently production-eligible.
-- Multilingual E5 may proceed to a larger retrieval-only shadow benchmark on both devices. A
-  retrieved memory is context only and can never authorize an action.
+- Multilingual E5 now has an in-app read-only shadow on Debug/Staging iOS 17+ when pinned
+  local weights are present. A retrieved memory is context only, is never shown in UI, and
+  can never authorize an action. Production ranking remains unauthorized (D42).
 
 ## Rollback
 

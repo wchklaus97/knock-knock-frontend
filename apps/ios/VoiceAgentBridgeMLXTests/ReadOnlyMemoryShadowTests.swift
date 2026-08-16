@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import VoiceAgentBridge
+import KnockKnockMemoryShadow
 
 /// The compiler only exposes `makeReport` through this harness. Adding a call
 /// to create/delete memory, execute a command, mutate UI, or perform a network

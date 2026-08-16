@@ -2,95 +2,23 @@ import Foundation
 import MLX
 import MLXEmbedders
 
-/// The complete capability surface available to the qualification shadow.
-///
-/// This protocol intentionally lives in the iOS 17 MLX test target. It accepts
-/// synthetic fixtures and can only emit a test report. There is no mutation,
-/// networking, command-envelope, execution, ordering, or UI capability in the
-/// protocol for an implementation to call.
-protocol MemoryShadowQualificationReporting {
-    func makeReport(
-        fixture: MemoryShadowFixture
-    ) async throws -> MemoryShadowQualificationReport
-}
-
-struct MemoryShadowFixture {
-    let memories: [MemoryShadowMemoryFixture]
-    let queries: [MemoryShadowQueryFixture]
-}
-
-struct MemoryShadowMemoryFixture: Hashable {
-    let memoryID: String
-    /// The only memory field exposed to the shadow runtime.
-    let displayText: String
-}
-
-struct MemoryShadowQueryFixture: Hashable {
-    let queryID: String
-    let locale: String
-    let expectedMemoryID: String
-    let displayText: String
-}
-
-struct MemoryShadowLocaleMetrics: Codable, Equatable {
-    let correct: Int
-    let total: Int
-
-    var accuracy: Double {
-        guard total > 0 else { return 0 }
-        return Double(correct) / Double(total)
-    }
-}
-
-struct MemoryShadowPrediction: Codable, Equatable {
-    let queryID: String
-    let locale: String
-    let expectedMemoryID: String
-    let predictedMemoryID: String
-    let correct: Bool
-    let topCosineSimilarity: Float
-    let topOneMargin: Float
-}
-
-/// Report-only output. Nothing in this type can be fed into app state or a
-/// command transport without a new, explicit production integration.
-struct MemoryShadowQualificationReport: Codable, Equatable {
-    let queryCount: Int
-    let correctCount: Int
-    let recallAtOne: Double
-    let p50Seconds: Double
-    let p95Seconds: Double
-    let minimumTopOneMargin: Float
-    let localeMetrics: [String: MemoryShadowLocaleMetrics]
-    let predictions: [MemoryShadowPrediction]
-}
-
-enum MemoryShadowQualificationError: Error, Equatable {
-    case emptyMemories
-    case emptyQueries
-    case duplicateMemoryID(String)
-    case missingEmbedding(expected: Int, actual: Int)
-    case invalidEmbeddingDimensions
-    case zeroMagnitudeEmbedding
-}
-
-/// Real multilingual-E5 qualification implementation. It is deliberately
-/// target-only and cannot be constructed by the production application.
-final class MultilingualE5ReadOnlyShadow: MemoryShadowQualificationReporting {
-    typealias EmbeddingFunction = ([String]) async -> [[Float]]
+/// Real multilingual-E5 shadow implementation. It cannot mutate Memory, UI,
+/// CommandEnvelope, ranking, or execution.
+public final class MultilingualE5ReadOnlyShadow: MemoryShadowQualificationReporting, Sendable {
+    public typealias EmbeddingFunction = @Sendable ([String]) async -> [[Float]]
 
     private let embed: EmbeddingFunction
-    private let now: () -> TimeInterval
+    private let now: @Sendable () -> TimeInterval
 
-    init(
+    public init(
         embed: @escaping EmbeddingFunction,
-        now: @escaping () -> TimeInterval = { CFAbsoluteTimeGetCurrent() }
+        now: @escaping @Sendable () -> TimeInterval = { CFAbsoluteTimeGetCurrent() }
     ) {
         self.embed = embed
         self.now = now
     }
 
-    convenience init(container: EmbedderModelContainer) {
+    public convenience init(container: EmbedderModelContainer) {
         self.init { texts in
             await container.perform { context -> [[Float]] in
                 let encoded = texts.map {
@@ -126,7 +54,7 @@ final class MultilingualE5ReadOnlyShadow: MemoryShadowQualificationReporting {
         }
     }
 
-    func makeReport(
+    public func makeReport(
         fixture: MemoryShadowFixture
     ) async throws -> MemoryShadowQualificationReport {
         guard !fixture.memories.isEmpty else {
