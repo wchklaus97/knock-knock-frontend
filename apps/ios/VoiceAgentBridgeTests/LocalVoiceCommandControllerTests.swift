@@ -521,10 +521,111 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
         XCTAssertEqual(synthesizer.spoken, ["Could you clarify that?"])
     }
 
+    func testStopWithPartialOnlyClarifiesAndDoesNotGenerate() async {
+        let capture = ControlledVoiceCapture()
+        let generator = ControlledCommandGenerator()
+        let synthesizer = RecordingVoiceSynthesizer()
+        let submitted = VoiceTestBox(false)
+        let controller = makeController(
+            generator: generator,
+            capture: capture,
+            synthesizer: synthesizer
+        ) { _ in
+            submitted.value = true
+            return try Self.response()
+        }
+
+        controller.start()
+        capture.emitTranscript("partial command", isFinal: false)
+        capture.emitStop(.userReleased)
+        await drainTasks()
+
+        XCTAssertEqual(controller.state, .clarificationRequired)
+        XCTAssertEqual(controller.transcript, "partial command")
+        XCTAssertTrue(generator.transcripts.isEmpty)
+        XCTAssertFalse(submitted.value)
+        XCTAssertEqual(synthesizer.spoken, ["Could you clarify that?"])
+    }
+
+    func testGenerationTimeoutFailsWithoutSubmittingLateSuccess() async {
+        let capture = ControlledVoiceCapture()
+        let generator = ControlledCommandGenerator()
+        let submitted = VoiceTestBox(false)
+        let controller = makeController(
+            generator: generator,
+            capture: capture,
+            generationTimeoutNanoseconds: 50_000_000
+        ) { _ in
+            submitted.value = true
+            return try Self.response()
+        }
+
+        controller.start()
+        capture.emitTranscript("search history", isFinal: true)
+        capture.emitStop(.finalTranscript)
+        await drainTasks()
+        XCTAssertEqual(generator.transcripts, ["search history"])
+        XCTAssertEqual(controller.state, .processing)
+
+        await waitUntil(timeout: 1) {
+            if case .failed = controller.state { return true }
+            return false
+        }
+
+        XCTAssertEqual(
+            controller.state,
+            .failed(LocalVoiceCommandControllerError.generationTimedOut.localizedDescription)
+        )
+        XCTAssertEqual(generator.cancelCount, 1)
+        XCTAssertFalse(submitted.value)
+
+        generator.completeNext(with: .success(Self.envelopeData(query: "search history")))
+        await drainTasks()
+
+        XCTAssertFalse(submitted.value)
+        XCTAssertEqual(
+            controller.state,
+            .failed(LocalVoiceCommandControllerError.generationTimedOut.localizedDescription)
+        )
+    }
+
+    func testCancelDuringGenerationTimeoutKeepsIdleAndIgnoresTimeoutFailure() async {
+        let capture = ControlledVoiceCapture()
+        let generator = ControlledCommandGenerator()
+        let submitted = VoiceTestBox(false)
+        let controller = makeController(
+            generator: generator,
+            capture: capture,
+            generationTimeoutNanoseconds: 80_000_000
+        ) { _ in
+            submitted.value = true
+            return try Self.response()
+        }
+
+        controller.start()
+        capture.emitTranscript("search history", isFinal: true)
+        capture.emitStop(.finalTranscript)
+        await drainTasks()
+        XCTAssertEqual(controller.state, .processing)
+
+        controller.cancel()
+        XCTAssertEqual(controller.state, .idle)
+        XCTAssertEqual(controller.transcript, "")
+
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        await drainTasks()
+        generator.completeNext(with: .success(Self.envelopeData(query: "search history")))
+        await drainTasks()
+
+        XCTAssertEqual(controller.state, .idle)
+        XCTAssertFalse(submitted.value)
+    }
+
     private func makeController(
         generator: ControlledCommandGenerator,
         capture: ControlledVoiceCapture,
         synthesizer: RecordingVoiceSynthesizer = RecordingVoiceSynthesizer(),
+        generationTimeoutNanoseconds: UInt64 = 15_000_000_000,
         submit: @escaping @Sendable (CommandEnvelope) async throws -> CommandResponse
     ) -> LocalVoiceCommandController {
         LocalVoiceCommandController(
@@ -535,13 +636,32 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
             permissionsAreGranted: { true },
             requestPermissions: { _ in
                 XCTFail("Permissions should not be requested in this test")
-            }
+            },
+            generationTimeoutNanoseconds: generationTimeoutNanoseconds
         )
     }
 
     private func drainTasks(iterations: Int = 5) async {
         for _ in 0..<iterations {
             await Task.yield()
+        }
+    }
+
+    @MainActor
+    private func waitUntil(
+        timeout: TimeInterval,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        _ predicate: () -> Bool
+    ) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if predicate() { return }
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        if !predicate() {
+            XCTFail("Condition was not met before timeout", file: file, line: line)
         }
     }
 
