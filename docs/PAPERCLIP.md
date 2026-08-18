@@ -40,6 +40,7 @@ The equivalent connection shape, with the secret intentionally omitted, is:
   },
   "allowed_tools": [
     "create_or_resume_session",
+    "get_user_asks",
     "update_progress",
     "report_event",
     "get_pending_actions",

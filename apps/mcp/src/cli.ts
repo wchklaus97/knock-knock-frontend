@@ -48,6 +48,7 @@ function usage(code = 0): never {
   vab progress --session ses_... --status running [--message "..."] [--percent 0-100]
   vab event --session ses_... --status needs_user --idemp KEY [--summary "..." ] [--service api] [--env prod] [--fact_status 失败] [--actions rollback,ack] [--force-push]
   vab pending [--session ses_...] [--claim false]
+  vab asks [--claim false]
   vab result --action act_... [--ok true|false] [--message done]
 
 Env:
@@ -181,6 +182,12 @@ async function main(): Promise<void> {
         ? `/v1/sessions/${encodeURIComponent(sid)}/actions/pending?${q}`
         : `/v1/agents/me/actions/pending?${q}`;
       console.log(JSON.stringify(await api(path), null, 2));
+      break;
+    }
+    case "asks": {
+      const claim = arg("claim", "true") !== "false";
+      const q = `claim=${claim ? "true" : "false"}`;
+      console.log(JSON.stringify(await api(`/v1/agents/me/asks?${q}`), null, 2));
       break;
     }
     case "result": {

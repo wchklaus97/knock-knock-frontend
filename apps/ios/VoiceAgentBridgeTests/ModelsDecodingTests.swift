@@ -60,6 +60,50 @@ final class ModelsDecodingTests: XCTestCase {
         XCTAssertTrue(registration.token.hasPrefix("sim-"))
     }
 
+    func testCommandScopeDeviceIDAcceptsBackendRowIDAndRejectsInstallationID() {
+        XCTAssertEqual(
+            APIClient.commandScopeDeviceID(
+                fromRegistration: "dev_0123456789abcdef0123456789abcdef"
+            ),
+            "dev_0123456789abcdef0123456789abcdef"
+        )
+        XCTAssertEqual(
+            APIClient.commandScopeDeviceID(
+                fromRegistration: "  DEV_0123456789ABCDEF0123456789ABCDEF  "
+            ),
+            "DEV_0123456789ABCDEF0123456789ABCDEF"
+        )
+        XCTAssertNil(
+            APIClient.commandScopeDeviceID(
+                fromRegistration: "ios-11111111-1111-1111-1111-111111111111"
+            )
+        )
+        XCTAssertNil(APIClient.commandScopeDeviceID(fromRegistration: "dev_short"))
+        XCTAssertNil(APIClient.commandScopeDeviceID(fromRegistration: " "))
+    }
+
+    func testDeviceRegistrationResponseDecodesBackendRowID() throws {
+        let response = try decoder.decode(
+            DeviceRegistrationResponse.self,
+            from: Data(
+                """
+                {
+                  "device_id": "dev_0123456789abcdef0123456789abcdef",
+                  "platform": "ios",
+                  "push_token_registered": true,
+                  "locale": "en-US",
+                  "timezone": "Asia/Hong_Kong"
+                }
+                """.utf8
+            )
+        )
+        XCTAssertEqual(
+            APIClient.commandScopeDeviceID(fromRegistration: response.device_id),
+            "dev_0123456789abcdef0123456789abcdef"
+        )
+        XCTAssertTrue(response.push_token_registered)
+    }
+
     private let decoder = JSONDecoder()
 
     func testLegacyFixtureEmailMigrationIsScoped() {
@@ -284,7 +328,8 @@ final class ModelsDecodingTests: XCTestCase {
             user_id: "usr_1",
             label: "Codex Mac",
             host_label: "cursor",
-            created_at: "2026-08-05T00:00:00Z"
+            created_at: "2026-08-05T00:00:00Z",
+            last_seen_at: nil
         )
 
         XCTAssertTrue(SessionSearchMatcher(query: "codex deploy").matches(session, agent: agent))
@@ -339,6 +384,19 @@ final class ModelsDecodingTests: XCTestCase {
         XCTAssertEqual(canonicalAuth.user_id, "usr_2")
         XCTAssertEqual(canonicalAuth.user?.email, "user@example.com")
         XCTAssertEqual(agents.agents.first?.displayLabel, "Codex")
+        XCTAssertNil(agents.agents.first?.last_seen_at)
+        let seenAgents = try decoder.decode(
+            AgentsResponse.self,
+            from: Data(#"{"agents":[{"agent_id":"agt_1","user_id":"usr_1","label":"Codex","host_label":"codex","created_at":"2026-08-05T00:00:00Z","last_seen_at":"2026-08-18T00:00:00Z"}]}"#.utf8)
+        )
+        XCTAssertEqual(seenAgents.agents.first?.last_seen_at, "2026-08-18T00:00:00Z")
+        let ask = try decoder.decode(
+            PhoneAskResponse.self,
+            from: Data(#"{"ask_id":"ask_1","agent_id":"agt_1","user_id":"usr_1","agent_label":"apns-diagnostic","transcript":"Help with APNs","locale":"en-US","session_id":"ses_1","status":"queued","claimed_at":null,"expires_at":"2026-08-19T00:00:00Z","created_at":"2026-08-18T00:00:00Z"}"#.utf8)
+        )
+        XCTAssertEqual(ask.ask_id, "ask_1")
+        XCTAssertEqual(ask.agent_label, "apns-diagnostic")
+        XCTAssertEqual(ask.session_id, "ses_1")
         XCTAssertEqual(history.entries.first?.title, "Phone Confirm")
         XCTAssertEqual(history.entries.first?.metadata["action_id"]?.displayValue, "act_1")
     }

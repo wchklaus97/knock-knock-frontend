@@ -37,8 +37,8 @@ enum ActiveCommandCheckpointError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case let .commandInProgress(commandID):
-            return "Command \(commandID) is still active. Wait for it to finish before submitting another voice command."
+        case .commandInProgress:
+            return "A command is still open. If it is queued, tap Cancel, then speak again."
         case .persistenceFailed:
             return "The voice command could not be saved safely, so it was not sent."
         case let .rejectedResponse(reason):
@@ -152,14 +152,22 @@ enum ActiveCommandCheckpointReducer {
         if let currentVersion = current.backendVersion {
             if version < currentVersion { return .rejected(.lowerVersion) }
             if version == currentVersion {
-                guard current.phase == nextPhase,
-                      current.backendState == response.state,
-                      current.validatedPresentation == validatedPresentation,
-                      current.pendingConfirmation == nextConfirmation
-                else {
-                    return .rejected(.divergentEqualVersion)
+                let sameLifecycle = current.phase == nextPhase
+                    && current.backendState == response.state
+                    && current.validatedPresentation == validatedPresentation
+                if sameLifecycle, current.pendingConfirmation == nextConfirmation {
+                    return .idempotent
                 }
-                return .idempotent
+                // GET at the same version omits the one-time confirmation
+                // token. Keep the journaled POST token instead of treating
+                // that expected omission as a divergent snapshot.
+                if sameLifecycle,
+                   nextConfirmation == nil,
+                   current.pendingConfirmation != nil
+                {
+                    return .idempotent
+                }
+                return .rejected(.divergentEqualVersion)
             }
         }
 
@@ -239,6 +247,7 @@ struct BackendCommandPresentation: Equatable {
     let message: String
     let voiceScript: String?
     let isTerminal: Bool
+    let isCancellable: Bool
     let isServerValidated: Bool
 
     init(response: CommandResponse) {
@@ -285,6 +294,7 @@ struct BackendCommandPresentation: Equatable {
         self.state = state
         title = "Command update"
         isTerminal = CommandLifecycle.isTerminal(state)
+        isCancellable = CommandLifecycle.canCancel(state)
         if let serverPresentation {
             message = serverPresentation.display_text
             voiceScript = serverPresentation.voice_script
@@ -293,6 +303,16 @@ struct BackendCommandPresentation: Equatable {
             message = Self.genericMessage(for: state)
             voiceScript = nil
             isServerValidated = false
+        }
+    }
+
+    var nextStepHint: String? {
+        guard isCancellable else { return nil }
+        switch state {
+        case "awaiting_confirmation":
+            return "Confirm this command to continue."
+        default:
+            return "Cancel to speak another command."
         }
     }
 

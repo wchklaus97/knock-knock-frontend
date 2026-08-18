@@ -46,6 +46,12 @@ enum LocalCommandEnvelopeCanonicalizerError: Error, Equatable {
         case modelRequestedClarification
         case unsupportedIntent
         case invalidModelOutput
+        /// Send-message body was grounded, but the recipient was a pronoun or
+        /// otherwise unnamed. Callers must not invent a person to fill this.
+        /// `body` may be empty when the user has not said the message yet.
+        case missingSendRecipient(body: String)
+        /// Recipient is named, but the message body was never said.
+        case missingSendBody(recipient: String)
     }
 
     case clarificationRequired(ClarificationReason)

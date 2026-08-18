@@ -286,7 +286,13 @@ else
   mkdir -p "${ARTIFACTS_DIR}"
   chmod 700 "${ARTIFACTS_DIR}"
 fi
-DERIVED_DATA="$(mktemp -d "${TMPDIR:-/tmp}/knock-voice-e2e-derived.XXXXXX")"
+if [[ -n "${KNOCK_VOICE_E2E_DERIVED_DATA:-}" ]]; then
+  [[ "${KNOCK_VOICE_E2E_DERIVED_DATA}" = /* ]] || fail "KNOCK_VOICE_E2E_DERIVED_DATA must be absolute"
+  mkdir -p "${KNOCK_VOICE_E2E_DERIVED_DATA}"
+  DERIVED_DATA="${KNOCK_VOICE_E2E_DERIVED_DATA}"
+else
+  DERIVED_DATA="$(mktemp -d "${TMPDIR:-/tmp}/knock-voice-e2e-derived.XXXXXX")"
+fi
 MODEL_BUILD_SETTINGS=("KNOCK_EXPECTED_VOICE_RUNTIME=${VOICE_RUNTIME}")
 if [[ "${VOICE_RUNTIME}" == "signed-gemma" ]]; then
   PRIVATE_PUBLIC_KEY_PATH="${DERIVED_DATA}/model-public-key.base64"
@@ -363,8 +369,12 @@ set +e
     -derivedDataPath "${DERIVED_DATA}" \
     -resultBundlePath "${ARTIFACTS_DIR}/physical-voice.xcresult" \
     -allowProvisioningUpdates \
+    -skipMacroValidation \
+    -skipPackagePluginValidation \
     -only-testing:VoiceAgentBridgeUITests/VoiceAgentBridgeUITests/testPhysicalVoiceProductionPath \
     KNOCK_API_BASE_URL="${API_BASE}" \
+    IPHONEOS_DEPLOYMENT_TARGET=17.0 \
+    KNOCK_SKIP_E5_COPY=YES \
     "${MODEL_BUILD_SETTINGS[@]}" \
     KNOCK_RUN_PHYSICAL_VOICE_E2E=1 \
     KNOCK_PHYSICAL_VOICE_MANUAL_CAPTURE="${MANUAL_CAPTURE}" \

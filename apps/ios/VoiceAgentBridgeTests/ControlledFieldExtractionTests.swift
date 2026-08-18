@@ -85,6 +85,41 @@ final class ControlledFieldExtractionTests: XCTestCase {
         )
     }
 
+    func testOptionalSendSlotsSkipPronounAndShellValuesInsteadOfGenericCatch() throws {
+        let recipient = LocalCommandControlledFieldRequest(
+            intent: "send_message",
+            field: .messageRecipient,
+            required: false
+        )
+        XCTAssertNil(
+            try LocalCommandControlledFieldOutputParser.value(
+                from: #"{"value":"him"}"#,
+                request: recipient,
+                transcript: "Say him a message"
+            )
+        )
+        XCTAssertNil(
+            try LocalCommandControlledFieldOutputParser.value(
+                from: "{}",
+                request: recipient,
+                transcript: "Say him a message"
+            )
+        )
+
+        let body = LocalCommandControlledFieldRequest(
+            intent: "send_message",
+            field: .messageBody,
+            required: false
+        )
+        XCTAssertNil(
+            try LocalCommandControlledFieldOutputParser.value(
+                from: #"{"value":"a message"}"#,
+                request: body,
+                transcript: "Say him a message"
+            )
+        )
+    }
+
     func testAssemblerUsesTrustedClockAndRejectsUnexpectedFields() throws {
         let transcript = "Remind me tomorrow at 9 AM to call John."
         let timezone = try XCTUnwrap(TimeZone(identifier: "Asia/Hong_Kong"))
@@ -154,6 +189,35 @@ final class ControlledFieldExtractionTests: XCTestCase {
         XCTAssertTrue(envelope.needsConfirmation)
         XCTAssertEqual(envelope.args["recipient"], .string("John"))
         XCTAssertEqual(envelope.args["body"], .string("hello"))
+    }
+
+    func testIntentClassifierAcceptsAllowlistedIntentOrEmptyObject() throws {
+        XCTAssertEqual(
+            try LocalCommandIntentClassifier.intent(from: #"{"intent":"send_message"}"#),
+            "send_message"
+        )
+        XCTAssertNil(try LocalCommandIntentClassifier.intent(from: "{}"))
+        XCTAssertTrue(LocalCommandIntentClassifier.system.contains("command classifier"))
+        XCTAssertTrue(try LocalCommandIntentClassifier.userText(
+            transcript: "同 John 講聲 yes",
+            locale: "yue-Hant-HK"
+        ).contains("send_message"))
+    }
+
+    func testIntentClassifierRejectsUnknownKeysAndUnknownIntents() {
+        for response in [
+            #"{"intent":"send_message","args":{}}"#,
+            #"{"intent":"weather"}"#,
+            #"{"value":"send_message"}"#,
+            #"{"intent":null}"#,
+        ] {
+            XCTAssertThrowsError(try LocalCommandIntentClassifier.intent(from: response)) { error in
+                XCTAssertTrue(
+                    LocalVoiceCommandErrorPolicy.requiresClarification(error),
+                    String(describing: error)
+                )
+            }
+        }
     }
 
     private func assertClarification(
