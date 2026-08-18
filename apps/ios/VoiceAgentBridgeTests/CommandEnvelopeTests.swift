@@ -27,6 +27,25 @@ final class CommandEnvelopeTests: XCTestCase {
         XCTAssertEqual(envelope.riskLevel, .low)
     }
 
+    func testOptionalDeviceIDIsOmittedFromEncodedEnvelope() throws {
+        let envelope = try CommandEnvelope(
+            commandID: "cmd_voice_1",
+            intent: "search_history",
+            args: ["query": .string("today")],
+            riskLevel: .low,
+            needsConfirmation: false,
+            idempotencyKey: "idem_voice_1",
+            confidence: 0.96,
+            locale: "en-US",
+            timezone: "UTC"
+        )
+        XCTAssertNil(envelope.deviceID)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try JSONEncoder().encode(envelope)) as? [String: Any]
+        )
+        XCTAssertNil(object["device_id"])
+    }
+
     func testUnknownEnvelopeAndArgumentKeysAreRejected() {
         let unknownEnvelope = validJSON.replacingOccurrences(
             of: #""schema_version": 1,"#,

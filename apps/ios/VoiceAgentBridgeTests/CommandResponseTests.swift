@@ -98,4 +98,35 @@ final class CommandResponseTests: XCTestCase {
         XCTAssertNil(response.undo_command_id)
         XCTAssertNil(response.serverAuthorizedUndoCommandID)
     }
+
+    func testDisabledSendMessageFailureDecodesActionDisabled() throws {
+        let data = Data(#"""
+        {
+          "command_id": "cmd_disabled_send",
+          "state": "failed",
+          "confirmation_token": null,
+          "result": null,
+          "error": {"code": "action_disabled", "message": "Message sending is disabled.", "retryable": false},
+          "presentation": {
+            "schema_version": 1,
+            "code": "command.failed",
+            "locale": "en-HK",
+            "display_text": "The backend could not complete this command.",
+            "voice_script": "The command failed.",
+            "terminal": true
+          },
+          "undo_command_id": null,
+          "version": 4
+        }
+        """#.utf8)
+
+        let response = try JSONDecoder().decode(CommandResponse.self, from: data)
+        XCTAssertEqual(response.state, "failed")
+        XCTAssertNotEqual(response.state, "queued")
+        XCTAssertEqual(response.error?.code, "action_disabled")
+        XCTAssertTrue(response.error?.retryable == false)
+        XCTAssertTrue(response.presentation?.terminal == true)
+        XCTAssertTrue(CommandLifecycle.isTerminal(response.state))
+        XCTAssertFalse(CommandLifecycle.canCancel(response.state))
+    }
 }

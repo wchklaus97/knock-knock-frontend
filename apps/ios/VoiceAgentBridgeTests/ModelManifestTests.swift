@@ -67,6 +67,12 @@ final class ModelManifestTests: XCTestCase {
             forceRefresh: true,
             activeModelAvailable: true
         ))
+        XCTAssertTrue(AppStore.shouldKeepInstalledModelAfterFetchFailure(
+            activeModelAvailable: true
+        ))
+        XCTAssertFalse(AppStore.shouldKeepInstalledModelAfterFetchFailure(
+            activeModelAvailable: false
+        ))
     }
 
     func testStrictManifestAndEd25519ArtifactVerification() throws {

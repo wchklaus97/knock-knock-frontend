@@ -30,7 +30,7 @@ settings:
     CODE_SIGN_STYLE: Automatic
     CODE_SIGN_IDENTITY: "Apple Development"
     MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "25"
+    CURRENT_PROJECT_VERSION: "27"
     KNOCK_API_BASE_URL: ""
     KNOCK_MODEL_PUBLIC_KEY_BASE64: ""
     APS_ENVIRONMENT: development
@@ -58,7 +58,7 @@ targets:
       - name: Copy E5 weights for Debug shadow
         basedOnDependencyAnalysis: false
         script: |
-          if [ "${CONFIGURATION}" = "Release" ]; then
+          if [ "${CONFIGURATION}" = "Release" ] || [ "${KNOCK_SKIP_E5_COPY:-}" = "YES" ] || [ "${KNOCK_SKIP_E5_COPY:-}" = "1" ]; then
             exit 0
           fi
           SRC="${SRCROOT}/VoiceAgentBridgeMLXTests/LocalModels/e5-small"
@@ -161,6 +161,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: hk.knockknock.app.tests
         GENERATE_INFOPLIST_FILE: YES
         DEVELOPMENT_TEAM: TXKDW2YS44
+      configs:
+        Staging:
+          IPHONEOS_DEPLOYMENT_TARGET: "17.0"
 
   VoiceAgentBridgeUITests:
     type: bundle.ui-testing
@@ -174,6 +177,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: hk.knockknock.app.uitests
         GENERATE_INFOPLIST_FILE: YES
         DEVELOPMENT_TEAM: TXKDW2YS44
+      configs:
+        Staging:
+          IPHONEOS_DEPLOYMENT_TARGET: "17.0"
 
   KnockKnockMemoryShadow:
     type: framework

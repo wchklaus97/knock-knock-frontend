@@ -67,6 +67,12 @@ account's agent management endpoint before continuing work.
    `update_progress` again, and continue the original task; do not create a
    new session for the next question in the same task.
 
+When idle, poll `get_user_asks`. That is how the iPhone **Ask {agent}** dock
+knows the Mac host is listening. If an ask arrives, resume the returned
+`session_id` with `skill_id` `phone.ask` and the transcript in `facts`. Do not
+invent tool names. Phone `send_message` / reminder / draft / history shortcuts
+are local commands and will not appear here.
+
 Example progress calls:
 
 ```text

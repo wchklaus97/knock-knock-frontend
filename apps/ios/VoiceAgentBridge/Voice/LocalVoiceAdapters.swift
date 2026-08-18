@@ -123,16 +123,29 @@ enum LocalVoiceRuntimePolicy {
     /// model loadability are necessary, but do not qualify semantic behavior.
     static let signedGemmaQualifiedForRelease = false
 
+    /// Staging/Debug on capable phones uses the on-device model so speech is
+    /// not limited to hardcoded phrases. iPhone 13 Pro stays on the parser.
+    static var stagingDynamicUnderstandingEnabled: Bool {
+        #if DEBUG
+        true
+        #else
+        false
+        #endif
+    }
+
     static func strategy(
         machineIdentifier: String = currentMachineIdentifier(),
-        signedGemmaQualified: Bool = signedGemmaQualifiedForRelease
+        signedGemmaQualified: Bool = signedGemmaQualifiedForRelease,
+        stagingDynamicUnderstanding: Bool = stagingDynamicUnderstandingEnabled
     ) -> Strategy {
-        guard signedGemmaQualified else { return .deterministicParser }
         switch machineIdentifier {
         case "iPhone14,2", "iPhone14,3":
             return .deterministicParser
         default:
-            return .signedGemma
+            if signedGemmaQualified || stagingDynamicUnderstanding {
+                return .signedGemma
+            }
+            return .deterministicParser
         }
     }
 
@@ -224,18 +237,26 @@ enum LocalVoiceUtterancePreflight {
             return "create_draft"
         }
         if isSend {
-            if containsAny(normalized, [
-                "send him", "send her", "send them", "message him", "message her",
-                "message them", "text him", "text her", "text them", "tell him",
-                "tell her", "tell them", "畀佢", "给他", "給他", "给她", "給她", "告诉他",
-                "告訴他", "告诉她", "告訴她",
-            ]) {
-                throw clarification(.modelRequestedClarification)
-            }
             try throwIfMessageBodyIsClearlyMissing(normalized)
             return "send_message"
         }
         return nil
+    }
+
+    /// Keep send / remind / draft / history on the phone, including incomplete
+    /// slots that preflight throws on. Unknown speech is not a local shortcut.
+    static func prefersLocalCommandPath(for transcript: String) -> Bool {
+        do {
+            return try intentHint(for: transcript) != nil
+        } catch {
+            let normalized = transcript
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            return isExplicitSendRequest(normalized)
+                || isExplicitReminderRequest(normalized)
+                || isExplicitDraftRequest(normalized)
+                || isExplicitHistoryRequest(normalized)
+        }
     }
 
     static func dueAtHint(
@@ -360,8 +381,22 @@ enum LocalVoiceUtterancePreflight {
         ) != nil {
             return true
         }
-        return firstMatch(
+        if firstMatch(
             pattern: #"^\s*(?:please\s+|can you\s+|could you\s+|would you\s+)?(?:send|message|text|tell)\b"#,
+            in: text
+        ) != nil {
+            return true
+        }
+        // "Say him a message" / "say a message to John" are send requests.
+        // Bare "say hello" is not.
+        if firstMatch(
+            pattern: #"^\s*(?:please\s+|can you\s+|could you\s+|would you\s+)?say\s+(?:a\s+)?message\s+to\b"#,
+            in: text
+        ) != nil {
+            return true
+        }
+        return firstMatch(
+            pattern: #"^\s*(?:please\s+|can you\s+|could you\s+|would you\s+)?say\s+\S+\s+a\s+message\b"#,
             in: text
         ) != nil
     }
@@ -458,6 +493,58 @@ enum LocalVoiceUtterancePreflight {
     }
 }
 
+/// Pronouns and unnamed people are not send-message recipients. The parser
+/// keeps any grounded body and asks the user to name the person instead.
+enum LocalVoicePersonSlot {
+    static func isUnresolvedRecipient(_ value: String) -> Bool {
+        let normalized = normalized(value)
+        if unresolved.contains(normalized) { return true }
+        // Cantonese/Mandarin captures are often unspaced, so "佢版本準備好喇"
+        // must not count as a named person.
+        return cjkPronounPrefixes.contains { prefix in
+            normalized.hasPrefix(prefix)
+        }
+    }
+
+    static func looksLikeNamedPerson(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !isUnresolvedRecipient(trimmed) else { return false }
+        let tokens = trimmed.split(whereSeparator: \.isWhitespace)
+        guard (1...3).contains(tokens.count) else { return false }
+        let blocked = Set([
+            "send", "message", "text", "tell", "say", "remind", "reminder", "draft",
+            "search", "show", "history", "please", "to", "from", "for", "a",
+            "the", "yes", "no", "ok", "okay", "yeah",
+        ])
+        for token in tokens {
+            let text = String(token)
+            if blocked.contains(text.lowercased()) { return false }
+            let allowed = CharacterSet.letters
+                .union(CharacterSet(charactersIn: ".'’-"))
+            guard text.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static let unresolved: Set<String> = [
+        "he", "him", "she", "her", "they", "them", "it",
+        "someone", "somebody",
+        "他", "她", "他们", "她们", "他們", "她們", "佢", "佢哋",
+    ]
+
+    private static let cjkPronounPrefixes = [
+        "他们", "她们", "他們", "她們", "佢哋", "他", "她", "佢",
+    ]
+
+    private static func normalized(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+            .lowercased()
+    }
+}
+
 /// Grounds model-extracted slots back to the trusted transcript and trusted
 /// date parser. The small model may rephrase harmless text, but it cannot
 /// invent recipients, message bodies, reminder dates, or executable fields.
@@ -530,17 +617,23 @@ enum LocalVoiceArgumentGrounder {
                 modelArguments,
                 keys: ["recipient", "to", "body", "content", "message"]
             )
-            guard let recipient = recipient(from: transcript)
-                ?? string(modelArguments, aliases: ["recipient", "to"]),
-                  isGrounded(recipient, in: transcript)
-            else {
-                throw clarification()
-            }
             let modelBody = string(modelArguments, aliases: ["body", "content", "message"])
-            guard let body = messageBody(from: transcript)
+            let rawBody = messageBody(from: transcript)
                 ?? groundedValue(modelBody, transcript: transcript)
+            let body = usableMessageBody(rawBody)
+            let candidate = recipient(from: transcript)
+                ?? string(modelArguments, aliases: ["recipient", "to"])
+            if let candidate, LocalVoicePersonSlot.isUnresolvedRecipient(candidate) {
+                throw missingSendRecipient(body: body)
+            }
+            guard let recipient = candidate,
+                  isGrounded(recipient, in: transcript),
+                  LocalVoicePersonSlot.looksLikeNamedPerson(recipient)
             else {
-                throw clarification()
+                throw missingSendRecipient(body: body)
+            }
+            guard let body, !body.isEmpty else {
+                throw missingSendBody(recipient: recipient)
             }
             return ["recipient": recipient, "body": body]
 
@@ -663,6 +756,45 @@ enum LocalVoiceArgumentGrounder {
         return nil
     }
 
+    /// Names a person from a follow-up utterance. Pronouns and command phrases
+    /// are rejected so a later "John" can fill a pending send without inventing
+    /// a recipient from "him".
+    static func fillNamedRecipient(from transcript: String) -> String? {
+        let trimmed = transcript.trimmingCharacters(
+            in: .whitespacesAndNewlines.union(.punctuationCharacters)
+        )
+        guard !trimmed.isEmpty else { return nil }
+        if let named = recipient(from: transcript),
+           !LocalVoicePersonSlot.isUnresolvedRecipient(named)
+        {
+            return named
+        }
+        if LocalVoicePersonSlot.looksLikeNamedPerson(trimmed) {
+            return trimmed
+        }
+        let tokens = trimmed.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard tokens.count >= 2 else { return nil }
+        for length in [1, 2, 3] where tokens.count >= length {
+            let candidate = tokens.suffix(length).joined(separator: " ")
+            if LocalVoicePersonSlot.looksLikeNamedPerson(candidate) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    static func hasCompleteSendMessage(from transcript: String) -> Bool {
+        fillNamedRecipient(from: transcript) != nil && messageBody(from: transcript) != nil
+    }
+
+    static func hasExplicitMessageBody(from transcript: String) -> Bool {
+        messageBody(from: transcript) != nil
+    }
+
+    static func reconstructedSendTranscript(recipient: String, body: String) -> String {
+        "Send \(recipient) a message saying \(body)"
+    }
+
     private static func messageBody(from transcript: String) -> String? {
         let commandPatterns = [
             #"^(?:告诉|告訴)\s+[^\s，,]+\s+(.+)$"#,
@@ -686,6 +818,8 @@ enum LocalVoiceArgumentGrounder {
     private static func recipient(from transcript: String) -> String? {
         let patterns = [
             #"(?i)^\s*(?:please\s+|can you\s+|could you\s+|would you\s+)?send\s+([\p{L}\p{M}.'’-]+)\s+(?:a\s+)?message\b"#,
+            #"(?i)^\s*(?:please\s+|can you\s+|could you\s+|would you\s+)?say\s+([\p{L}\p{M}.'’-]+)\s+a\s+message\b"#,
+            #"(?i)^\s*(?:please\s+|can you\s+|could you\s+|would you\s+)?say\s+(?:a\s+)?message\s+to\s+([\p{L}\p{M}.'’-]+)\b"#,
             #"(?i)^\s*(?:please\s+|can you\s+|could you\s+|would you\s+)?(?:message|text|tell)\s+([\p{L}\p{M}.'’-]+)\b"#,
             #"^\s*(?:请|請|麻烦|麻煩|帮我|幫我)?\s*(?:发消息给|發消息給|发送消息给|發送消息給|告诉|告訴)\s*([^\s，,。.!?]+)"#,
             #"(?i)^\s*send\s+(?:個|个)?\s*(?:訊息|消息)\s*(?:畀|俾|给|給)\s*([^\s，,。.!?]+)"#,
@@ -727,6 +861,27 @@ enum LocalVoiceArgumentGrounder {
 
     private static func clarification() -> LocalCommandEnvelopeCanonicalizerError {
         .clarificationRequired(.invalidModelOutput)
+    }
+
+    private static func usableMessageBody(_ body: String?) -> String? {
+        guard let body else { return nil }
+        let normalized = body.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if ["a message", "message", "the message", "him a message"].contains(normalized) {
+            return nil
+        }
+        return body
+    }
+
+    private static func missingSendRecipient(
+        body: String?
+    ) -> LocalCommandEnvelopeCanonicalizerError {
+        .clarificationRequired(.missingSendRecipient(body: body ?? ""))
+    }
+
+    private static func missingSendBody(
+        recipient: String
+    ) -> LocalCommandEnvelopeCanonicalizerError {
+        .clarificationRequired(.missingSendBody(recipient: recipient))
     }
 }
 
@@ -1703,8 +1858,11 @@ private actor LiteRTLMCommandRuntime {
         guard health.isHealthy else {
             throw LocalVoiceAdapterError.gemmaRuntimeGenerationFailed
         }
-        guard let intentHint = try LocalVoiceUtterancePreflight.intentHint(for: transcript) else {
-            throw LocalCommandEnvelopeCanonicalizerError.clarificationRequired(.unsupportedIntent)
+        let preflightIntent: String?
+        do {
+            preflightIntent = try LocalVoiceUtterancePreflight.intentHint(for: transcript)
+        } catch {
+            throw error
         }
         let referenceMilliseconds = nowMilliseconds()
         guard let trustedTimezone = TimeZone(identifier: timezone) else {
@@ -1721,41 +1879,41 @@ private actor LiteRTLMCommandRuntime {
             }
         }
 
+        let intentHint: String
+        if let preflightIntent {
+            intentHint = preflightIntent
+        } else {
+            let classified = try LocalCommandIntentClassifier.intent(
+                from: try await runConversation(
+                    system: LocalCommandIntentClassifier.system,
+                    userText: try LocalCommandIntentClassifier.userText(
+                        transcript: transcript,
+                        locale: locale
+                    )
+                )
+            )
+            guard let classified else {
+                throw LocalCommandEnvelopeCanonicalizerError.clarificationRequired(
+                    .unsupportedIntent
+                )
+            }
+            intentHint = classified
+        }
+
         let requests = try LocalCommandControlledFieldPlan.requests(
             for: intentHint,
             transcript: transcript
         )
-        let commandRunner = LiteRTStreamingConversationCommandRunner<OpaquePointer>(
-            makeConversation: { self.makeConversation(engine: self.engine!) },
-            deleteConversation: { litert_lm_conversation_delete($0) },
-            startStream: { conversation, message, callback in
-                Self.startStream(
-                    conversation: conversation,
-                    messageJSON: message,
-                    callback: callback
-                )
-            },
-            cancelConversation: { litert_lm_conversation_cancel_process($0) }
-        )
         var extractedValues: [LocalCommandControlledField: String] = [:]
         for request in requests {
             try Task.checkCancellation()
-            let messageJSON = try Self.messageJSON(
-                text: try LocalCommandControlledFieldPrompt.userText(
+            let responseText = try await runConversation(
+                system: LocalCommandControlledFieldPrompt.system,
+                userText: try LocalCommandControlledFieldPrompt.userText(
                     request: request,
                     transcript: transcript,
                     locale: locale
                 )
-            )
-            let responseText = try await commandRunner.run(
-                messageJSON: messageJSON,
-                timeoutNanoseconds: Self.generationTimeoutNanoseconds,
-                onCallerAbandoned: { [health] in
-                    health.quarantine()
-                },
-                onLateOperationCompletion: { [health] in
-                    health.recoverAfterNativeQuiescence()
-                }
             )
             if let value = try LocalCommandControlledFieldOutputParser.value(
                 from: responseText,
@@ -1805,7 +1963,35 @@ private actor LiteRTLMCommandRuntime {
         return Int(status)
     }
 
-    private func makeConversation(engine: OpaquePointer) -> OpaquePointer? {
+    private func runConversation(
+        system: String,
+        userText: String
+    ) async throws -> String {
+        let commandRunner = LiteRTStreamingConversationCommandRunner<OpaquePointer>(
+            makeConversation: { self.makeConversation(engine: self.engine!, system: system) },
+            deleteConversation: { litert_lm_conversation_delete($0) },
+            startStream: { conversation, message, callback in
+                Self.startStream(
+                    conversation: conversation,
+                    messageJSON: message,
+                    callback: callback
+                )
+            },
+            cancelConversation: { litert_lm_conversation_cancel_process($0) }
+        )
+        return try await commandRunner.run(
+            messageJSON: try Self.messageJSON(text: userText),
+            timeoutNanoseconds: Self.generationTimeoutNanoseconds,
+            onCallerAbandoned: { [health] in
+                health.quarantine()
+            },
+            onLateOperationCompletion: { [health] in
+                health.recoverAfterNativeQuiescence()
+            }
+        )
+    }
+
+    private func makeConversation(engine: OpaquePointer, system: String) -> OpaquePointer? {
         guard let config = litert_lm_conversation_config_create() else {
             return nil
         }
@@ -1835,9 +2021,7 @@ private actor LiteRTLMCommandRuntime {
         litert_lm_session_config_set_sampler_params(sessionConfig, samplerParams)
         litert_lm_conversation_config_set_session_config(config, sessionConfig)
 
-        guard let systemMessageJSON = try? Self.messageContentJSON(
-            text: LocalCommandControlledFieldPrompt.system
-        ) else {
+        guard let systemMessageJSON = try? Self.messageContentJSON(text: system) else {
             return nil
         }
         litert_lm_conversation_config_set_system_message(config, systemMessageJSON)

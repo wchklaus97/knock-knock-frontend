@@ -46,6 +46,33 @@ enum APIClientError: LocalizedError {
         case let .network(message): return "Network error: \(message)"
         }
     }
+
+    /// Confirm raced with a command that already left `awaiting_confirmation`.
+    /// The durable GET snapshot is the source of truth; do not treat this as
+    /// a failed confirmation.
+    var isAlreadyResolvedConfirmationConflict: Bool {
+        guard case let .badStatus(code, message, _) = self, code == 409 else {
+            return false
+        }
+        let lower = message.lowercased()
+        return lower.contains("not awaiting confirmation")
+            || lower.contains("confirmation token was already used")
+    }
+
+    /// Cancel raced with a command that already left a cancellable state.
+    var isAlreadyResolvedCancelConflict: Bool {
+        guard case let .badStatus(code, message, _) = self, code == 409 else {
+            return false
+        }
+        let lower = message.lowercased()
+        return lower.contains("cannot be cancelled in its current state")
+            || lower.contains("changed before it could be cancelled")
+    }
+
+    var isAgentNotListening: Bool {
+        guard case let .badStatus(code, _, metadata) = self else { return false }
+        return code == 409 && metadata.errorCode == "agent_not_listening"
+    }
 }
 
 struct EmptyJSON: Decodable {}
@@ -106,10 +133,18 @@ final class APIClient: @unchecked Sendable {
     }
     var token: String?
     var refreshToken: String?
+    /// Backend `devices.id` (`dev_…`) after a successful `/v1/phone/devices`
+    /// registration. Command envelopes must use this row id, not the local
+    /// installation id, because scope checks look up `devices.id`.
+    private(set) var commandScopeDeviceID: String?
     private let session: URLSession
 
     init(session: URLSession = .shared) {
         self.session = session
+    }
+
+    func resetCommandScopeDeviceID() {
+        commandScopeDeviceID = nil
     }
 
     func register(email: String, password: String) async throws -> AuthResponse {
@@ -160,7 +195,7 @@ final class APIClient: @unchecked Sendable {
         #else
         let registration = try Self.deviceRegistration(pushToken: pushToken, isSimulator: false)
         #endif
-        let _: EmptyJSON = try await post(
+        let response: DeviceRegistrationResponse = try await post(
             "/v1/phone/devices",
             body: DeviceBody(
                 platform: registration.platform,
@@ -171,6 +206,7 @@ final class APIClient: @unchecked Sendable {
             ),
             auth: true
         )
+        commandScopeDeviceID = Self.commandScopeDeviceID(fromRegistration: response.device_id)
     }
 
     static func deviceRegistration(
@@ -200,10 +236,30 @@ final class APIClient: @unchecked Sendable {
         return generated
     }
 
-    /// Stable per-installation identifier used for backend multi-device scope
-    /// and command tracing. It is app-generated and never comes from a model.
+    /// Stable per-installation identifier used for rate-limit headers and
+    /// device registration. It is app-generated and never comes from a model.
+    /// Command envelopes must not use this value; they use `commandScopeDeviceID`.
     var currentDeviceID: String {
         Self.stableDeviceID
+    }
+
+    /// Accepts only the backend device row id returned by registration.
+    /// The local `ios-…` installation id is not a `devices.id` and would 404.
+    static func commandScopeDeviceID(fromRegistration deviceID: String) -> String? {
+        let trimmed = deviceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix = "dev_"
+        guard trimmed.count <= 128,
+              trimmed.lowercased().hasPrefix(prefix)
+        else { return nil }
+        let digest = trimmed.dropFirst(prefix.count)
+        guard digest.count == 32,
+              digest.unicodeScalars.allSatisfy({
+                  (48 ... 57).contains($0.value)
+                      || (97 ... 102).contains($0.value)
+                      || (65 ... 70).contains($0.value)
+              })
+        else { return nil }
+        return trimmed
     }
 
     func listSessionsPage(
@@ -537,6 +593,28 @@ final class APIClient: @unchecked Sendable {
     /// persisted lifecycle state.
     func createCommand(_ envelope: CommandEnvelope) async throws -> CommandResponse {
         try await post("/v1/phone/commands", body: envelope, auth: true)
+    }
+
+    func createPhoneAsk(
+        agentID: String,
+        transcript: String,
+        locale: String?,
+        idempotencyKey: String
+    ) async throws -> PhoneAskResponse {
+        struct Body: Encodable {
+            let transcript: String
+            let locale: String?
+            let idempotency_key: String
+        }
+        return try await post(
+            "/v1/phone/agents/\(agentID)/asks",
+            body: Body(
+                transcript: transcript,
+                locale: locale,
+                idempotency_key: idempotencyKey
+            ),
+            auth: true
+        )
     }
 
     func getCommand(commandID: String) async throws -> CommandResponse {

@@ -11,6 +11,7 @@ with `BRIDGE_AGENT_KEY` → `X-Agent-Key`.
 | Tool | HTTP | Push |
 |------|------|------|
 | `create_or_resume_session` | `POST /v1/sessions` | never |
+| `get_user_asks` | `GET /v1/agents/me/asks` | never |
 | `update_progress` | `POST /v1/sessions/{id}/progress` | **NEVER** |
 | `report_event` | `POST /v1/sessions/{id}/events` | **MAY** (`needs_user`, or terminal + actions / `force_push`) |
 | `get_pending_actions` | `GET .../actions/pending` | never; supports bounded `wait_ms` |

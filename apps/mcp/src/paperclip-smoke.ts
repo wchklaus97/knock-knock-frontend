@@ -71,7 +71,7 @@ try {
   await client.connect(transport);
   const listed = await client.listTools();
   const toolNames = listed.tools.map((tool) => tool.name);
-  assert(toolNames.length === 5, `expected 5 MCP tools, got ${toolNames.length}`);
+  assert(toolNames.length === 6, `expected 6 MCP tools, got ${toolNames.length}`);
 
   const runKey = `paperclip-smoke-${Date.now()}`;
   const created = parseTool(await client.callTool({

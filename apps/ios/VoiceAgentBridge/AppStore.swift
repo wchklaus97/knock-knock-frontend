@@ -88,6 +88,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var memories: [MemoryItem] = []
     @Published private(set) var pendingOperations: [PendingOperation] = []
     @Published var pendingCommandConfirmation: PendingCommandConfirmation? = nil
+    @Published private(set) var isMutatingActiveCommand = false
     @Published private(set) var latestCommandResponse: CommandResponse? = nil
     @Published private(set) var activeCommandPresentation: BackendCommandPresentation? = nil
     @Published private(set) var undoableCommandID: String? = nil
@@ -143,6 +144,7 @@ final class AppStore: ObservableObject {
         let accessToken: String
         let ownerUserID: String
         let deviceID: String
+        let commandDeviceID: String?
     }
 
     struct KnockAlert: Identifiable, Equatable {
@@ -194,6 +196,14 @@ final class AppStore: ObservableObject {
         activeModelAvailable: Bool
     ) -> Bool {
         forceRefresh || !activeModelAvailable
+    }
+
+    /// A failed descriptor/download must not disable a model that already
+    /// verified on this device. First install still fails closed.
+    nonisolated static func shouldKeepInstalledModelAfterFetchFailure(
+        activeModelAvailable: Bool
+    ) -> Bool {
+        activeModelAvailable
     }
 
     nonisolated static func shouldPersistApiBase(
@@ -399,7 +409,8 @@ final class AppStore: ObservableObject {
             apiBaseURL: apiBaseURL,
             accessToken: accessToken,
             ownerUserID: ownerUserID,
-            deviceID: client.currentDeviceID
+            deviceID: client.currentDeviceID,
+            commandDeviceID: client.commandScopeDeviceID
         )
     }
 
@@ -1088,6 +1099,9 @@ final class AppStore: ObservableObject {
         if currentUserID != nil, accountWillChange {
             try clearActiveCommandForScopeChange()
         }
+        if accountWillChange {
+            client.resetCommandScopeDeviceID()
+        }
         isApplyingAuthenticationScopeMutation = true
         currentUserID = auth.user_id
         UserDefaults.standard.set(auth.user_id, forKey: Self.userIDKey)
@@ -1142,7 +1156,7 @@ final class AppStore: ObservableObject {
         if LocalVoiceRuntimePolicy.strategy() == .deterministicParser {
             let previousController = voiceController
             let replacement = makeVoiceController(
-                generator: DeterministicCommandGenerator(deviceID: scope.deviceID),
+                generator: DeterministicCommandGenerator(deviceID: scope.commandDeviceID),
                 scope: scope
             )
             guard localVoiceScopeIsCurrent(scope) else {
@@ -1172,21 +1186,30 @@ final class AppStore: ObservableObject {
                 forceRefresh: forceRefresh,
                 activeModelAvailable: previousModel != nil
             ) {
-                let descriptorRequest = try makeLocalVoiceRequest(
-                    path: "/v1/phone/models/\(LocalVoiceModelManager.defaultModelID)",
-                    method: "GET",
-                    scope: scope
-                )
-                let descriptor: ModelArtifactDescriptorResponse = try await performLocalVoiceRequest(
-                    descriptorRequest
-                )
-                try Task.checkCancellation()
-                guard localVoiceScopeIsCurrent(scope) else { throw CancellationError() }
-                _ = try await manager.install(
-                    descriptor,
-                    authorizationToken: scope.accessToken,
-                    trustedAPIBaseURL: scope.apiBaseURL
-                )
+                do {
+                    let descriptorRequest = try makeLocalVoiceRequest(
+                        path: "/v1/phone/models/\(LocalVoiceModelManager.defaultModelID)",
+                        method: "GET",
+                        scope: scope
+                    )
+                    let descriptor: ModelArtifactDescriptorResponse = try await performLocalVoiceRequest(
+                        descriptorRequest
+                    )
+                    try Task.checkCancellation()
+                    guard localVoiceScopeIsCurrent(scope) else { throw CancellationError() }
+                    _ = try await manager.install(
+                        descriptor,
+                        authorizationToken: scope.accessToken,
+                        trustedAPIBaseURL: scope.apiBaseURL
+                    )
+                } catch {
+                    if error is CancellationError || !localVoiceScopeIsCurrent(scope) {
+                        throw error
+                    }
+                    guard Self.shouldKeepInstalledModelAfterFetchFailure(
+                        activeModelAvailable: previousModel != nil
+                    ) else { throw error }
+                }
             }
             try Task.checkCancellation()
             guard localVoiceScopeIsCurrent(scope) else { throw CancellationError() }
@@ -1257,7 +1280,7 @@ final class AppStore: ObservableObject {
         using manager: LocalVoiceModelManager,
         scope: LocalVoiceWorkScope
     ) throws -> LocalVoiceCommandController {
-        let generator = try manager.makeCommandGenerator(deviceID: scope.deviceID)
+        let generator = try manager.makeCommandGenerator(deviceID: scope.commandDeviceID)
         return makeVoiceController(generator: generator, scope: scope)
     }
 
@@ -1274,10 +1297,61 @@ final class AppStore: ObservableObject {
                 return try await self.submitLocalCommand(envelope, scope: scope)
             },
             synthesizer: commandSynthesizer,
+            askTarget: { [weak self] in
+                self?.voiceAskTarget()
+            },
+            submitAsk: { [weak self] transcript in
+                guard let self else {
+                    throw APIClientError.network("Knock Knock is no longer available")
+                }
+                return try await self.submitPhoneAsk(transcript, scope: scope)
+            },
             operationIsAllowed: { [weak self] in
                 self?.localVoiceScopeIsCurrent(scope) == true
             }
         )
+    }
+
+    private func voiceAskTarget() -> VoiceAskTarget? {
+        guard let selectedAgentId,
+              let agent = agents.first(where: { $0.agent_id == selectedAgentId })
+        else { return nil }
+        return VoiceAskTarget(agentID: agent.agent_id, label: agent.displayLabel)
+    }
+
+    private func submitPhoneAsk(
+        _ transcript: String,
+        scope: LocalVoiceWorkScope
+    ) async throws -> PhoneAskResponse {
+        try Task.checkCancellation()
+        guard localVoiceScopeIsCurrent(scope),
+              let agentID = selectedAgentId,
+              agents.contains(where: { $0.agent_id == agentID })
+        else { throw CancellationError() }
+        struct Body: Encodable {
+            let transcript: String
+            let locale: String?
+            let idempotency_key: String
+        }
+        let locale = Locale.current.identifier
+        let body = try JSONEncoder().encode(
+            Body(
+                transcript: transcript,
+                locale: locale.count >= 2 && locale.count <= 35 ? locale : nil,
+                idempotency_key: "ask-\(UUID().uuidString)"
+            )
+        )
+        let request = try makeLocalVoiceRequest(
+            path: "/v1/phone/agents/\(agentID)/asks",
+            method: "POST",
+            body: body,
+            scope: scope
+        )
+        let response: PhoneAskResponse = try await performLocalVoiceRequest(request)
+        try Task.checkCancellation()
+        guard localVoiceScopeIsCurrent(scope) else { throw CancellationError() }
+        await refresh()
+        return response
     }
 
     private func submitLocalCommand(
@@ -1290,6 +1364,11 @@ final class AppStore: ObservableObject {
               activeCommandScope.backendOrigin == ActiveCommandScope.origin(for: scope.apiBaseURL),
               activeCommandScope.ownerUserID == scope.ownerUserID
         else { throw CancellationError() }
+        if activeCommandPresentation?.isCancellable == true {
+            try await performCancelActiveCommand(releaseVoiceDock: false)
+            try Task.checkCancellation()
+            guard localVoiceScopeIsCurrent(scope) else { throw CancellationError() }
+        }
         let application: ActiveCommandApplication
         do {
             application = try await activeCommandCoordinator.submit(
@@ -1387,6 +1466,9 @@ final class AppStore: ObservableObject {
             pendingCommandConfirmation = nil
             localStore.clearPendingCommandConfirmation()
         }
+        if CommandLifecycle.isTerminal(response.state) {
+            releaseVoiceDockAfterCommandReleased()
+        }
         guard response.state == "awaiting_confirmation" else { return }
         guard let action = response.action,
               action.confirm_required
@@ -1428,13 +1510,19 @@ final class AppStore: ObservableObject {
 
     func confirmPendingCommand() async {
         guard let confirmation = pendingCommandConfirmation else { return }
+        guard beginActiveCommandMutation() else { return }
+        defer { isMutatingActiveCommand = false }
         errorMessage = nil
         do {
             let response = try await client.confirmCommand(
                 commandID: confirmation.command_id,
                 confirmationToken: confirmation.confirmation_token
             )
-            let canonical = (try? await client.getCommand(commandID: confirmation.command_id)) ?? response
+            let fetched = try? await client.getCommand(commandID: confirmation.command_id)
+            let canonical = CommandLifecycle.snapshotAfterConfirm(
+                confirm: response,
+                get: fetched
+            )
             let accepted = try handleCommandResponse(
                 canonical,
                 expectedCommandID: confirmation.command_id
@@ -1445,26 +1533,132 @@ final class AppStore: ObservableObject {
                 await refresh()
             }
         } catch {
+            if await reconcileCommandLifecycleConflict(
+                commandID: confirmation.command_id,
+                error: error,
+                expected: .confirmation
+            ) {
+                return
+            }
             errorMessage = "Confirmation was not sent. (\(error.localizedDescription))"
         }
     }
 
     func cancelPendingCommand() async {
-        guard let confirmation = pendingCommandConfirmation else { return }
+        await cancelActiveCommand()
+    }
+
+    /// Cancels the confirmation sheet command, or the Home queued command that
+    /// is still blocking the next voice submit.
+    func cancelActiveCommand() async {
+        do {
+            try await performCancelActiveCommand(releaseVoiceDock: true)
+        } catch {
+            if errorMessage == nil {
+                errorMessage = "The command was not cancelled. (\(error.localizedDescription))"
+            }
+        }
+    }
+
+    /// Cancels a queued/awaiting command so the next voice submit is not fenced.
+    /// Voice submit uses this without resetting the dock mid-recording.
+    private func performCancelActiveCommand(releaseVoiceDock: Bool) async throws {
+        let commandID = pendingCommandConfirmation?.command_id
+            ?? activeCommandCoordinator.commandIDForReconciliation
+        guard let commandID else { return }
+        guard beginActiveCommandMutation() else {
+            throw APIClientError.network("A command change is already in progress.")
+        }
+        defer { isMutatingActiveCommand = false }
         errorMessage = nil
         do {
-            let response = try await client.cancelCommand(commandID: confirmation.command_id)
-            let canonical = (try? await client.getCommand(commandID: confirmation.command_id)) ?? response
-            if try handleCommandResponse(
+            let response = try await client.cancelCommand(commandID: commandID)
+            let fetched = try? await client.getCommand(commandID: commandID)
+            let canonical = CommandLifecycle.snapshotAfterConfirm(
+                confirm: response,
+                get: fetched
+            )
+            guard try handleCommandResponse(
                 canonical,
-                expectedCommandID: confirmation.command_id
-            ) {
-                pendingCommandConfirmation = nil
-                localStore.clearPendingCommandConfirmation()
+                expectedCommandID: commandID
+            ) else {
+                throw APIClientError.network("The previous command could not be released.")
+            }
+            pendingCommandConfirmation = nil
+            localStore.clearPendingCommandConfirmation()
+            if releaseVoiceDock {
+                releaseVoiceDockAfterCommandReleased()
                 await refresh()
+            } else {
+                publishActiveCommandState()
             }
         } catch {
-            errorMessage = "The command was not cancelled. (\(error.localizedDescription))"
+            if await reconcileCommandLifecycleConflict(
+                commandID: commandID,
+                error: error,
+                expected: .cancel
+            ) {
+                return
+            }
+            throw error
+        }
+    }
+
+    private enum ActiveCommandMutationKind {
+        case confirmation
+        case cancel
+    }
+
+    private func beginActiveCommandMutation() -> Bool {
+        guard !isMutatingActiveCommand else { return false }
+        isMutatingActiveCommand = true
+        return true
+    }
+
+    /// 409 means the mutation already happened or the lifecycle moved on.
+    /// Apply the durable GET snapshot instead of showing a false failure.
+    private func reconcileCommandLifecycleConflict(
+        commandID: String,
+        error: Error,
+        expected: ActiveCommandMutationKind
+    ) async -> Bool {
+        guard let apiError = error as? APIClientError else { return false }
+        switch expected {
+        case .confirmation:
+            guard apiError.isAlreadyResolvedConfirmationConflict else { return false }
+        case .cancel:
+            guard apiError.isAlreadyResolvedCancelConflict else { return false }
+        }
+        do {
+            let canonical = try await client.getCommand(commandID: commandID)
+            guard try handleCommandResponse(
+                canonical,
+                expectedCommandID: commandID
+            ) else { return false }
+            switch expected {
+            case .confirmation:
+                guard canonical.state != "awaiting_confirmation" else { return false }
+            case .cancel:
+                guard !CommandLifecycle.canCancel(canonical.state) else { return false }
+            }
+            if canonical.state != "awaiting_confirmation" {
+                pendingCommandConfirmation = nil
+                localStore.clearPendingCommandConfirmation()
+            }
+            if CommandLifecycle.isTerminal(canonical.state) {
+                releaseVoiceDockAfterCommandReleased()
+            }
+            await refresh()
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func releaseVoiceDockAfterCommandReleased() {
+        voiceController?.acknowledgeSettledCommand()
+        if case .failed = voiceController?.state {
+            voiceController?.abort()
         }
     }
 
@@ -1494,6 +1688,7 @@ final class AppStore: ObservableObject {
         refreshToken = nil
         currentUserID = nil
         isApplyingAuthenticationScopeMutation = false
+        client.resetCommandScopeDeviceID()
         client.refreshToken = nil
         KeychainStore.delete(account: "refresh-token")
         UserDefaults.standard.removeObject(forKey: Self.userIDKey)
@@ -1517,6 +1712,7 @@ final class AppStore: ObservableObject {
         memoryShadow.cancel()
         MemoryShadowCacheFiles.removeReports()
         pendingOperations = []
+        isMutatingActiveCommand = false
         pendingCommandConfirmation = nil
         latestCommandResponse = nil
         activeCommandPresentation = nil

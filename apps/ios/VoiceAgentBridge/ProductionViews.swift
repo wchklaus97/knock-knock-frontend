@@ -493,8 +493,18 @@ struct LocalVoiceCommandCard: View {
         case .requestingPermissions: return "Waiting for microphone permission…"
         case .listening: return "Listening with voice activity detection…"
         case .processing: return "Understanding locally, then validating with the backend…"
-        case .clarificationRequired: return "I need a clearer date, person, amount, or intent."
+                case .clarificationRequired(.missingSendRecipient):
+                    return "Who should I send this to?"
+                case .clarificationRequired(.missingSendBody):
+                    return "What should I say?"
+                case .clarificationRequired(.selectAgent):
+                    return "Select an agent first."
+                case .clarificationRequired(.agentNotListening):
+                    return "The selected agent is not listening."
+                case .clarificationRequired:
+                    return "I need a clearer date, person, amount, or intent."
         case let .submitted(commandID): return "Submitted \(commandID)."
+        case let .asked(label): return "Asked \(label)."
         case let .failed(message): return message
         }
     }
@@ -512,7 +522,7 @@ private extension LocalVoiceCommandController.State {
         case .listening: return "mic.circle.fill"
         case .processing: return "waveform.badge.magnifyingglass"
         case .clarificationRequired: return "questionmark.circle"
-        case .submitted: return "checkmark.circle"
+        case .submitted, .asked: return "checkmark.circle"
         case .failed: return "exclamationmark.triangle"
         }
     }
@@ -525,21 +535,32 @@ private extension LocalVoiceCommandController.State {
         case .processing: return "Understanding…"
         case .clarificationRequired: return "Try again"
         case .submitted: return "Sent"
-        case .failed: return "Unavailable"
+        case .asked: return "Asked"
+        case .failed: return "Needs attention"
         }
     }
 
-    var dockActionLabel: String {
-        switch self {
-        case .idle: return "Hold and speak a command"
-        case .requestingPermissions: return "Allow microphone and speech access"
-        case .listening: return "Listening…"
-        case .processing: return "Understanding your command…"
-        case .clarificationRequired: return "I didn’t catch that. Hold and try again"
-        case .submitted: return "Sent for backend validation"
-        case let .failed(message): return message
+        var dockActionLabel: String {
+            switch self {
+            case .idle: return "Hold and speak a command"
+            case .requestingPermissions: return "Allow microphone and speech access"
+            case .listening: return "Listening…"
+            case .processing: return "Understanding your command…"
+            case .clarificationRequired(.missingSendRecipient):
+                return "Who should I send this to?"
+            case .clarificationRequired(.missingSendBody):
+                return "What should I say?"
+            case .clarificationRequired(.selectAgent):
+                return "Select an agent first."
+            case .clarificationRequired(.agentNotListening):
+                return "The selected agent is not listening."
+            case .clarificationRequired:
+                return "I didn’t catch that. Hold and try again"
+            case .submitted: return "Sent for backend validation"
+            case let .asked(label): return "Asked \(label)."
+            case let .failed(message): return message
+            }
         }
-    }
 
     var dockAccessibilityValue: String {
         switch self {
@@ -549,6 +570,7 @@ private extension LocalVoiceCommandController.State {
         case .processing: return "Processing"
         case .clarificationRequired: return "Needs clarification"
         case .submitted: return "Submitted"
+        case let .asked(label): return "Asked \(label)"
         case let .failed(message): return "Failed: \(message)"
         }
     }
@@ -1004,22 +1026,41 @@ struct AgentHomeRow: View {
 }
 
 struct HomeCommandPresentationCard: View {
+    @EnvironmentObject private var store: AppStore
     let presentation: BackendCommandPresentation
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: presentation.isTerminal ? "checkmark.circle.fill" : "clock.fill")
-                .foregroundStyle(presentation.isTerminal ? KnockDesign.mint : KnockDesign.lavender)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(presentation.title)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(KnockDesign.ink)
-                Text(presentation.message)
-                    .font(.caption)
-                    .foregroundStyle(KnockDesign.muted)
-                    .fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: presentation.isTerminal ? "checkmark.circle.fill" : "clock.fill")
+                    .foregroundStyle(presentation.isTerminal ? KnockDesign.mint : KnockDesign.lavender)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(presentation.title)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(KnockDesign.ink)
+                    Text(presentation.message)
+                        .font(.caption)
+                        .foregroundStyle(KnockDesign.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let hint = presentation.nextStepHint {
+                        Text(hint)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(KnockDesign.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("voice.command.presentation")
             Spacer(minLength: 4)
+            if presentation.isCancellable {
+                Button("Cancel", role: .destructive) {
+                    Task { await store.cancelActiveCommand() }
+                }
+                .font(.caption.weight(.semibold))
+                .disabled(store.isMutatingActiveCommand)
+                .accessibilityIdentifier("voice.command.cancel")
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1029,37 +1070,330 @@ struct HomeCommandPresentationCard: View {
                 .stroke(KnockDesign.border, lineWidth: 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("voice.command.presentation")
+    }
+}
+
+struct HomeVoiceDockCopy: Equatable {
+    let title: String
+    let status: String
+    let action: String
+    let accessibilityValue: String
+    let accessibilityHint: String
+    let usesActiveColor: Bool
+    let systemImage: String
+
+    static func make(
+        voice: LocalVoiceCommandController.State,
+        isFollowUpListen: Bool,
+        followUpListenIsBody: Bool = false,
+        targetLabel: String?,
+        presentation: BackendCommandPresentation?,
+        isAwaitingConfirmation: Bool
+    ) -> HomeVoiceDockCopy {
+        let holdTitle = targetLabel.map { "Ask \($0)" } ?? "Hold to speak"
+        switch voice {
+        case .requestingPermissions:
+            return .init(
+                title: holdTitle,
+                status: "Permission needed",
+                action: "Allow microphone and speech access",
+                accessibilityValue: "Permission needed",
+                accessibilityHint: "Allow microphone and speech access.",
+                usesActiveColor: false,
+                systemImage: "mic.circle"
+            )
+        case .listening where isFollowUpListen:
+            if followUpListenIsBody {
+                return .init(
+                    title: "Don’t press",
+                    status: "Listening",
+                    action: "Say the message. Don’t hold the button.",
+                    accessibilityValue: "Listening",
+                    accessibilityHint: "Speak the message. Do not press the dock.",
+                    usesActiveColor: true,
+                    systemImage: "mic.circle.fill"
+                )
+            }
+            return .init(
+                title: "Don’t press",
+                status: "Listening",
+                action: "Say the name. Don’t hold the button.",
+                accessibilityValue: "Listening",
+                accessibilityHint: "Speak the recipient name. Do not press the dock.",
+                usesActiveColor: true,
+                systemImage: "mic.circle.fill"
+            )
+        case .listening:
+            return .init(
+                title: holdTitle,
+                status: "Release to submit",
+                action: "Listening…",
+                accessibilityValue: "Listening",
+                accessibilityHint: "Hold to speak a command. Release to submit it for backend validation.",
+                usesActiveColor: true,
+                systemImage: "mic.circle.fill"
+            )
+        case .processing:
+            return .init(
+                title: holdTitle,
+                status: "Understanding…",
+                action: "Understanding your command…",
+                accessibilityValue: "Processing",
+                accessibilityHint: "Understanding your command.",
+                usesActiveColor: true,
+                systemImage: "waveform.badge.magnifyingglass"
+            )
+        case .clarificationRequired(.missingSendRecipient):
+            return .init(
+                title: "Don’t press",
+                status: "Say a name",
+                action: "Who should I send this to? Don’t press. Just say the name.",
+                accessibilityValue: "Needs clarification",
+                accessibilityHint: "Say the recipient name. Do not press the dock.",
+                usesActiveColor: false,
+                systemImage: "questionmark.circle"
+            )
+        case .clarificationRequired(.missingSendBody):
+            return .init(
+                title: "Don’t press",
+                status: "Say the message",
+                action: "What should I say? Don’t press. Just say the message.",
+                accessibilityValue: "Needs clarification",
+                accessibilityHint: "Say the message. Do not press the dock.",
+                usesActiveColor: false,
+                systemImage: "questionmark.circle"
+            )
+        case .clarificationRequired(.selectAgent):
+            return .init(
+                title: holdTitle,
+                status: "Select an agent",
+                action: "Select an agent first.",
+                accessibilityValue: "Needs clarification",
+                accessibilityHint: "Select an agent on Home, then hold to speak.",
+                usesActiveColor: false,
+                systemImage: "questionmark.circle"
+            )
+        case .clarificationRequired(.agentNotListening):
+            let label = targetLabel ?? "The selected agent"
+            return .init(
+                title: holdTitle,
+                status: "Not listening",
+                action: "\(label) is not listening.",
+                accessibilityValue: "Needs clarification",
+                accessibilityHint: "Open the Mac host and keep Knock Knock MCP polling.",
+                usesActiveColor: false,
+                systemImage: "questionmark.circle"
+            )
+        case .clarificationRequired:
+            return .init(
+                title: holdTitle,
+                status: "Try again",
+                action: "I didn’t catch that. Hold and try again",
+                accessibilityValue: "Needs clarification",
+                accessibilityHint: "Hold to speak a command. Release to submit it for backend validation.",
+                usesActiveColor: false,
+                systemImage: "questionmark.circle"
+            )
+        case let .asked(label):
+            return .init(
+                title: holdTitle,
+                status: "Asked",
+                action: "Asked \(label).",
+                accessibilityValue: "Asked \(label)",
+                accessibilityHint: "The selected agent received this ask.",
+                usesActiveColor: false,
+                systemImage: "checkmark.circle"
+            )
+        case .idle, .submitted, .failed:
+            if isAwaitingConfirmation {
+                return .init(
+                    title: holdTitle,
+                    status: "Needs confirm",
+                    action: "Confirm this command",
+                    accessibilityValue: "Submitted",
+                    accessibilityHint: "Confirm the command in the sheet.",
+                    usesActiveColor: false,
+                    systemImage: "hand.raised"
+                )
+            }
+            if let presentation {
+                return lifecycleCopy(presentation, title: holdTitle, voice: voice)
+            }
+            if case let .failed(message) = voice {
+                return .init(
+                    title: holdTitle,
+                    status: "Needs attention",
+                    action: message,
+                    accessibilityValue: "Failed: \(message)",
+                    accessibilityHint: message,
+                    usesActiveColor: false,
+                    systemImage: "exclamationmark.triangle"
+                )
+            }
+            return .init(
+                title: holdTitle,
+                status: "Push to talk",
+                action: targetLabel.map { "Hold and speak to \($0)" } ?? "Hold and speak a command",
+                accessibilityValue: "Ready",
+                accessibilityHint: targetLabel == nil
+                    ? "Hold to speak a command. Release to submit it for backend validation."
+                    : "Hold to ask the selected agent. Send, remind, draft, and history stay local.",
+                usesActiveColor: false,
+                systemImage: "mic.circle"
+            )
+        }
+    }
+
+    private static func lifecycleCopy(
+        _ presentation: BackendCommandPresentation,
+        title: String,
+        voice: LocalVoiceCommandController.State
+    ) -> HomeVoiceDockCopy {
+        let failedValue: String? = {
+            if case let .failed(message) = voice { return "Failed: \(message)" }
+            return nil
+        }()
+        switch presentation.state {
+        case "submitting":
+            return .init(
+                title: title,
+                status: "Sending",
+                action: "Sending command…",
+                accessibilityValue: failedValue ?? "Submitted",
+                accessibilityHint: "The command is still being sent.",
+                usesActiveColor: false,
+                systemImage: "arrow.up.circle"
+            )
+        case "awaiting_confirmation":
+            return .init(
+                title: title,
+                status: "Needs confirm",
+                action: "Confirm this command",
+                accessibilityValue: failedValue ?? "Submitted",
+                accessibilityHint: "Confirm the command in the sheet.",
+                usesActiveColor: false,
+                systemImage: "hand.raised"
+            )
+        case "queued", "pending", "validated", "retryable":
+            return .init(
+                title: title,
+                status: "Queued",
+                action: "Queued. Cancel above, then speak again.",
+                accessibilityValue: failedValue ?? "Submitted",
+                accessibilityHint: "Cancel the queued command on Home, then speak again.",
+                usesActiveColor: false,
+                systemImage: "clock"
+            )
+        case "running":
+            return .init(
+                title: title,
+                status: "Working",
+                action: "This command is still running.",
+                accessibilityValue: failedValue ?? "Submitted",
+                accessibilityHint: "Wait for the command to finish, or cancel it if Cancel is shown.",
+                usesActiveColor: false,
+                systemImage: "clock.fill"
+            )
+        case "succeeded":
+            return .init(
+                title: title,
+                status: "Done",
+                action: presentation.message,
+                accessibilityValue: failedValue ?? "Done",
+                accessibilityHint: presentation.message,
+                usesActiveColor: false,
+                systemImage: "checkmark.circle"
+            )
+        case "failed":
+            return .init(
+                title: title,
+                status: "Didn’t finish",
+                action: presentation.message,
+                accessibilityValue: failedValue ?? "Failed",
+                accessibilityHint: presentation.message,
+                usesActiveColor: false,
+                systemImage: "exclamationmark.triangle"
+            )
+        case "cancelled":
+            return .init(
+                title: title,
+                status: "Cancelled",
+                action: presentation.message,
+                accessibilityValue: failedValue ?? "Cancelled",
+                accessibilityHint: presentation.message,
+                usesActiveColor: false,
+                systemImage: "xmark.circle"
+            )
+        case "expired":
+            return .init(
+                title: title,
+                status: "Expired",
+                action: presentation.message,
+                accessibilityValue: failedValue ?? "Expired",
+                accessibilityHint: presentation.message,
+                usesActiveColor: false,
+                systemImage: "clock"
+            )
+        default:
+            return .init(
+                title: title,
+                status: "In progress",
+                action: presentation.message,
+                accessibilityValue: failedValue ?? "Submitted",
+                accessibilityHint: presentation.nextStepHint ?? presentation.message,
+                usesActiveColor: false,
+                systemImage: "clock"
+            )
+        }
     }
 }
 
 struct HomeVoiceDock: View {
     @ObservedObject var controller: LocalVoiceCommandController
     let targetLabel: String?
+    var presentation: BackendCommandPresentation? = nil
+    var isAwaitingConfirmation = false
+
+    private var copy: HomeVoiceDockCopy {
+        HomeVoiceDockCopy.make(
+            voice: controller.state,
+            isFollowUpListen: controller.isFollowUpListen,
+            followUpListenIsBody: controller.followUpListenIsBody,
+            targetLabel: targetLabel,
+            presentation: presentation,
+            isAwaitingConfirmation: isAwaitingConfirmation
+        )
+    }
 
     var body: some View {
         VStack(spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: controller.state.isListening ? "waveform" : "mic.fill")
                     .foregroundStyle(KnockDesign.coral)
-                Text(targetLabel.map { "Ask \($0)" } ?? "Hold to speak")
+                Text(copy.title)
                     .font(.subheadline.weight(.bold))
                     .foregroundStyle(KnockDesign.ink)
                 Spacer()
-                Text(controller.state.dockStatusLabel)
+                Text(copy.status)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(KnockDesign.muted)
             }
+            if !controller.transcript.isEmpty {
+                Text(controller.transcript)
+                    .font(.caption)
+                    .foregroundStyle(KnockDesign.ink)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("voice.dock.transcript")
+            }
             HStack(spacing: 9) {
-                Image(systemName: controller.state.dockSystemImage)
-                Text(controller.state.dockActionLabel)
+                Image(systemName: copy.systemImage)
+                Text(copy.action)
             }
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(.white)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 12)
-            .background(controller.state.usesActiveDockColor ? KnockDesign.lavender : KnockDesign.coral)
+            .background(copy.usesActiveColor ? KnockDesign.lavender : KnockDesign.coral)
             .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
             .onLongPressGesture(minimumDuration: 0, maximumDistance: 44, pressing: { pressing in
@@ -1071,8 +1405,8 @@ struct HomeVoiceDock: View {
             }, perform: {})
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Push to talk")
-            .accessibilityValue(controller.state.dockAccessibilityValue)
-            .accessibilityHint("Hold to speak a command. Release to submit it for backend validation.")
+            .accessibilityValue(copy.accessibilityValue)
+            .accessibilityHint(copy.accessibilityHint)
             .accessibilityIdentifier("voice.dock")
         }
         .padding(.horizontal, 16)
@@ -1112,7 +1446,6 @@ struct ProductionHomeView: View {
     let onOpenDrawer: () -> Void
 
     @State private var scope: HomeScope = .today
-    @State private var focusedAgentId: String?
 
     private var scopedSessions: [Session] {
         store.sessions
@@ -1217,9 +1550,8 @@ struct ProductionHomeView: View {
                                 AgentHomeRow(
                                     summary: summary,
                                     scope: scope,
-                                    focused: focusedAgentId == summary.agent.agent_id,
+                                    focused: store.selectedAgentId == summary.agent.agent_id,
                                     onFocus: {
-                                        focusedAgentId = summary.agent.agent_id
                                         store.selectAgent(summary.agent.agent_id)
                                     }
                                 )
@@ -1266,9 +1598,11 @@ struct ProductionHomeView: View {
                     if let controller = store.voiceController {
                         HomeVoiceDock(
                             controller: controller,
-                            targetLabel: focusedAgentId.flatMap { id in
+                            targetLabel: store.selectedAgentId.flatMap { id in
                                 store.agents.first { $0.agent_id == id }?.displayLabel
-                            }
+                            },
+                            presentation: store.activeCommandPresentation,
+                            isAwaitingConfirmation: store.pendingCommandConfirmation != nil
                         )
                     } else {
                         HomeVoicePrepareDock {
@@ -1436,7 +1770,7 @@ struct ProductionCommandConfirmationSheet: View {
                             Text(confirmation.title)
                                 .font(.headline.weight(.bold))
                             RiskBadge(risk: DecisionRisk(actionRisk: confirmation.risk))
-                            Text("Confirming will send this command to the agent. Not now keeps it pending; it does not cancel it.")
+                            Text("Confirming will run this phone command. It does not send it to the Home agent. Not now keeps it pending; it does not cancel it.")
                                 .font(.subheadline)
                                 .foregroundStyle(KnockDesign.muted)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -1454,6 +1788,7 @@ struct ProductionCommandConfirmationSheet: View {
                             .background(KnockDesign.coral)
                             .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
                     }
+                    .disabled(store.isMutatingActiveCommand)
                     .accessibilityIdentifier("command.confirm")
 
                     Button("Not now") {
@@ -1474,6 +1809,7 @@ struct ProductionCommandConfirmationSheet: View {
                     }
                     .font(.subheadline.weight(.semibold))
                     .frame(maxWidth: .infinity)
+                    .disabled(store.isMutatingActiveCommand)
                     .accessibilityIdentifier("command.cancel")
                     Spacer()
                 }

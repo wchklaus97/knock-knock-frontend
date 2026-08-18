@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://voice-agent-bridge.local/schemas/mcp-tools.json",
   "title": "Voice Agent Bridge MCP Tools",
-  "description": "Five MCP tools for @vab/mcp. Auth: BRIDGE_AGENT_KEY → X-Agent-Key. Base URL: BRIDGE_API_URL (default http://127.0.0.1:8787).\n\nPush semantics:\n- update_progress NEVER pushes (push: false).\n- report_event MAY push when status is needs_user, or succeeded/failed with actions / force_push (push: maybe).",
+  "description": "Six MCP tools for @vab/mcp. Auth: BRIDGE_AGENT_KEY → X-Agent-Key. Base URL: BRIDGE_API_URL (default http://127.0.0.1:8787).\n\nPush semantics:\n- update_progress NEVER pushes (push: false).\n- report_event MAY push when status is needs_user, or succeeded/failed with actions / force_push (push: maybe).",
   "tools": [
     {
       "name": "create_or_resume_session",
@@ -21,6 +21,24 @@
           "title": { "type": "string" },
           "facts": { "type": "object", "additionalProperties": true },
           "metadata": { "type": "object", "additionalProperties": true }
+        }
+      }
+    },
+    {
+      "name": "get_user_asks",
+      "description": "Poll hold-to-speak asks from the iPhone. If asks is non-empty, resume session_id with skill_id phone.ask. Poll while idle so the phone can detect a listening host.",
+      "http": {
+        "method": "GET",
+        "path": "/v1/agents/me/asks",
+        "auth": "AgentKey"
+      },
+      "push": false,
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "claim": { "type": "boolean", "default": true },
+          "wait_ms": { "type": "integer", "minimum": 0, "maximum": 30000 }
         }
       }
     },

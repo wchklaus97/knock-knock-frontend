@@ -96,6 +96,270 @@ final class BackendCommandPresentationTests: XCTestCase {
         XCTAssertFalse(presentation.message.contains("MODEL CONTROLLED SECRET"))
     }
 
+    func testQueuedPresentationCanBeCancelledAndRunningCannot() throws {
+        let queued = BackendCommandPresentation(
+            response: try Self.response(state: "queued", result: nil, version: 2)
+        )
+        XCTAssertTrue(queued.isCancellable)
+        XCTAssertFalse(queued.isTerminal)
+        XCTAssertEqual(queued.nextStepHint, "Cancel to speak another command.")
+
+        let awaiting = BackendCommandPresentation(
+            response: try Self.response(state: "awaiting_confirmation", result: nil, version: 1)
+        )
+        XCTAssertTrue(awaiting.isCancellable)
+        XCTAssertEqual(awaiting.nextStepHint, "Confirm this command to continue.")
+
+        let running = BackendCommandPresentation(
+            response: try Self.response(state: "running", result: nil, version: 3)
+        )
+        XCTAssertFalse(running.isCancellable)
+        XCTAssertFalse(running.isTerminal)
+        XCTAssertNil(running.nextStepHint)
+
+        let succeeded = BackendCommandPresentation(
+            response: try Self.response(state: "succeeded", result: nil, version: 4)
+        )
+        XCTAssertFalse(succeeded.isCancellable)
+        XCTAssertTrue(succeeded.isTerminal)
+        XCTAssertNil(succeeded.nextStepHint)
+    }
+
+    func testHomeVoiceDockCopyMatchesLifecycleAndFollowUp() throws {
+        let queued = BackendCommandPresentation(
+            response: try Self.response(state: "queued", result: nil, version: 2)
+        )
+        let followUp = HomeVoiceDockCopy.make(
+            voice: .listening,
+            isFollowUpListen: true,
+            targetLabel: nil,
+            presentation: nil,
+            isAwaitingConfirmation: false
+        )
+        XCTAssertEqual(followUp.title, "Don’t press")
+        XCTAssertEqual(followUp.status, "Listening")
+        XCTAssertEqual(followUp.action, "Say the name. Don’t hold the button.")
+        XCTAssertEqual(followUp.accessibilityValue, "Listening")
+
+        let ask = HomeVoiceDockCopy.make(
+            voice: .clarificationRequired(.missingSendRecipient),
+            isFollowUpListen: false,
+            targetLabel: nil,
+            presentation: nil,
+            isAwaitingConfirmation: false
+        )
+        XCTAssertEqual(ask.status, "Say a name")
+        XCTAssertTrue(ask.action.contains("Don’t press"))
+        XCTAssertEqual(ask.accessibilityValue, "Needs clarification")
+
+        let askBody = HomeVoiceDockCopy.make(
+            voice: .clarificationRequired(.missingSendBody),
+            isFollowUpListen: false,
+            targetLabel: nil,
+            presentation: nil,
+            isAwaitingConfirmation: false
+        )
+        XCTAssertEqual(askBody.status, "Say the message")
+        XCTAssertTrue(askBody.action.contains("What should I say?"))
+
+        let bodyListen = HomeVoiceDockCopy.make(
+            voice: .listening,
+            isFollowUpListen: true,
+            followUpListenIsBody: true,
+            targetLabel: nil,
+            presentation: nil,
+            isAwaitingConfirmation: false
+        )
+        XCTAssertEqual(bodyListen.action, "Say the message. Don’t hold the button.")
+
+        let sentQueued = HomeVoiceDockCopy.make(
+            voice: .submitted("cmd_1"),
+            isFollowUpListen: false,
+            targetLabel: nil,
+            presentation: queued,
+            isAwaitingConfirmation: false
+        )
+        XCTAssertEqual(sentQueued.status, "Queued")
+        XCTAssertEqual(sentQueued.action, "Queued. Cancel above, then speak again.")
+        XCTAssertEqual(sentQueued.accessibilityValue, "Submitted")
+
+        let needsConfirm = HomeVoiceDockCopy.make(
+            voice: .submitted("cmd_1"),
+            isFollowUpListen: false,
+            targetLabel: nil,
+            presentation: queued,
+            isAwaitingConfirmation: true
+        )
+        XCTAssertEqual(needsConfirm.status, "Needs confirm")
+        XCTAssertEqual(needsConfirm.action, "Confirm this command")
+
+        let failed = BackendCommandPresentation(
+            response: try Self.response(
+                state: "failed",
+                result: nil,
+                presentation: Self.presentation(
+                    displayText: "Command status: failed.",
+                    terminal: true
+                ),
+                version: 3
+            )
+        )
+        let leftoverWait = HomeVoiceDockCopy.make(
+            voice: .submitted("cmd_1"),
+            isFollowUpListen: false,
+            targetLabel: nil,
+            presentation: failed,
+            isAwaitingConfirmation: false
+        )
+        XCTAssertEqual(leftoverWait.status, "Didn’t finish")
+        XCTAssertEqual(leftoverWait.action, "Command status: failed.")
+        XCTAssertNotEqual(leftoverWait.status, "Queued")
+        XCTAssertNotEqual(leftoverWait.action, "Sent. Waiting for the next server update.")
+
+        let succeeded = BackendCommandPresentation(
+            response: try Self.response(state: "succeeded", result: nil, version: 4)
+        )
+        let done = HomeVoiceDockCopy.make(
+            voice: .submitted("cmd_1"),
+            isFollowUpListen: false,
+            targetLabel: nil,
+            presentation: succeeded,
+            isAwaitingConfirmation: false
+        )
+        XCTAssertEqual(done.status, "Done")
+        XCTAssertEqual(done.action, "Command status: succeeded.")
+
+        let released = HomeVoiceDockCopy.make(
+            voice: .submitted("cmd_1"),
+            isFollowUpListen: false,
+            targetLabel: nil,
+            presentation: nil,
+            isAwaitingConfirmation: false
+        )
+        XCTAssertEqual(released.status, "Push to talk")
+        XCTAssertEqual(released.action, "Hold and speak a command")
+        XCTAssertEqual(released.accessibilityValue, "Ready")
+
+        let askAgent = HomeVoiceDockCopy.make(
+            voice: .idle,
+            isFollowUpListen: false,
+            targetLabel: "apns-diagnostic",
+            presentation: nil,
+            isAwaitingConfirmation: false
+        )
+        XCTAssertEqual(askAgent.title, "Ask apns-diagnostic")
+        XCTAssertEqual(askAgent.action, "Hold and speak to apns-diagnostic")
+
+        let asked = HomeVoiceDockCopy.make(
+            voice: .asked("apns-diagnostic"),
+            isFollowUpListen: false,
+            targetLabel: "apns-diagnostic",
+            presentation: nil,
+            isAwaitingConfirmation: false
+        )
+        XCTAssertEqual(asked.status, "Asked")
+        XCTAssertEqual(asked.action, "Asked apns-diagnostic.")
+
+        let selectAgent = HomeVoiceDockCopy.make(
+            voice: .clarificationRequired(.selectAgent),
+            isFollowUpListen: false,
+            targetLabel: nil,
+            presentation: nil,
+            isAwaitingConfirmation: false
+        )
+        XCTAssertEqual(selectAgent.status, "Select an agent")
+        XCTAssertEqual(selectAgent.action, "Select an agent first.")
+
+        let notListening = HomeVoiceDockCopy.make(
+            voice: .clarificationRequired(.agentNotListening),
+            isFollowUpListen: false,
+            targetLabel: "apns-diagnostic",
+            presentation: nil,
+            isAwaitingConfirmation: false
+        )
+        XCTAssertEqual(notListening.status, "Not listening")
+        XCTAssertEqual(notListening.action, "apns-diagnostic is not listening.")
+    }
+
+    func testCommandLifecycleConflictsAreDetectedFrom409Copy() {
+        let emptyMetadata = APIErrorMetadata(retryable: false, retryAfter: nil, requestID: nil)
+        XCTAssertTrue(
+            APIClientError.badStatus(
+                409,
+                "Command is not awaiting confirmation",
+                emptyMetadata
+            ).isAlreadyResolvedConfirmationConflict
+        )
+        XCTAssertTrue(
+            APIClientError.badStatus(
+                409,
+                "The selected agent is not listening.",
+                APIErrorMetadata(
+                    retryable: false,
+                    retryAfter: nil,
+                    requestID: nil,
+                    errorCode: "agent_not_listening"
+                )
+            ).isAgentNotListening
+        )
+        XCTAssertFalse(
+            APIClientError.badStatus(
+                409,
+                "Command is not awaiting confirmation",
+                emptyMetadata
+            ).isAgentNotListening
+        )
+        XCTAssertTrue(
+            APIClientError.badStatus(
+                409,
+                "Confirmation token was already used",
+                emptyMetadata
+            ).isAlreadyResolvedConfirmationConflict
+        )
+        XCTAssertFalse(
+            APIClientError.badStatus(
+                409,
+                "Command is not awaiting confirmation",
+                emptyMetadata
+            ).isAlreadyResolvedCancelConflict
+        )
+        XCTAssertTrue(
+            APIClientError.badStatus(
+                409,
+                "Command cannot be cancelled in its current state",
+                emptyMetadata
+            ).isAlreadyResolvedCancelConflict
+        )
+        XCTAssertTrue(
+            APIClientError.badStatus(
+                409,
+                "Command changed before it could be cancelled",
+                emptyMetadata
+            ).isAlreadyResolvedCancelConflict
+        )
+        XCTAssertFalse(
+            APIClientError.badStatus(
+                409,
+                "The command effect already started and must finish reconciliation before it can be undone",
+                emptyMetadata
+            ).isAlreadyResolvedCancelConflict
+        )
+        XCTAssertFalse(
+            APIClientError.badStatus(
+                409,
+                "Some other conflict",
+                emptyMetadata
+            ).isAlreadyResolvedConfirmationConflict
+        )
+        XCTAssertFalse(
+            APIClientError.badStatus(
+                400,
+                "Command is not awaiting confirmation",
+                emptyMetadata
+            ).isAlreadyResolvedConfirmationConflict
+        )
+    }
+
     func testMissingOrInvalidPresentationIsGenericAndSilent() throws {
         let missing = BackendCommandPresentation(
             response: try Self.response(
@@ -297,6 +561,137 @@ final class BackendCommandPresentationTests: XCTestCase {
         ) { error in
             XCTAssertEqual(error as? ActiveCommandCheckpointError, .commandInProgress("cmd_active"))
         }
+    }
+
+    func testConfirmSnapshotKeepsDisabledFailureInsteadOfLaggingQueuedGet() throws {
+        let confirm = try Self.response(
+            commandID: "cmd_send",
+            state: "failed",
+            result: nil,
+            presentation: Self.presentation(
+                displayText: "The backend could not complete this command.",
+                terminal: true
+            ),
+            version: 4
+        )
+        let queuedGet = try Self.response(
+            commandID: "cmd_send",
+            state: "queued",
+            result: nil,
+            version: 3
+        )
+        let chosen = CommandLifecycle.snapshotAfterConfirm(confirm: confirm, get: queuedGet)
+        XCTAssertEqual(chosen.state, "failed")
+        XCTAssertNotEqual(chosen.state, "queued")
+        XCTAssertEqual(chosen.version, 4)
+
+        let failedGet = try Self.response(
+            commandID: "cmd_send",
+            state: "failed",
+            result: nil,
+            presentation: Self.presentation(
+                displayText: "The backend could not complete this command.",
+                terminal: true
+            ),
+            version: 5
+        )
+        let queuedConfirm = try Self.response(
+            commandID: "cmd_send",
+            state: "queued",
+            result: nil,
+            version: 3
+        )
+        let drainedGet = CommandLifecycle.snapshotAfterConfirm(
+            confirm: queuedConfirm,
+            get: failedGet
+        )
+        XCTAssertEqual(drainedGet.state, "failed")
+        XCTAssertEqual(drainedGet.version, 5)
+
+        let newerQueuedGet = try Self.response(
+            commandID: "cmd_send",
+            state: "queued",
+            result: nil,
+            version: 5
+        )
+        let failedOverNewerQueued = CommandLifecycle.snapshotAfterConfirm(
+            confirm: confirm,
+            get: newerQueuedGet
+        )
+        XCTAssertEqual(failedOverNewerQueued.state, "failed")
+        XCTAssertNotEqual(failedOverNewerQueued.state, "queued")
+        XCTAssertEqual(failedOverNewerQueued.version, 4)
+
+        let cancelled = try Self.response(
+            commandID: "cmd_send",
+            state: "cancelled",
+            result: nil,
+            presentation: Self.presentation(
+                displayText: "The command was cancelled.",
+                terminal: true
+            ),
+            version: 4
+        )
+        let cancelKeepsTerminal = CommandLifecycle.snapshotAfterConfirm(
+            confirm: cancelled,
+            get: newerQueuedGet
+        )
+        XCTAssertEqual(cancelKeepsTerminal.state, "cancelled")
+        XCTAssertNotEqual(cancelKeepsTerminal.state, "queued")
+    }
+
+    func testDisabledSendConfirmFailedReleasesNextSpeakFence() throws {
+        let current = Self.checkpoint(
+            phase: .acknowledged,
+            commandID: "cmd_send",
+            state: "awaiting_confirmation",
+            version: 2
+        )
+        let failed = try Self.response(
+            commandID: "cmd_send",
+            state: "failed",
+            result: nil,
+            presentation: Self.presentation(
+                displayText: "The backend could not complete this command.",
+                terminal: true
+            ),
+            version: 4
+        )
+        guard case let .replace(next) = ActiveCommandCheckpointReducer.apply(
+            response: failed,
+            expectedCommandID: "cmd_send",
+            current: current
+        ) else {
+            return XCTFail("disabled send_message confirm must replace awaiting_confirmation")
+        }
+        XCTAssertEqual(next.backendState, "failed")
+        XCTAssertNotEqual(next.backendState, "queued")
+        XCTAssertEqual(next.phase, .terminalPendingPresentation)
+
+        let presentation = try XCTUnwrap(BackendCommandPresentation(checkpoint: next))
+        XCTAssertTrue(presentation.isTerminal)
+        XCTAssertFalse(presentation.isCancellable)
+        let dock = HomeVoiceDockCopy.make(
+            voice: .submitted("cmd_send"),
+            isFollowUpListen: false,
+            targetLabel: nil,
+            presentation: presentation,
+            isAwaitingConfirmation: false
+        )
+        XCTAssertEqual(dock.status, "Didn’t finish")
+        XCTAssertNotEqual(dock.status, "Queued")
+
+        XCTAssertNoThrow(
+            try ActiveCommandCheckpointReducer.start(
+                current: next,
+                envelope: Self.envelope(commandID: "cmd_next"),
+                scope: try XCTUnwrap(ActiveCommandScope(
+                    backendURL: URL(string: "https://api.example.com"),
+                    ownerUserID: "usr_stable"
+                )),
+                createdAt: Date(timeIntervalSince1970: 400)
+            )
+        )
     }
 
     func testJournalIsDurableBeforePost() async throws {
@@ -899,6 +1294,45 @@ final class BackendCommandPresentationTests: XCTestCase {
         }
         XCTAssertNil(next.pendingConfirmation)
         XCTAssertEqual(next.backendVersion, 9)
+    }
+
+    func testSameVersionGetWithoutTokenKeepsJournaledConfirmation() throws {
+        let confirmation = PendingCommandConfirmation(
+            command_id: "cmd_confirmation_get",
+            confirmation_token: "durable-one-time-token",
+            title: "Send message",
+            risk: "high",
+            confirm_required: true,
+            reversible: false
+        )
+        let current = ActiveCommandCheckpoint(
+            phase: .acknowledged,
+            commandID: "cmd_confirmation_get",
+            backendState: "awaiting_confirmation",
+            backendVersion: 2,
+            envelope: nil,
+            validatedPresentation: nil,
+            pendingConfirmation: confirmation,
+            lastAnnouncedVersion: nil,
+            backendOrigin: "https://api.example.com:443",
+            ownerUserID: "usr_stable",
+            createdAt: Date(timeIntervalSince1970: 100)
+        )
+        let getWithoutToken = try Self.response(
+            commandID: "cmd_confirmation_get",
+            state: "awaiting_confirmation",
+            result: nil,
+            version: 2
+        )
+
+        XCTAssertEqual(
+            ActiveCommandCheckpointReducer.apply(
+                response: getWithoutToken,
+                expectedCommandID: "cmd_confirmation_get",
+                current: current
+            ),
+            .idempotent
+        )
     }
 
     func testColdStartTerminalPresentationAndBackendTTSAreExactlyOncePerVersion() throws {

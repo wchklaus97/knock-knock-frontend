@@ -46,12 +46,21 @@ struct AuthResponse: Decodable {
     }
 }
 
+struct DeviceRegistrationResponse: Decodable, Equatable {
+    let device_id: String
+    let platform: String
+    let push_token_registered: Bool
+    let locale: String?
+    let timezone: String?
+}
+
 struct Agent: Codable, Identifiable, Hashable {
     let agent_id: String
     let user_id: String
     let label: String
     let host_label: String?
     let created_at: String
+    let last_seen_at: String?
 
     var id: String { agent_id }
     var displayLabel: String { label.isEmpty ? (host_label ?? agent_id) : label }
@@ -986,12 +995,43 @@ enum CommandLifecycle {
         "succeeded", "failed", "expired", "cancelled",
     ]
 
+    static let cancellableStates: Set<String> = [
+        "pending", "validated", "awaiting_confirmation", "queued", "retryable",
+    ]
+
     static func isKnown(_ state: String) -> Bool {
         knownStates.contains(state)
     }
 
     static func isTerminal(_ state: String) -> Bool {
         terminalStates.contains(state)
+    }
+
+    static func canCancel(_ state: String) -> Bool {
+        cancellableStates.contains(state)
+    }
+
+    /// Confirm and cancel are mutation responses. A following GET can still
+    /// show `queued` if it races an in-request outbox drain. Keep the terminal
+    /// mutation snapshot so Home leaves Queued and the next speak is not fenced.
+    static func snapshotAfterConfirm(
+        confirm: CommandResponse,
+        get: CommandResponse?
+    ) -> CommandResponse {
+        guard let get, get.command_id == confirm.command_id else { return confirm }
+        let confirmTerminal = isTerminal(confirm.state)
+        let getTerminal = isTerminal(get.state)
+        if confirmTerminal != getTerminal {
+            return confirmTerminal ? confirm : get
+        }
+        switch (confirm.version, get.version) {
+        case let (confirmVersion?, getVersion?) where getVersion > confirmVersion:
+            return get
+        case let (confirmVersion?, getVersion?) where getVersion < confirmVersion:
+            return confirm
+        default:
+            return confirmTerminal || !getTerminal ? confirm : get
+        }
     }
 }
 
@@ -1112,6 +1152,19 @@ struct PendingAction: Decodable {
         status = try c.decode(String.self, forKey: .status)
         expires_at = try c.decodeIfPresent(String.self, forKey: .expires_at) ?? ""
     }
+}
+
+struct VoiceAskTarget: Equatable, Sendable {
+    let agentID: String
+    let label: String
+}
+
+struct PhoneAskResponse: Decodable, Equatable, Sendable {
+    let ask_id: String
+    let agent_id: String
+    let agent_label: String?
+    let session_id: String?
+    let status: String
 }
 
 struct APIErrorBody: Decodable {

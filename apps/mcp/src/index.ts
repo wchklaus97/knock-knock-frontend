@@ -34,7 +34,7 @@ server.registerTool(
     description:
       "Create or resume a bridge session when a chat starts using a skill_id. Session is created by this call.",
     inputSchema: {
-      skill_id: z.string().describe("Skill id, e.g. deploy.result"),
+      skill_id: z.string().describe("Skill id, e.g. deploy.result or phone.ask"),
       session_id: z.string().optional().describe("Resume if still open for this agent"),
       idempotency_key: z.string().min(1).optional(),
       chat_id: z.string().optional(),
@@ -46,6 +46,28 @@ server.registerTool(
   async (args) => {
     try {
       return text(await api("/v1/sessions", { method: "POST", json: args }));
+    } catch (e) {
+      return errText(e);
+    }
+  },
+);
+
+server.registerTool(
+  "get_user_asks",
+  {
+    title: "Get user voice asks",
+    description:
+      "Poll hold-to-speak asks from the iPhone for this agent. If asks is non-empty, immediately resume the returned session_id (skill_id phone.ask) and continue the normal session loop. Do not invent tool names. Poll this while idle so the phone can fail-closed when the host is not listening.",
+    inputSchema: {
+      claim: z.boolean().optional().describe("Claim asks for exclusive processing (default true)"),
+      wait_ms: z.number().int().min(0).max(30_000).optional(),
+    },
+  },
+  async ({ claim, wait_ms }) => {
+    try {
+      const q = new URLSearchParams({ claim: claim === false ? "false" : "true" });
+      if (wait_ms !== undefined) q.set("wait_ms", String(wait_ms));
+      return text(await api(`/v1/agents/me/asks?${q}`));
     } catch (e) {
       return errText(e);
     }
