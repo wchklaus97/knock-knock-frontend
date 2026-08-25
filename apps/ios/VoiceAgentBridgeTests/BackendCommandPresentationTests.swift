@@ -247,7 +247,7 @@ final class BackendCommandPresentationTests: XCTestCase {
             presentation: nil,
             isAwaitingConfirmation: false
         )
-        XCTAssertEqual(askAgent.title, "Talk to apns-diagnostic")
+        XCTAssertEqual(askAgent.title, "Ask apns-diagnostic")
         XCTAssertEqual(askAgent.action, "Tap to talk to apns-diagnostic")
 
         let asked = HomeVoiceDockCopy.make(

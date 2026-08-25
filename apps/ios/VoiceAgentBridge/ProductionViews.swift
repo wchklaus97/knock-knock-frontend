@@ -1135,7 +1135,7 @@ struct HomeVoiceDockCopy: Equatable {
         presentation: BackendCommandPresentation?,
         isAwaitingConfirmation: Bool
     ) -> HomeVoiceDockCopy {
-        let holdTitle = targetLabel.map { "Talk to \($0)" } ?? "Voice"
+        let holdTitle = targetLabel.map { "Ask \($0)" } ?? "Voice"
         switch voice {
         case .requestingPermissions:
             return .init(
@@ -1221,7 +1221,7 @@ struct HomeVoiceDockCopy: Equatable {
         case .clarificationRequired(.selectAgent):
             return .init(
                 title: holdTitle,
-                status: "Choose an agent",
+                status: "Select an agent",
                 action: "More than one agent is listening. Choose one.",
                 accessibilityValue: "Needs clarification",
                 accessibilityHint: "Choose one listening agent on Home, then hold to speak.",
