@@ -61,10 +61,10 @@ struct Agent: Codable, Identifiable, Hashable {
     let host_label: String?
     let created_at: String
     let last_seen_at: String?
-    let listener_binding_id: String?
-    let listener_chat_id: String?
-    let listener_chat_title: String?
-    let listener_expires_at: String?
+    let listener_binding_id: String? = nil
+    let listener_chat_id: String? = nil
+    let listener_chat_title: String? = nil
+    let listener_expires_at: String? = nil
 
     var id: String { agent_id }
     var displayLabel: String { label.isEmpty ? (host_label ?? agent_id) : label }
