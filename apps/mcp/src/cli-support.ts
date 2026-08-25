@@ -89,10 +89,10 @@ export function agentEnvCandidates(
   const envId = requestedApiUrl ? apiEnvironmentId(requestedApiUrl) : undefined;
   const ordered =
     envId === "staging"
-      ? [override, staging, canonical, legacyPackageLocal]
+      ? [staging, override, canonical, legacyPackageLocal]
       : envId === "production"
-        ? [override, production, canonical, legacyPackageLocal]
-        : [override, canonical, staging, production, legacyPackageLocal];
+        ? [production, override, canonical, legacyPackageLocal]
+        : [canonical, override, staging, production, legacyPackageLocal];
   const seen = new Set<string>();
   const out: string[] = [];
   for (const candidate of ordered) {
