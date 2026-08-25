@@ -87,6 +87,12 @@ final class LocalCommandEnvelopeCanonicalizerTests: XCTestCase {
                 for: Locale(identifier: "en-HK")
             ).isEmpty
         )
+        XCTAssertEqual(
+            OnDeviceSpeechRecognizerFactory.companionIdentifiers(
+                for: Locale(identifier: "en-HK")
+            ).first,
+            "zh-HK"
+        )
     }
 
     func testDeterministicParserProducesSafeEnvelopeAndClarifiesMissingRecipient() throws {

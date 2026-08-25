@@ -136,7 +136,9 @@ final class PushToTalkVoiceCapture {
     ) {
         self.audioEngine = audioEngine
         self.audioSession = audioSession
-        recognizer = OnDeviceSpeechRecognizerFactory.make(locale: locale)
+        recognizer = OnDeviceSpeechRecognizerFactory.make(
+            locale: OnDeviceSpeechRecognizerFactory.preferredLiveLocale(from: locale)
+        )
         self.vadConfiguration = vadConfiguration
         self.finalTranscriptWaitDuration = max(0, finalTranscriptWaitDuration)
         self.notificationCenter = notificationCenter
@@ -229,9 +231,9 @@ final class PushToTalkVoiceCapture {
             }
         }
 
-        inputNode.installTap(onBus: 0, bufferSize: 1_024, format: format) { [weak self, weak request] buffer, _ in
-            guard let self, let request else { return }
-            request.append(buffer)
+        inputNode.installTap(onBus: 0, bufferSize: 1_024, format: format) { [weak self] buffer, _ in
+            guard let self else { return }
+            self.recognitionRequest?.append(buffer)
 
             let level = VoiceActivityDetector.levelDB(for: buffer)
             let duration = TimeInterval(buffer.frameLength) / buffer.format.sampleRate

@@ -38,6 +38,9 @@ final class AppStore: ObservableObject {
     private static let settingsSchemaKey = "vab.settingsSchemaVersion"
     private static let userIDKey = "vab.userID"
     private static let initialSessionPageSize = 20
+    private static let voiceResponsePollNanoseconds: UInt64 = 350_000_000
+    private static let voiceResponseQuietPeriod: TimeInterval = 1.2
+    private static let voiceResponseTimeout: TimeInterval = 45
 
     @Published var token: String? {
         willSet {
@@ -137,6 +140,7 @@ final class AppStore: ObservableObject {
     private var voiceModelPreparationGeneration: UInt64?
     private var isApplyingAuthenticationScopeMutation = false
     private(set) var localVoiceScopeGeneration: UInt64 = 0
+    private var voiceConversationSessionsByAgent: [String: String] = [:]
 
     private struct LocalVoiceWorkScope: Equatable, Sendable {
         let generation: UInt64
@@ -329,6 +333,11 @@ final class AppStore: ObservableObject {
             UserDefaults.standard.removeObject(forKey: "vab.apiBase")
         }
         #endif
+        if DemoConfig.shouldIgnorePersistedDevelopmentApiBase(
+            persisted: UserDefaults.standard.string(forKey: "vab.apiBase")
+        ) {
+            UserDefaults.standard.removeObject(forKey: "vab.apiBase")
+        }
 
         email = UserDefaults.standard.string(forKey: "vab.email") ?? DemoConfig.email
         let runtimeApiBase = DemoConfig.runtimeApiBaseOverride()
@@ -502,6 +511,7 @@ final class AppStore: ObservableObject {
         }
         voiceController = nil
         voiceModelStatus = "Not prepared"
+        voiceConversationSessionsByAgent = [:]
     }
 
     private func restoreActiveCommandCheckpoint() {
@@ -723,9 +733,10 @@ final class AppStore: ObservableObject {
         stopEventStream()
         stopReconciliation()
         resetEventCursor()
-        if persist {
-            client.baseURL = url
-        }
+        // `persist` controls only UserDefaults. The active client must always
+        // follow the URL shown in the UI, including process-only Staging and
+        // diagnostic overrides.
+        client.baseURL = url
         // Switching origin must synchronously replace the visible offline
         // snapshot before this MainActor method returns.
         restoreMemorySnapshot(apiBaseURL: url)
@@ -756,7 +767,15 @@ final class AppStore: ObservableObject {
     func bootstrapIfLoggedIn() {
         guard token != nil else { return }
         startEventStream()
-        Task { await refresh() }
+        Task {
+            // 13 Pro parser needs no download. Enable the Home mic even if
+            // Staging sync is still failing, so USB development is not stuck
+            // behind Settings.
+            if LocalVoiceRuntimePolicy.strategy() == .deterministicParser {
+                await prepareLocalVoiceModel()
+            }
+            await refresh()
+        }
     }
 
     /// Refreshes the non-UI Memory snapshot. The loader returns only after all
@@ -1023,30 +1042,33 @@ final class AppStore: ObservableObject {
 
     private func finishAuthentication(_ auth: AuthResponse) async throws {
         try applyAuth(auth)
-        // Restore the backend-owned inbox before attempting APNs
-        // registration. A physical device can take much longer to register
-        // while its network route is settling; that must never leave an
-        // authenticated user looking at an empty workspace.
         resetEventCursor()
-        await refresh()
-        // `refresh()` starts SSE after a successful reconciliation. Calling
-        // this idempotent wrapper as well preserves the fallback refresh loop
-        // when that first REST attempt fails because the route is still
-        // settling immediately after authentication.
+
+        // Authentication must complete as soon as the token is durable.
+        // Initial reconciliation and APNs registration are independent best-
+        // effort work; either can be slow on a physical device and must not
+        // leave the sign-in surface spinning indefinitely.
+        let authenticatedUserID = auth.user_id
+        let sessionToOpen = pendingSessionToOpen
+        pendingSessionToOpen = nil
         startEventStream()
 
-        // Device registration enables system delivery, but it must not block
-        // the in-app decision surface. Simulators can lack a real APNs
-        // entitlement, and a temporary registration outage should still let
-        // the user poll the exact session inbox.
-        do {
-            try await client.registerDevice(pushToken: apnsToken)
-        } catch {
-            print("[push] device registration deferred: \(error.localizedDescription)")
+        Task { @MainActor [weak self] in
+            guard let self, self.currentUserID == authenticatedUserID else { return }
+            await self.refresh()
+            guard self.currentUserID == authenticatedUserID else { return }
+            if let sessionToOpen {
+                await self.openSession(sessionToOpen)
+            }
         }
-        if let pendingSessionToOpen {
-            self.pendingSessionToOpen = nil
-            await openSession(pendingSessionToOpen)
+
+        Task { @MainActor [weak self] in
+            guard let self, self.currentUserID == authenticatedUserID else { return }
+            do {
+                try await self.client.registerDevice(pushToken: self.apnsToken)
+            } catch {
+                print("[push] device registration deferred: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -1306,17 +1328,45 @@ final class AppStore: ObservableObject {
                 }
                 return try await self.submitPhoneAsk(transcript, scope: scope)
             },
+            streamAskResponses: { [weak self] response, onResponse in
+                guard let self else { throw CancellationError() }
+                return try await self.streamPhoneAskResponses(
+                    response,
+                    scope: scope,
+                    onResponse: onResponse
+                )
+            },
             operationIsAllowed: { [weak self] in
                 self?.localVoiceScopeIsCurrent(scope) == true
             }
         )
     }
 
+    var voiceAskTargetLabel: String? {
+        resolvedVoiceAskAgent()?.voiceDisplayLabel
+    }
+
+    private func resolvedVoiceAskAgent(now: Date = Date()) -> Agent? {
+        if let selectedAgentId,
+           let selected = agents.first(where: { $0.agent_id == selectedAgentId })
+        {
+            return selected
+        }
+        let listeningAgents = agents.filter { $0.isListening(now: now) }
+        let candidates = listeningAgents.isEmpty ? agents : listeningAgents
+        // Agent heartbeats are not pushed as realtime session events. The
+        // phone's cached 90-second listening window can therefore expire while
+        // the backend listener remains healthy. Route to the most recently
+        // seen candidate and let the authoritative Ask endpoint reject a truly
+        // offline agent instead of incorrectly demanding a manual selection.
+        return candidates.max { lhs, rhs in
+            (lhs.last_seen_at ?? "") < (rhs.last_seen_at ?? "")
+        }
+    }
+
     private func voiceAskTarget() -> VoiceAskTarget? {
-        guard let selectedAgentId,
-              let agent = agents.first(where: { $0.agent_id == selectedAgentId })
-        else { return nil }
-        return VoiceAskTarget(agentID: agent.agent_id, label: agent.displayLabel)
+        guard let agent = resolvedVoiceAskAgent() else { return nil }
+        return VoiceAskTarget(agentID: agent.agent_id, label: agent.voiceDisplayLabel)
     }
 
     private func submitPhoneAsk(
@@ -1325,33 +1375,113 @@ final class AppStore: ObservableObject {
     ) async throws -> PhoneAskResponse {
         try Task.checkCancellation()
         guard localVoiceScopeIsCurrent(scope),
-              let agentID = selectedAgentId,
-              agents.contains(where: { $0.agent_id == agentID })
+              let agent = resolvedVoiceAskAgent()
         else { throw CancellationError() }
+        let agentID = agent.agent_id
+        let conversationKey = "\(agentID)|\(agent.listener_chat_id ?? "unbound")"
         struct Body: Encodable {
             let transcript: String
             let locale: String?
             let idempotency_key: String
+            let session_id: String?
         }
         let locale = Locale.current.identifier
-        let body = try JSONEncoder().encode(
-            Body(
-                transcript: transcript,
-                locale: locale.count >= 2 && locale.count <= 35 ? locale : nil,
-                idempotency_key: "ask-\(UUID().uuidString)"
+        let conversationSessionID = voiceConversationSessionsByAgent[conversationKey]
+            ?? sessions
+                .filter { $0.agent_id == agentID && $0.skill_id == "phone.ask" }
+                .max { $0.updated_at < $1.updated_at }?
+                .session_id
+        let idempotencyKey = "ask-\(UUID().uuidString)"
+        func makeRequest(sessionID: String?) throws -> URLRequest {
+            let body = try JSONEncoder().encode(
+                Body(
+                    transcript: transcript,
+                    locale: locale.count >= 2 && locale.count <= 35 ? locale : nil,
+                    idempotency_key: idempotencyKey,
+                    session_id: sessionID
+                )
             )
-        )
-        let request = try makeLocalVoiceRequest(
-            path: "/v1/phone/agents/\(agentID)/asks",
-            method: "POST",
-            body: body,
-            scope: scope
-        )
-        let response: PhoneAskResponse = try await performLocalVoiceRequest(request)
+            return try makeLocalVoiceRequest(
+                path: "/v1/phone/agents/\(agentID)/asks",
+                method: "POST",
+                body: body,
+                scope: scope
+            )
+        }
+
+        let response: PhoneAskResponse
+        do {
+            response = try await performLocalVoiceRequest(
+                makeRequest(sessionID: conversationSessionID)
+            )
+        } catch APIClientError.badStatus(410, _, _) where conversationSessionID != nil {
+            if let expiredSessionID = conversationSessionID {
+                voiceConversationSessionsByAgent[conversationKey] = nil
+                removeLocalSession(expiredSessionID)
+            }
+            response = try await performLocalVoiceRequest(makeRequest(sessionID: nil))
+        }
         try Task.checkCancellation()
         guard localVoiceScopeIsCurrent(scope) else { throw CancellationError() }
+        if let sessionID = response.session_id {
+            voiceConversationSessionsByAgent[conversationKey] = sessionID
+        }
         await refresh()
         return response
+    }
+
+    private func streamPhoneAskResponses(
+        _ response: PhoneAskResponse,
+        scope: LocalVoiceWorkScope,
+        onResponse: @escaping @Sendable (String) async -> Void
+    ) async throws -> Bool {
+        guard let sessionID = response.session_id,
+              let turnSequence = response.turn_sequence
+        else { return false }
+
+        let encodedSessionID = sessionID.addingPercentEncoding(
+            withAllowedCharacters: .urlPathAllowed
+        ) ?? sessionID
+        let deadline = Date().addingTimeInterval(Self.voiceResponseTimeout)
+        var newestSequence = turnSequence
+        var lastDeliveryAt: Date?
+        var deliveredResponse = false
+
+        while Date() < deadline {
+            try Task.checkCancellation()
+            guard localVoiceScopeIsCurrent(scope) else { throw CancellationError() }
+            let request = try makeLocalVoiceRequest(
+                path: "/v1/phone/sessions/\(encodedSessionID)/messages?limit=50",
+                method: "GET",
+                scope: scope
+            )
+            let page: MessagePage = try await performLocalVoiceRequest(request)
+            let candidates = page.messages
+                .filter { $0.role == "agent" && $0.sequence > newestSequence }
+                .sorted { $0.sequence < $1.sequence }
+
+            for message in candidates {
+                newestSequence = max(newestSequence, message.sequence)
+                if case let .string(askID)? = message.metadata["ask_id"],
+                   askID != response.ask_id
+                {
+                    continue
+                }
+                let text = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { continue }
+                await onResponse(text)
+                deliveredResponse = true
+                lastDeliveryAt = Date()
+            }
+
+            if let lastDeliveryAt,
+               Date().timeIntervalSince(lastDeliveryAt) >= Self.voiceResponseQuietPeriod
+            {
+                return deliveredResponse
+            }
+            try await Task.sleep(nanoseconds: Self.voiceResponsePollNanoseconds)
+        }
+        return deliveredResponse
     }
 
     private func submitLocalCommand(

@@ -107,6 +107,52 @@ enum OnDeviceSpeechRecognizerFactory {
         return []
     }
 
+    /// Second on-device locale for Chinese / English mixed speech. Apple's
+    /// recognizer is monolingual, so live capture feeds both lanes.
+    static func companionIdentifiers(for locale: Locale) -> [String] {
+        let identifier = normalized(locale.identifier)
+        if identifier.hasPrefix("en") {
+            if identifier.contains("-hk") {
+                return ["zh-HK", "yue-HK", "zh-CN", "zh-TW"]
+            }
+            return ["zh-CN", "zh-HK", "zh-TW"]
+        }
+        if identifier.hasPrefix("zh") || identifier.hasPrefix("yue") {
+            return ["en-HK", "en-US", "en-GB"]
+        }
+        return []
+    }
+
+    static func companionRecognizer(
+        for locale: Locale,
+        primary: SFSpeechRecognizer
+    ) -> SFSpeechRecognizer? {
+        let primaryIdentifier = normalized(primary.locale.identifier)
+        for identifier in companionIdentifiers(for: locale) {
+            guard normalized(identifier) != primaryIdentifier,
+                  let companion = make(locale: Locale(identifier: identifier))
+            else { continue }
+            if normalized(companion.locale.identifier) != primaryIdentifier {
+                return companion
+            }
+        }
+        return nil
+    }
+
+    /// Hong Kong English UI still needs one Chinese dictation locale. Apple
+    /// only allows one live recognition task, so this replaces a second lane.
+    static func preferredLiveLocale(from locale: Locale = .current) -> Locale {
+        let identifier = normalized(locale.identifier)
+        let region = normalized(locale.regionCode ?? "")
+        if identifier.hasPrefix("zh") || identifier.hasPrefix("yue") {
+            return locale
+        }
+        if identifier.hasPrefix("en"), identifier.contains("-hk") || region == "hk" {
+            return Locale(identifier: "zh-HK")
+        }
+        return locale
+    }
+
     private static func normalized(_ identifier: String) -> String {
         identifier.replacingOccurrences(of: "_", with: "-").lowercased()
     }
@@ -124,10 +170,15 @@ enum LocalVoiceRuntimePolicy {
     static let signedGemmaQualifiedForRelease = false
 
     /// Staging/Debug on capable phones uses the on-device model so speech is
-    /// not limited to hardcoded phrases. iPhone 13 Pro stays on the parser.
+    /// not limited to hardcoded phrases when the build has the pinned trust
+    /// key required to download and verify it. Without that key, fall back to
+    /// the safe parser so a local Debug install remains usable.
     static var stagingDynamicUnderstandingEnabled: Bool {
         #if DEBUG
-        true
+        guard let rawKey = Bundle.main.object(forInfoDictionaryKey: "KNOCK_MODEL_PUBLIC_KEY_BASE64") as? String else {
+            return false
+        }
+        return !rawKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         #else
         false
         #endif
@@ -490,6 +541,19 @@ enum LocalVoiceUtterancePreflight {
         _ reason: LocalCommandEnvelopeCanonicalizerError.ClarificationReason
     ) -> LocalCommandEnvelopeCanonicalizerError {
         .clarificationRequired(reason)
+    }
+}
+
+/// Signed-Gemma `generateExclusively` uses this instead of a second
+/// `LocalCommandIntentClassifier` pass. Nil preflight is Ask, not 分类.
+enum SignedGemmaGenerateExclusively {
+    static func requireKnownIntent(_ preflightIntent: String?) throws -> String {
+        guard let preflightIntent else {
+            throw LocalCommandEnvelopeCanonicalizerError.clarificationRequired(
+                .unsupportedIntent
+            )
+        }
+        return preflightIntent
     }
 }
 
@@ -1868,6 +1932,9 @@ private actor LiteRTLMCommandRuntime {
         guard let trustedTimezone = TimeZone(identifier: timezone) else {
             throw LocalVoiceAdapterError.invalidModelOutput
         }
+        let intentHint = try SignedGemmaGenerateExclusively.requireKnownIntent(
+            preflightIntent
+        )
         if engine == nil {
             engine = LiteRTLMEngineFactory.makeEngine(
                 modelPath: modelPath,
@@ -1877,27 +1944,6 @@ private actor LiteRTLMCommandRuntime {
             guard engine != nil else {
                 throw LocalVoiceAdapterError.gemmaRuntimeInitializationFailed
             }
-        }
-
-        let intentHint: String
-        if let preflightIntent {
-            intentHint = preflightIntent
-        } else {
-            let classified = try LocalCommandIntentClassifier.intent(
-                from: try await runConversation(
-                    system: LocalCommandIntentClassifier.system,
-                    userText: try LocalCommandIntentClassifier.userText(
-                        transcript: transcript,
-                        locale: locale
-                    )
-                )
-            )
-            guard let classified else {
-                throw LocalCommandEnvelopeCanonicalizerError.clarificationRequired(
-                    .unsupportedIntent
-                )
-            }
-            intentHint = classified
         }
 
         let requests = try LocalCommandControlledFieldPlan.requests(

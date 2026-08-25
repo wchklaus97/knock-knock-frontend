@@ -203,6 +203,49 @@ final class ModelsDecodingTests: XCTestCase {
         XCTAssertTrue(DemoConfig.isValidApiBase(DemoConfig.productionApiBase, requireHTTPS: true))
     }
 
+    func testStagingBundledHTTPSBeatsLeftoverLanAddress() {
+        let staging = "https://knock-knock-backend-staging.wch-klaus.workers.dev"
+        XCTAssertTrue(
+            DemoConfig.shouldIgnorePersistedDevelopmentApiBase(
+                persisted: "http://127.0.0.1:8787",
+                bundledDefault: staging
+            )
+        )
+        XCTAssertTrue(
+            DemoConfig.shouldIgnorePersistedDevelopmentApiBase(
+                persisted: "http://192.168.1.20:8787",
+                bundledDefault: staging
+            )
+        )
+        XCTAssertFalse(
+            DemoConfig.shouldIgnorePersistedDevelopmentApiBase(
+                persisted: staging,
+                bundledDefault: staging
+            )
+        )
+        XCTAssertFalse(
+            DemoConfig.shouldIgnorePersistedDevelopmentApiBase(
+                persisted: "https://custom.example.com",
+                bundledDefault: staging
+            )
+        )
+        XCTAssertFalse(
+            DemoConfig.shouldIgnorePersistedDevelopmentApiBase(
+                persisted: "http://192.168.1.20:8787",
+                bundledDefault: "http://127.0.0.1:8787"
+            )
+        )
+    }
+
+    func testConnectFailuresRetryOverIPv4() {
+        XCTAssertTrue(
+            APITransportPolicy.shouldRetryOverIPv4(URLError(.cannotConnectToHost))
+        )
+        XCTAssertTrue(APITransportPolicy.shouldRetryOverIPv4(URLError(.timedOut)))
+        XCTAssertFalse(APITransportPolicy.shouldRetryOverIPv4(URLError(.cancelled)))
+        XCTAssertFalse(APITransportPolicy.shouldRetryOverIPv4(APIClientError.decoding))
+    }
+
     func testPhoneSessionsDecodeSnakeCasePayload() throws {
         let data = Data(
             """

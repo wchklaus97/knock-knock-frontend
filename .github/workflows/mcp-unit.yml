@@ -1,0 +1,41 @@
+name: MCP unit tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/mcp/**"
+      - "contracts/schemas/mcp-tools.json"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/mcp-unit.yml"
+  pull_request:
+    paths:
+      - "apps/mcp/**"
+      - "contracts/schemas/mcp-tools.json"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/mcp-unit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mcp-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --filter @vab/mcp...
+      - name: Run MCP unit tests
+        working-directory: apps/mcp
+        run: pnpm exec tsx --test src/cli-support.test.ts src/listening.test.ts

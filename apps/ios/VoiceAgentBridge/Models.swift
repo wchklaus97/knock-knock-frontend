@@ -61,9 +61,49 @@ struct Agent: Codable, Identifiable, Hashable {
     let host_label: String?
     let created_at: String
     let last_seen_at: String?
+    let listener_binding_id: String?
+    let listener_chat_id: String?
+    let listener_chat_title: String?
+    let listener_expires_at: String?
 
     var id: String { agent_id }
     var displayLabel: String { label.isEmpty ? (host_label ?? agent_id) : label }
+    var voiceDisplayLabel: String {
+        guard let title = listener_chat_title, !title.isEmpty else { return displayLabel }
+        return "\(displayLabel) · \(title)"
+    }
+
+    func isListening(now: Date = Date()) -> Bool {
+        if listener_chat_id != nil, let expires = listener_expires_at {
+            return AgentListening.isLeaseActive(expiresAt: expires, now: now)
+        }
+        return AgentListening.isListening(lastSeenAt: last_seen_at, now: now)
+    }
+}
+
+/// Exclusive 90s Ask listening window. Matches Worker `LISTENING_WINDOW_SECS`
+/// / `seen_ms + 90_000 > now_ms` (HTTP 409 `agent_not_listening`). Exact age
+/// 90.000s is not listening.
+enum AgentListening {
+    static let windowSeconds: TimeInterval = 90
+
+    static func isListening(lastSeenAt: String?, now: Date = Date()) -> Bool {
+        guard let lastSeenAt, let seen = parseISO8601(lastSeenAt) else { return false }
+        // Exclusive 90s edge: matches Worker `seen_ms + 90_000 > now_ms` (not >=).
+        return now.timeIntervalSince(seen) < windowSeconds
+    }
+
+    static func isLeaseActive(expiresAt: String?, now: Date = Date()) -> Bool {
+        guard let expiresAt, let expiry = parseISO8601(expiresAt) else { return false }
+        return expiry > now
+    }
+
+    private static func parseISO8601(_ value: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: value) { return date }
+        return ISO8601DateFormatter().date(from: value)
+    }
 }
 
 struct AgentsResponse: Decodable {
@@ -1164,7 +1204,24 @@ struct PhoneAskResponse: Decodable, Equatable, Sendable {
     let agent_id: String
     let agent_label: String?
     let session_id: String?
+    let turn_sequence: Int?
     let status: String
+
+    init(
+        ask_id: String,
+        agent_id: String,
+        agent_label: String?,
+        session_id: String?,
+        turn_sequence: Int? = nil,
+        status: String
+    ) {
+        self.ask_id = ask_id
+        self.agent_id = agent_id
+        self.agent_label = agent_label
+        self.session_id = session_id
+        self.turn_sequence = turn_sequence
+        self.status = status
+    }
 }
 
 struct APIErrorBody: Decodable {

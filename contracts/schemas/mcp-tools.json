@@ -26,7 +26,7 @@
     },
     {
       "name": "get_user_asks",
-      "description": "Poll hold-to-speak asks from the iPhone. If asks is non-empty, resume session_id with skill_id phone.ask. Poll while idle so the phone can detect a listening host.",
+      "description": "Poll hold-to-speak asks bound to this concrete Codex thread. The MCP host registers CODEX_THREAD_ID and renews a listener lease; another thread cannot claim these asks.",
       "http": {
         "method": "GET",
         "path": "/v1/agents/me/asks",

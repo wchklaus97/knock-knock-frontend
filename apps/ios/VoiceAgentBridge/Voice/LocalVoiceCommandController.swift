@@ -166,6 +166,7 @@ final class LocalVoiceCommandController: ObservableObject {
         case requestingPermissions
         case listening
         case processing
+        case asking(String)
         case clarificationRequired(Clarification)
         case submitted(String)
         case asked(String)
@@ -185,6 +186,12 @@ final class LocalVoiceCommandController: ObservableObject {
     private let submit: @Sendable (CommandEnvelope) async throws -> CommandResponse
     private let askTarget: () -> VoiceAskTarget?
     private let submitAsk: (@Sendable (String) async throws -> PhoneAskResponse)?
+    private let streamAskResponses: (
+        @Sendable (
+            PhoneAskResponse,
+            @escaping @Sendable (String) async -> Void
+        ) async throws -> Bool
+    )?
     private let synthesizer: VoiceSynthesizing
     private let operationIsAllowed: () -> Bool
     private let permissionsAreGranted: PermissionStatusProvider
@@ -215,6 +222,12 @@ final class LocalVoiceCommandController: ObservableObject {
         synthesizer: VoiceSynthesizing = SystemVoiceSynthesizer(),
         askTarget: @escaping () -> VoiceAskTarget? = { nil },
         submitAsk: (@Sendable (String) async throws -> PhoneAskResponse)? = nil,
+        streamAskResponses: (
+            @Sendable (
+                PhoneAskResponse,
+                @escaping @Sendable (String) async -> Void
+            ) async throws -> Bool
+        )? = nil,
         operationIsAllowed: @escaping () -> Bool = { true },
         permissionsAreGranted: @escaping PermissionStatusProvider = {
             SFSpeechRecognizer.authorizationStatus() == .authorized
@@ -231,6 +244,7 @@ final class LocalVoiceCommandController: ObservableObject {
         self.submit = submit
         self.askTarget = askTarget
         self.submitAsk = submitAsk
+        self.streamAskResponses = streamAskResponses
         self.synthesizer = synthesizer
         self.operationIsAllowed = operationIsAllowed
         self.permissionsAreGranted = permissionsAreGranted
@@ -374,12 +388,14 @@ final class LocalVoiceCommandController: ObservableObject {
         isFollowUpListen = false
         followUpListenIsBody = false
 
-        let text = finalTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalizedText = finalTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let partialText = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Speech can finish its bounded stop window with a useful partial
+        // transcript but no final callback. Preserve what the user said instead
+        // of incorrectly treating that normal timing race as silence.
+        let text = finalizedText.isEmpty ? partialText : finalizedText
         if let pending = pendingSlot {
-            let followUpText = text.isEmpty
-                ? transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-                : text
-            handleFollowUp(followUpText, pending: pending, sessionID: sessionID)
+            handleFollowUp(text, pending: pending, sessionID: sessionID)
             return
         }
 
@@ -408,7 +424,11 @@ final class LocalVoiceCommandController: ObservableObject {
     }
 
     private func shouldUseLocalCommand(for text: String) -> Bool {
-        LocalVoiceUtterancePreflight.prefersLocalCommandPath(for: text)
+        // Chinese / mixed speech uses Ask {agent}, not on-device classification.
+        if LiveSpeechTranscriptChooser.containsCJK(text) {
+            return false
+        }
+        return LocalVoiceUtterancePreflight.prefersLocalCommandPath(for: text)
     }
 
     private func handleFollowUp(
@@ -512,7 +532,11 @@ final class LocalVoiceCommandController: ObservableObject {
                     let decoded = try CommandEnvelope.decodeStrict(from: data)
                     envelope = try LocalVoiceCommandPolicy.authoritativeEnvelope(from: decoded)
                 } catch {
-                    self?.finishGenerationClarification(sessionID: sessionID)
+                    self?.finishGenerationClarification(
+                        error,
+                        transcript: text,
+                        sessionID: sessionID
+                    )
                     return
                 }
 
@@ -529,7 +553,11 @@ final class LocalVoiceCommandController: ObservableObject {
                 self?.clearGenerationTimeout()
                 guard self?.isCurrent(sessionID) == true else { return }
                 if LocalVoiceCommandErrorPolicy.requiresClarification(error) {
-                    self?.finishGenerationClarification(error, sessionID: sessionID)
+                    self?.finishGenerationClarification(
+                        error,
+                        transcript: text,
+                        sessionID: sessionID
+                    )
                 } else {
                     self?.finishWithFailure(error, sessionID: sessionID)
                 }
@@ -546,13 +574,36 @@ final class LocalVoiceCommandController: ObservableObject {
             )
             return
         }
-        state = .processing
+        state = .asking(target.label)
         processingTask = Task { @MainActor [weak self] in
             do {
                 let response = try await submitAsk(text)
-                try Task.checkCancellation()
-                guard self?.isCurrent(sessionID) == true else { return }
-                self?.finishWithAsk(response, label: target.label, sessionID: sessionID)
+                guard let self else { return }
+                // A successful POST must leave Asking. Do not checkCancellation
+                // here: a cancel after the network call would swallow the
+                // response and leave the dock stuck on Asking.
+                guard self.isCurrent(sessionID) else { return }
+                let spokeAgentResponse: Bool
+                if let streamAskResponses = self.streamAskResponses {
+                    spokeAgentResponse = try await streamAskResponses(response) {
+                        [weak self] responseText in
+                        await MainActor.run {
+                            self?.speakAskResponse(
+                                responseText,
+                                sessionID: sessionID
+                            )
+                        }
+                    }
+                } else {
+                    spokeAgentResponse = false
+                }
+                guard self.isCurrent(sessionID) else { return }
+                self.finishWithAsk(
+                    response,
+                    label: target.label,
+                    spokeAgentResponse: spokeAgentResponse,
+                    sessionID: sessionID
+                )
             } catch is CancellationError {
                 return
             } catch {
@@ -572,10 +623,28 @@ final class LocalVoiceCommandController: ObservableObject {
 
     private func finishGenerationClarification(
         _ error: Error? = nil,
+        transcript: String? = nil,
         sessionID: UInt64
     ) {
         if pendingSlot != nil {
             finishFollowUpUnresolved(sessionID: sessionID)
+            return
+        }
+        if case .clarificationRequired(.unsupportedIntent) =
+            error as? LocalCommandEnvelopeCanonicalizerError,
+           submitAsk != nil,
+           let transcript,
+           !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            if askTarget() != nil {
+                beginAsk(for: transcript, sessionID: sessionID)
+            } else {
+                finishWithClarification(
+                    sessionID: sessionID,
+                    kind: .selectAgent,
+                    speak: "Select an agent first."
+                )
+            }
             return
         }
         if case let .clarificationRequired(.missingSendRecipient(body)) =
@@ -729,6 +798,7 @@ final class LocalVoiceCommandController: ObservableObject {
     private func finishWithAsk(
         _ response: PhoneAskResponse,
         label: String,
+        spokeAgentResponse: Bool = false,
         sessionID: UInt64
     ) {
         guard isCurrent(sessionID) else { return }
@@ -741,7 +811,16 @@ final class LocalVoiceCommandController: ObservableObject {
             ? (response.agent_label ?? label)
             : label
         state = .asked(spokenLabel)
-        synthesizer.speak("Asked \(spokenLabel).")
+        if !spokeAgentResponse {
+            synthesizer.speak("Sent to \(spokenLabel).")
+        }
+    }
+
+    private func speakAskResponse(_ responseText: String, sessionID: UInt64) {
+        guard isCurrent(sessionID) else { return }
+        let text = responseText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        synthesizer.speak(text)
     }
 
     private func finishWithFailure(_ error: Error, sessionID: UInt64) {
@@ -836,7 +915,7 @@ final class LocalVoiceCommandController: ObservableObject {
     private var canStart: Bool {
         guard operationIsAllowed() else { return false }
         switch state {
-        case .idle, .clarificationRequired, .submitted, .asked, .failed:
+        case .idle, .clarificationRequired, .submitted, .asked, .failed, .asking:
             return true
         case .requestingPermissions, .listening, .processing:
             return false

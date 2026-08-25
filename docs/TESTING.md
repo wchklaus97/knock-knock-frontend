@@ -124,6 +124,10 @@ cd apps/ios && xcodebuild test \
   -scheme VoiceAgentBridge \
   -destination 'platform=iOS Simulator,name=iPhone SE (3rd generation),OS=17.5'
 
+# Headless listening-truth gate: no phone, no Worker, no UITests.
+# Locks idle Home Listening/Not listening, exclusive 90s window, and Ask 409 mapping.
+pnpm test:ios:listening
+
 # Full iOS Simulator regression: verify the Rust Worker, generate the project,
 # then run 36 unit tests + 3 UI tests. Each UI test creates its own account,
 # agent, session, and `needs_user` fixture, so no MCP agent key is required.

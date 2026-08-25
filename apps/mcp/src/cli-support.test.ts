@@ -6,11 +6,15 @@ import test from "node:test";
 import { pathToFileURL } from "node:url";
 
 import {
+  MIXED_HOST_CREDENTIALS_HINT,
   agentEnvCandidates,
+  boundAgentEnvFileName,
   normalizeApiBaseUrl,
   normalizePairingCode,
   pairingFailureMessage,
   resolveAgentEnvPath,
+  sameApiEnvironment,
+  selectBoundAgentCredentials,
   writeAgentEnvFile,
 } from "./cli-support.js";
 
@@ -35,14 +39,52 @@ test("explicit API URLs are normalized and unsafe forms are rejected", () => {
 });
 
 test("relative agent env files resolve at the workspace root", () => {
-  assert.equal(
-    resolveAgentEnvPath(".env.agent", syntheticModuleUrl),
-    "/tmp/knock-knock/.env.agent",
-  );
-  assert.deepEqual(agentEnvCandidates(syntheticModuleUrl), [
-    "/tmp/knock-knock/.env.agent",
-    "/tmp/knock-knock/apps/mcp/.env.agent",
-  ]);
+  const previous = process.env.KNOCK_KNOCK_AGENT_ENV;
+  delete process.env.KNOCK_KNOCK_AGENT_ENV;
+  try {
+    assert.equal(
+      resolveAgentEnvPath(".env.agent", syntheticModuleUrl),
+      "/tmp/knock-knock/.env.agent",
+    );
+    assert.deepEqual(agentEnvCandidates(syntheticModuleUrl), [
+      "/tmp/knock-knock/.env.agent",
+      "/tmp/knock-knock/.env.agent.staging",
+      "/tmp/knock-knock/.env.agent.production",
+      "/tmp/knock-knock/apps/mcp/.env.agent",
+    ]);
+  } finally {
+    if (previous === undefined) delete process.env.KNOCK_KNOCK_AGENT_ENV;
+    else process.env.KNOCK_KNOCK_AGENT_ENV = previous;
+  }
+});
+
+test("KNOCK_KNOCK_AGENT_ENV is a fallback after the workspace env file", () => {
+  const previous = process.env.KNOCK_KNOCK_AGENT_ENV;
+  process.env.KNOCK_KNOCK_AGENT_ENV = "/tmp/override.env.agent";
+  try {
+    assert.deepEqual(agentEnvCandidates(syntheticModuleUrl), [
+      "/tmp/knock-knock/.env.agent",
+      "/tmp/override.env.agent",
+      "/tmp/knock-knock/.env.agent.staging",
+      "/tmp/knock-knock/.env.agent.production",
+      "/tmp/knock-knock/apps/mcp/.env.agent",
+    ]);
+    assert.deepEqual(
+      agentEnvCandidates(
+        syntheticModuleUrl,
+        "https://knock-knock-backend-staging.wch-klaus.workers.dev",
+      ),
+      [
+        "/tmp/knock-knock/.env.agent.staging",
+        "/tmp/override.env.agent",
+        "/tmp/knock-knock/.env.agent",
+        "/tmp/knock-knock/apps/mcp/.env.agent",
+      ],
+    );
+  } finally {
+    if (previous === undefined) delete process.env.KNOCK_KNOCK_AGENT_ENV;
+    else process.env.KNOCK_KNOCK_AGENT_ENV = previous;
+  }
 });
 
 test("persisted credentials bind both API aliases and use mode 0600", () => {
@@ -88,4 +130,62 @@ test("404 pairing errors explain environment scoping without echoing the code", 
   assert.match(message, /environment-specific/);
   assert.match(message, /--api-url/);
   assert.doesNotMatch(message, /pair_secret/);
+});
+
+test("localhost and loopback are one local environment; staging is not", () => {
+  assert.equal(sameApiEnvironment("http://127.0.0.1:8787", "http://localhost:8787"), true);
+  assert.equal(
+    sameApiEnvironment(
+      "http://127.0.0.1:8787",
+      "https://knock-knock-backend-staging.wch-klaus.workers.dev",
+    ),
+    false,
+  );
+  assert.equal(
+    boundAgentEnvFileName("https://knock-knock-backend-staging.wch-klaus.workers.dev"),
+    ".env.agent.staging",
+  );
+});
+
+test("staging API refuses a local agent key file instead of mixing hosts", () => {
+  const selected = selectBoundAgentCredentials({
+    requestedApiUrl: "https://knock-knock-backend-staging.wch-klaus.workers.dev",
+    files: [
+      {
+        path: "/tmp/.env.agent",
+        text: [
+          "BRIDGE_API_URL=http://127.0.0.1:8787",
+          "BRIDGE_AGENT_KEY=vak_local_only",
+          "",
+        ].join("\n"),
+      },
+    ],
+  });
+  assert.ok(!("agentKey" in selected));
+  assert.ok("hint" in selected);
+  assert.equal(selected.hint, MIXED_HOST_CREDENTIALS_HINT);
+  assert.doesNotMatch(MIXED_HOST_CREDENTIALS_HINT, /vak_/);
+});
+
+test("staging API loads only a staging-bound key file", () => {
+  const selected = selectBoundAgentCredentials({
+    requestedApiUrl: "https://knock-knock-backend-staging.wch-klaus.workers.dev",
+    files: [
+      {
+        path: "/tmp/.env.agent",
+        text: "BRIDGE_API_URL=http://127.0.0.1:8787\nBRIDGE_AGENT_KEY=vak_local_only\n",
+      },
+      {
+        path: "/tmp/.env.agent.staging",
+        text: [
+          "BRIDGE_API_URL=https://knock-knock-backend-staging.wch-klaus.workers.dev",
+          "BRIDGE_AGENT_KEY=vak_staging_only",
+          "",
+        ].join("\n"),
+      },
+    ],
+  });
+  assert.ok("path" in selected);
+  assert.equal(selected.path, "/tmp/.env.agent.staging");
+  assert.equal(selected.agentKey, "vak_staging_only");
 });
