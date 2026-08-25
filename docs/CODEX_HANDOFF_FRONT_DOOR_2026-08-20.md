@@ -245,6 +245,33 @@ Disk is often tight under `/System/Volumes/Data`; reuse `/tmp/knock-voice-17prom
 
 ## Immediate next actions for Codex
 
+### 2026-08-26: human UAT gate PASSED; work is now PR'd
+
+- Physical UAT on iPhone 13 Pro (build 32, Staging): hold-to-speak Ask
+  `今日天氣點樣` was claimed by the bound listener chat, answered with live
+  weather, and spoken by the phone; follow-up `咁聽日呢` continued on the same
+  bound session. Claim, reply, spoken output, and same-thread follow-up all
+  verified.
+- The worktree deltas are committed and open as PRs:
+  backend [PR #41](https://github.com/wchklaus97/knock-knock-backend/pull/41)
+  (chat binding + phone auth fast path) and frontend
+  [PR #37](https://github.com/wchklaus97/knock-knock-frontend/pull/37)
+  (Ask front door + IPv4 + MCP listener identity). Both are gate-clean.
+- Branch protection is now on for both repos: `main` requires PRs, backend
+  also requires the `test` and `dynamic-local-smoke` checks green. Red
+  merges like PR #40 are no longer possible.
+- The Staging listener binding now belongs to Cursor chat
+  `cursor-klaus-mac-main` (took over from the Codex thread). Cursor's MCP
+  config carries `KNOCK_KNOCK_CHAT_ID`/`KNOCK_KNOCK_CHAT_TITLE` so restarts
+  resume the same binding.
+- **Known latency finding:** the ask loop itself is seconds-fast, but a
+  passive chat only polls `get_user_asks` when the user speaks to it, adding
+  minutes. Daily use needs an autonomous poll loop (e.g. Cursor `/loop`
+  waking the agent to poll, or a daemon). Until then, tell the agent you
+  just asked something.
+- Remaining: review/merge the two PRs, then Staging daily use. App Store /
+  Pro / Production stay gated as before.
+
 ### 2026-08-25: concrete Codex Thread binding implemented on Staging
 
 - Codex exposes a stable `CODEX_THREAD_ID`; MCP now fails closed without it (or
