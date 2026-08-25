@@ -763,7 +763,7 @@ final class APIClient: @unchecked Sendable {
                 fallback = String(trimmedFallback.prefix(300))
             }
             let decoded = try? JSONDecoder().decode(APIErrorBody.self, from: data)
-            let decodedMessage = decoded?.message.trimmingCharacters(in: .whitespacesAndNewlines)
+            let decodedMessage = decoded?.message?.trimmingCharacters(in: .whitespacesAndNewlines)
             let message: String
             if let decodedMessage,
                !decodedMessage.isEmpty,
