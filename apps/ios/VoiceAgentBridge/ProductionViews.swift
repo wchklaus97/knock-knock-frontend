@@ -185,6 +185,17 @@ struct RiskBadge: View {
     }
 }
 
+/// Header API pill copy. Independent of agent `last_seen_at` listening truth.
+enum ConnectionPillCopy {
+    static func title(for state: BridgeConnectionState) -> String {
+        switch state {
+        case .connected: return "Connected"
+        case .unavailable: return "Offline"
+        case .unknown: return "Checking"
+        }
+    }
+}
+
 struct ConnectionPill: View {
     let state: BridgeConnectionState
 
@@ -205,14 +216,16 @@ struct ConnectionPill: View {
     }
 
     var body: some View {
-        Label(state == .connected ? "Connected" : state == .unavailable ? "Offline" : "Checking", systemImage: state.symbol)
+        Label(ConnectionPillCopy.title(for: state), systemImage: state.symbol)
             .font(.caption.weight(.semibold))
             .foregroundStyle(tint)
             .padding(.horizontal, 9)
             .padding(.vertical, 6)
             .background(fill)
             .clipShape(Capsule())
+            .accessibilityIdentifier("connection.pill")
             .accessibilityLabel(state.title)
+            .accessibilityValue(ConnectionPillCopy.title(for: state))
     }
 }
 
@@ -493,6 +506,7 @@ struct LocalVoiceCommandCard: View {
         case .requestingPermissions: return "Waiting for microphone permission…"
         case .listening: return "Listening with voice activity detection…"
         case .processing: return "Understanding locally, then validating with the backend…"
+        case let .asking(label): return "Asking \(label)…"
                 case .clarificationRequired(.missingSendRecipient):
                     return "Who should I send this to?"
                 case .clarificationRequired(.missingSendBody):
@@ -504,7 +518,7 @@ struct LocalVoiceCommandCard: View {
                 case .clarificationRequired:
                     return "I need a clearer date, person, amount, or intent."
         case let .submitted(commandID): return "Submitted \(commandID)."
-        case let .asked(label): return "Asked \(label)."
+        case let .asked(label): return "Sent to \(label)."
         case let .failed(message): return message
         }
     }
@@ -520,7 +534,7 @@ private extension LocalVoiceCommandController.State {
         switch self {
         case .idle, .requestingPermissions: return "mic.circle"
         case .listening: return "mic.circle.fill"
-        case .processing: return "waveform.badge.magnifyingglass"
+        case .processing, .asking: return "waveform.badge.magnifyingglass"
         case .clarificationRequired: return "questionmark.circle"
         case .submitted, .asked: return "checkmark.circle"
         case .failed: return "exclamationmark.triangle"
@@ -533,6 +547,7 @@ private extension LocalVoiceCommandController.State {
         case .requestingPermissions: return "Permission needed"
         case .listening: return "Release to submit"
         case .processing: return "Understanding…"
+        case .asking: return "Asking"
         case .clarificationRequired: return "Try again"
         case .submitted: return "Sent"
         case .asked: return "Asked"
@@ -546,6 +561,7 @@ private extension LocalVoiceCommandController.State {
             case .requestingPermissions: return "Allow microphone and speech access"
             case .listening: return "Listening…"
             case .processing: return "Understanding your command…"
+            case let .asking(label): return "Asking \(label)…"
             case .clarificationRequired(.missingSendRecipient):
                 return "Who should I send this to?"
             case .clarificationRequired(.missingSendBody):
@@ -557,7 +573,7 @@ private extension LocalVoiceCommandController.State {
             case .clarificationRequired:
                 return "I didn’t catch that. Hold and try again"
             case .submitted: return "Sent for backend validation"
-            case let .asked(label): return "Asked \(label)."
+            case let .asked(label): return "Sent to \(label)."
             case let .failed(message): return message
             }
         }
@@ -568,16 +584,17 @@ private extension LocalVoiceCommandController.State {
         case .requestingPermissions: return "Permission needed"
         case .listening: return "Listening"
         case .processing: return "Processing"
+        case let .asking(label): return "Asking \(label)"
         case .clarificationRequired: return "Needs clarification"
         case .submitted: return "Submitted"
-        case let .asked(label): return "Asked \(label)"
+        case let .asked(label): return "Sent to \(label)"
         case let .failed(message): return "Failed: \(message)"
         }
     }
 
     var usesActiveDockColor: Bool {
         switch self {
-        case .listening, .processing: return true
+        case .listening, .processing, .asking: return true
         default: return false
         }
     }
@@ -937,13 +954,11 @@ struct HomeAgentSummary: Identifiable {
     var id: String { agent.agent_id }
 }
 
-struct AgentHomeRow: View {
-    let summary: HomeAgentSummary
-    let scope: HomeScope
-    let focused: Bool
-    let onFocus: () -> Void
-
-    private var sessionTitle: String {
+/// Home list copy for an agent row. Idle rows (no session) use the same
+/// exclusive 90s `last_seen_at` window as Ask 409 (`age < 90`) — never the
+/// header API pill "Connected".
+enum AgentHomeRowCopy {
+    static func sessionTitle(for summary: HomeAgentSummary, scope: HomeScope) -> String {
         guard let session = summary.session else {
             return "No activity in \(scope.title)"
         }
@@ -953,15 +968,35 @@ struct AgentHomeRow: View {
             ?? session.skill_id
     }
 
+    static func stateTitle(for summary: HomeAgentSummary, now: Date = Date()) -> String {
+        if let session = summary.session {
+            return session.stateTitle
+        }
+        return summary.agent.isListening(now: now) ? "Listening" : "Not listening"
+    }
+}
+
+struct AgentHomeRow: View {
+    let summary: HomeAgentSummary
+    let scope: HomeScope
+    let focused: Bool
+    let onFocus: () -> Void
+
+    private var sessionTitle: String {
+        AgentHomeRowCopy.sessionTitle(for: summary, scope: scope)
+    }
+
     private var stateTitle: String {
-        summary.session?.stateTitle ?? "Connected"
+        AgentHomeRowCopy.stateTitle(for: summary)
     }
 
     private var stateTint: Color {
-        guard let session = summary.session else { return KnockDesign.mint }
-        if session.needsUser { return KnockDesign.coral }
-        if session.isTerminal { return KnockDesign.mint }
-        return KnockDesign.lavender
+        if let session = summary.session {
+            if session.needsUser { return KnockDesign.coral }
+            if session.isTerminal { return KnockDesign.mint }
+            return KnockDesign.lavender
+        }
+        return summary.agent.isListening() ? KnockDesign.mint : KnockDesign.coral
     }
 
     var body: some View {
@@ -981,6 +1016,12 @@ struct AgentHomeRow: View {
                                     .foregroundStyle(KnockDesign.coral)
                             }
                         }
+                        if let chatTitle = summary.agent.listener_chat_title, !chatTitle.isEmpty {
+                            Text("Chat: \(chatTitle)")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(summary.agent.isListening() ? KnockDesign.mint : KnockDesign.muted)
+                                .lineLimit(1)
+                        }
                         Text(sessionTitle)
                             .font(.subheadline)
                             .foregroundStyle(KnockDesign.muted)
@@ -997,6 +1038,10 @@ struct AgentHomeRow: View {
                         }
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(stateTint)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("home.agent.state")
+                        .accessibilityLabel(stateTitle)
+                        .accessibilityValue(stateTitle)
                     }
                     Spacer(minLength: 2)
                 }
@@ -1090,7 +1135,7 @@ struct HomeVoiceDockCopy: Equatable {
         presentation: BackendCommandPresentation?,
         isAwaitingConfirmation: Bool
     ) -> HomeVoiceDockCopy {
-        let holdTitle = targetLabel.map { "Ask \($0)" } ?? "Hold to speak"
+        let holdTitle = targetLabel.map { "Talk to \($0)" } ?? "Voice"
         switch voice {
         case .requestingPermissions:
             return .init(
@@ -1126,10 +1171,10 @@ struct HomeVoiceDockCopy: Equatable {
         case .listening:
             return .init(
                 title: holdTitle,
-                status: "Release to submit",
+                status: "Listening",
                 action: "Listening…",
                 accessibilityValue: "Listening",
-                accessibilityHint: "Hold to speak a command. Release to submit it for backend validation.",
+                accessibilityHint: "Speak naturally, then tap again to send.",
                 usesActiveColor: true,
                 systemImage: "mic.circle.fill"
             )
@@ -1140,6 +1185,16 @@ struct HomeVoiceDockCopy: Equatable {
                 action: "Understanding your command…",
                 accessibilityValue: "Processing",
                 accessibilityHint: "Understanding your command.",
+                usesActiveColor: true,
+                systemImage: "waveform.badge.magnifyingglass"
+            )
+        case let .asking(label):
+            return .init(
+                title: holdTitle,
+                status: "Asking",
+                action: "Asking \(label)…",
+                accessibilityValue: "Asking \(label)",
+                accessibilityHint: "Sending this ask to the selected agent.",
                 usesActiveColor: true,
                 systemImage: "waveform.badge.magnifyingglass"
             )
@@ -1166,10 +1221,10 @@ struct HomeVoiceDockCopy: Equatable {
         case .clarificationRequired(.selectAgent):
             return .init(
                 title: holdTitle,
-                status: "Select an agent",
-                action: "Select an agent first.",
+                status: "Choose an agent",
+                action: "More than one agent is listening. Choose one.",
                 accessibilityValue: "Needs clarification",
-                accessibilityHint: "Select an agent on Home, then hold to speak.",
+                accessibilityHint: "Choose one listening agent on Home, then hold to speak.",
                 usesActiveColor: false,
                 systemImage: "questionmark.circle"
             )
@@ -1188,18 +1243,18 @@ struct HomeVoiceDockCopy: Equatable {
             return .init(
                 title: holdTitle,
                 status: "Try again",
-                action: "I didn’t catch that. Hold and try again",
+                action: "I didn’t catch that. Tap and try again",
                 accessibilityValue: "Needs clarification",
-                accessibilityHint: "Hold to speak a command. Release to submit it for backend validation.",
+                accessibilityHint: "Tap to start speaking, then tap again to send.",
                 usesActiveColor: false,
                 systemImage: "questionmark.circle"
             )
         case let .asked(label):
             return .init(
                 title: holdTitle,
-                status: "Asked",
-                action: "Asked \(label).",
-                accessibilityValue: "Asked \(label)",
+                status: "Sent",
+                action: "Sent to \(label).",
+                accessibilityValue: "Sent to \(label)",
                 accessibilityHint: "The selected agent received this ask.",
                 usesActiveColor: false,
                 systemImage: "checkmark.circle"
@@ -1232,12 +1287,12 @@ struct HomeVoiceDockCopy: Equatable {
             }
             return .init(
                 title: holdTitle,
-                status: "Push to talk",
-                action: targetLabel.map { "Hold and speak to \($0)" } ?? "Hold and speak a command",
+                status: "Ready",
+                action: targetLabel.map { "Tap to talk to \($0)" } ?? "Tap to talk",
                 accessibilityValue: "Ready",
                 accessibilityHint: targetLabel == nil
-                    ? "Hold to speak a command. Release to submit it for backend validation."
-                    : "Hold to ask the selected agent. Send, remind, draft, and history stay local.",
+                    ? "Tap to start speaking, then tap again to send."
+                    : "Tap to talk to this agent. Tap again to send.",
                 usesActiveColor: false,
                 systemImage: "mic.circle"
             )
@@ -1396,15 +1451,16 @@ struct HomeVoiceDock: View {
             .background(copy.usesActiveColor ? KnockDesign.lavender : KnockDesign.coral)
             .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
-            .onLongPressGesture(minimumDuration: 0, maximumDistance: 44, pressing: { pressing in
-                if pressing {
-                    controller.start()
-                } else {
+            .onTapGesture {
+                guard !controller.isFollowUpListen else { return }
+                if controller.state.isListening {
                     controller.stop()
+                } else {
+                    controller.start()
                 }
-            }, perform: {})
+            }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Push to talk")
+            .accessibilityLabel("Voice conversation")
             .accessibilityValue(copy.accessibilityValue)
             .accessibilityHint(copy.accessibilityHint)
             .accessibilityIdentifier("voice.dock")
@@ -1416,6 +1472,10 @@ struct HomeVoiceDock: View {
     }
 }
 
+enum HomeVoicePrepareDockCopy {
+    static let title = "Enable voice"
+}
+
 struct HomeVoicePrepareDock: View {
     let onPrepare: () -> Void
 
@@ -1423,7 +1483,7 @@ struct HomeVoicePrepareDock: View {
         Button(action: onPrepare) {
             HStack(spacing: 9) {
                 Image(systemName: "mic.fill")
-                Text("Prepare on-device voice in Settings")
+                Text(HomeVoicePrepareDockCopy.title)
                     .font(.subheadline.weight(.semibold))
                 Spacer()
                 Image(systemName: "chevron.right")
@@ -1598,9 +1658,7 @@ struct ProductionHomeView: View {
                     if let controller = store.voiceController {
                         HomeVoiceDock(
                             controller: controller,
-                            targetLabel: store.selectedAgentId.flatMap { id in
-                                store.agents.first { $0.agent_id == id }?.displayLabel
-                            },
+                            targetLabel: store.voiceAskTargetLabel,
                             presentation: store.activeCommandPresentation,
                             isAwaitingConfirmation: store.pendingCommandConfirmation != nil
                         )
@@ -1739,6 +1797,13 @@ struct CommandUndoCard: View {
     }
 }
 
+enum CommandConfirmationCopy {
+    static let title = "Your decision"
+    static let subtitle = "The backend marked this action for confirmation."
+    static let explanation =
+        "Confirming will run this phone command. It does not send it to the Home agent. Not now keeps it pending; it does not cancel it."
+}
+
 struct ProductionCommandConfirmationSheet: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.presentationMode) private var presentationMode
@@ -1757,9 +1822,9 @@ struct ProductionCommandConfirmationSheet: View {
                             .background(KnockDesign.coralSoft)
                             .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Your decision")
+                            Text(CommandConfirmationCopy.title)
                                 .font(.title2.weight(.bold))
-                            Text("The backend marked this action for confirmation.")
+                            Text(CommandConfirmationCopy.subtitle)
                                 .font(.caption)
                                 .foregroundStyle(KnockDesign.muted)
                         }
@@ -1770,7 +1835,7 @@ struct ProductionCommandConfirmationSheet: View {
                             Text(confirmation.title)
                                 .font(.headline.weight(.bold))
                             RiskBadge(risk: DecisionRisk(actionRisk: confirmation.risk))
-                            Text("Confirming will run this phone command. It does not send it to the Home agent. Not now keeps it pending; it does not cancel it.")
+                            Text(CommandConfirmationCopy.explanation)
                                 .font(.subheadline)
                                 .foregroundStyle(KnockDesign.muted)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -2418,7 +2483,7 @@ struct ProductionDrawer: View {
                                     let count = store.sessions.filter { $0.agent_id == agent.agent_id }.count
                                     ProductionDrawerRow(
                                         title: agent.displayLabel,
-                                        subtitle: agent.host_label,
+                                        subtitle: agent.listener_chat_title.map { "Chat: \($0)" } ?? agent.host_label,
                                         symbol: "circle.grid.2x2.fill",
                                         selected: store.selectedAgentId == agent.agent_id && selectedDestination == .dashboard,
                                         badge: count == 0 ? nil : "\(count)",

@@ -236,8 +236,8 @@ final class BackendCommandPresentationTests: XCTestCase {
             presentation: nil,
             isAwaitingConfirmation: false
         )
-        XCTAssertEqual(released.status, "Push to talk")
-        XCTAssertEqual(released.action, "Hold and speak a command")
+        XCTAssertEqual(released.status, "Ready")
+        XCTAssertEqual(released.action, "Tap to talk")
         XCTAssertEqual(released.accessibilityValue, "Ready")
 
         let askAgent = HomeVoiceDockCopy.make(
@@ -247,8 +247,8 @@ final class BackendCommandPresentationTests: XCTestCase {
             presentation: nil,
             isAwaitingConfirmation: false
         )
-        XCTAssertEqual(askAgent.title, "Ask apns-diagnostic")
-        XCTAssertEqual(askAgent.action, "Hold and speak to apns-diagnostic")
+        XCTAssertEqual(askAgent.title, "Talk to apns-diagnostic")
+        XCTAssertEqual(askAgent.action, "Tap to talk to apns-diagnostic")
 
         let asked = HomeVoiceDockCopy.make(
             voice: .asked("apns-diagnostic"),
@@ -257,8 +257,54 @@ final class BackendCommandPresentationTests: XCTestCase {
             presentation: nil,
             isAwaitingConfirmation: false
         )
-        XCTAssertEqual(asked.status, "Asked")
-        XCTAssertEqual(asked.action, "Asked apns-diagnostic.")
+        XCTAssertEqual(asked.status, "Sent")
+        XCTAssertEqual(asked.action, "Sent to apns-diagnostic.")
+
+        let asking = HomeVoiceDockCopy.make(
+            voice: .asking("apns-diagnostic"),
+            isFollowUpListen: false,
+            targetLabel: "apns-diagnostic",
+            presentation: nil,
+            isAwaitingConfirmation: false
+        )
+        XCTAssertEqual(asking.status, "Asking")
+        XCTAssertEqual(asking.action, "Asking apns-diagnostic…")
+        XCTAssertEqual(asking.accessibilityValue, "Asking apns-diagnostic")
+
+        let askingCursor = HomeVoiceDockCopy.make(
+            voice: .asking("cursor-staging"),
+            isFollowUpListen: false,
+            targetLabel: "cursor-staging",
+            presentation: nil,
+            isAwaitingConfirmation: false
+        )
+        XCTAssertEqual(askingCursor.status, "Asking")
+        XCTAssertEqual(askingCursor.action, "Asking cursor-staging…")
+        XCTAssertEqual(askingCursor.accessibilityValue, "Asking cursor-staging")
+        XCTAssertNotEqual(askingCursor.status, "Understanding…")
+        XCTAssertFalse(askingCursor.action.contains("Understanding"))
+
+        let askedCursor = HomeVoiceDockCopy.make(
+            voice: .asked("cursor-staging"),
+            isFollowUpListen: false,
+            targetLabel: "cursor-staging",
+            presentation: nil,
+            isAwaitingConfirmation: false
+        )
+        XCTAssertEqual(askedCursor.status, "Sent")
+        XCTAssertEqual(askedCursor.action, "Sent to cursor-staging.")
+        XCTAssertNotEqual(askedCursor.status, "Understanding…")
+        XCTAssertFalse(askedCursor.action.contains("Understanding"))
+
+        let processing = HomeVoiceDockCopy.make(
+            voice: .processing,
+            isFollowUpListen: false,
+            targetLabel: "cursor-staging",
+            presentation: nil,
+            isAwaitingConfirmation: false
+        )
+        XCTAssertEqual(processing.status, "Understanding…")
+        XCTAssertEqual(processing.action, "Understanding your command…")
 
         let selectAgent = HomeVoiceDockCopy.make(
             voice: .clarificationRequired(.selectAgent),
@@ -268,7 +314,7 @@ final class BackendCommandPresentationTests: XCTestCase {
             isAwaitingConfirmation: false
         )
         XCTAssertEqual(selectAgent.status, "Select an agent")
-        XCTAssertEqual(selectAgent.action, "Select an agent first.")
+        XCTAssertEqual(selectAgent.action, "More than one agent is listening. Choose one.")
 
         let notListening = HomeVoiceDockCopy.make(
             voice: .clarificationRequired(.agentNotListening),
@@ -279,6 +325,100 @@ final class BackendCommandPresentationTests: XCTestCase {
         )
         XCTAssertEqual(notListening.status, "Not listening")
         XCTAssertEqual(notListening.action, "apns-diagnostic is not listening.")
+    }
+
+    func testCommandConfirmationCopyKeepsPhoneCommandsOffTheHomeAgent() {
+        XCTAssertEqual(CommandConfirmationCopy.title, "Your decision")
+        XCTAssertTrue(
+            CommandConfirmationCopy.explanation.contains("phone command")
+        )
+        XCTAssertTrue(
+            CommandConfirmationCopy.explanation.contains("does not send it to the Home agent")
+        )
+        XCTAssertFalse(
+            CommandConfirmationCopy.explanation.localizedCaseInsensitiveContains("goes to the agent")
+        )
+        XCTAssertFalse(
+            CommandConfirmationCopy.subtitle.localizedCaseInsensitiveContains("voice goes")
+        )
+    }
+
+    func testCreatePhoneAskPostsUserJWTAskPathNotSessions() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [APIErrorURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer {
+            APIErrorURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+        var captured: URLRequest?
+        var capturedBody: Data?
+        APIErrorURLProtocol.handler = { request in
+            captured = request
+            if let body = request.httpBody {
+                capturedBody = body
+            } else if let stream = request.httpBodyStream {
+                stream.open()
+                defer { stream.close() }
+                var body = Data()
+                var buffer = [UInt8](repeating: 0, count: 1_024)
+                while true {
+                    let count = stream.read(&buffer, maxLength: buffer.count)
+                    if count < 0 {
+                        throw stream.streamError ?? URLError(.cannotDecodeContentData)
+                    }
+                    if count == 0 { break }
+                    body.append(contentsOf: buffer.prefix(count))
+                }
+                capturedBody = body
+            }
+            let url = request.url ?? URL(string: "https://api.example.com")!
+            XCTAssertFalse(
+                url.path.contains("/v1/sessions"),
+                "The phone must not open POST /v1/sessions"
+            )
+            XCTAssertEqual(url.path, "/v1/phone/agents/agt_cursor/asks")
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-token")
+            let response = try XCTUnwrap(HTTPURLResponse(
+                url: url,
+                statusCode: 201,
+                httpVersion: nil,
+                headerFields: nil
+            ))
+            let body = Data(
+                #"""
+                {"ask_id":"ask_1","agent_id":"agt_cursor","user_id":"usr_1","transcript":"Help with APNs","status":"queued"}
+                """#.utf8
+            )
+            return (response, body)
+        }
+        let previousBaseURL = UserDefaults.standard.string(forKey: "vab.apiBase")
+        defer {
+            if let previousBaseURL {
+                UserDefaults.standard.set(previousBaseURL, forKey: "vab.apiBase")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "vab.apiBase")
+            }
+        }
+        let client = APIClient(session: session)
+        client.baseURL = URL(string: "https://api.example.com")
+        client.token = "test-token"
+
+        let ask = try await client.createPhoneAsk(
+            agentID: "agt_cursor",
+            transcript: "Help with APNs",
+            locale: "en-US",
+            idempotencyKey: "ask-test-01",
+            sessionID: "ses_voice_context"
+        )
+        XCTAssertEqual(ask.ask_id, "ask_1")
+        XCTAssertEqual(captured?.url?.path, "/v1/phone/agents/agt_cursor/asks")
+        let requestBody = try XCTUnwrap(capturedBody)
+        let requestJSON = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: requestBody) as? [String: Any]
+        )
+        XCTAssertEqual(requestJSON["session_id"] as? String, "ses_voice_context")
     }
 
     func testCommandLifecycleConflictsAreDetectedFrom409Copy() {

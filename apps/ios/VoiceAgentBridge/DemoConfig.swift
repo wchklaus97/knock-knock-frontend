@@ -125,4 +125,16 @@ enum DemoConfig {
         }
         return octets[0] == 172 && (16...31).contains(octets[1])
     }
+
+    /// Staging is a Debug configuration, so leftover LAN/localhost UserDefaults
+    /// used to beat the bundled HTTPS Worker and leave the phone Offline.
+    /// A bundled HTTPS endpoint always wins over that leftover development URL.
+    /// An explicit HTTPS host the user typed in Settings is kept.
+    static func shouldIgnorePersistedDevelopmentApiBase(
+        persisted: String?,
+        bundledDefault: String = defaultApiBase
+    ) -> Bool {
+        isValidApiBase(bundledDefault, requireHTTPS: true)
+            && isLegacyDevelopmentApiBase(persisted, requireHTTPS: false)
+    }
 }

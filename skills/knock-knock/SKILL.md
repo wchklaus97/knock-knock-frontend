@@ -33,18 +33,25 @@ pnpm --filter @vab/mcp exec tsx src/cli.ts pair \
   --code CODE_FROM_IPHONE \
   --label "codex" \
   --host "codex" \
-  --write-env .env.agent
+  --write-env .env.agent.staging
 ```
 
-Keep `.env.agent` private. Restart the MCP host after pairing. The host needs:
+Keep `.env.agent` / `.env.agent.staging` private. Restart the MCP host after pairing. The host needs:
 
 - `BRIDGE_API_URL` — the reachable Knock Knock API URL
-- `BRIDGE_AGENT_KEY` — the key written by `vab pair`
+- `BRIDGE_AGENT_KEY` — the key written by `vab pair` **for that same URL**
+
+Never mix a local (`127.0.0.1`) key with Staging. MCP refuses that mix and will not pretend to listen. Pair Staging into `.env.agent.staging`.
 
 Agent keys are scoped to one paired agent. Rotate a leaked key from the
 account's agent management endpoint before continuing work.
 
 ## Session lifecycle
+
+The MCP host binds voice intake to the concrete Codex thread from
+`CODEX_THREAD_ID` (or explicit `KNOCK_KNOCK_CHAT_ID`). Never run an unbound
+agent-wide voice listener. The phone shows the bound thread title and the
+backend rejects claims or replies from another thread.
 
 1. At the beginning of a long or decision-bearing task, call
    `create_or_resume_session` and save the returned `session_id` in the agent
@@ -67,11 +74,18 @@ account's agent management endpoint before continuing work.
    `update_progress` again, and continue the original task; do not create a
    new session for the next question in the same task.
 
-When idle, poll `get_user_asks`. That is how the iPhone **Ask {agent}** dock
-knows the Mac host is listening. If an ask arrives, resume the returned
-`session_id` with `skill_id` `phone.ask` and the transcript in `facts`. Do not
-invent tool names. Phone `send_message` / reminder / draft / history shortcuts
-are local commands and will not appear here.
+When idle, this MCP process heartbeats `GET /v1/agents/me/asks?claim=false`
+every 20s so the iPhone **Ask {agent}** dock sees the host as listening.
+Still poll `get_user_asks` (claim true) to pick up work. If an ask arrives,
+resume the returned `session_id` with `skill_id` `phone.ask` and use the
+transcript plus the bounded `context_messages`. For an ordinary spoken answer,
+call `report_event` on that exact session with `status: "info"`, the answer
+in `summary`, and the returned `ask_id` as `in_reply_to_ask_id`. The phone
+will speak new agent messages in sequence. Use `needs_user` instead when an
+action requires a choice or confirmation; never bypass that gate. Do not invent
+tool names. Phone `send_message` /
+reminder / draft / history shortcuts are local commands and will not appear
+here.
 
 Example progress calls:
 

@@ -106,8 +106,9 @@ final class APIClient: @unchecked Sendable {
     /// device address because a Mac's LAN address can change at any time.
     var baseURL: URL? {
         get {
+            let persisted = UserDefaults.standard.string(forKey: "vab.apiBase")
             let configured = DemoConfig.runtimeApiBaseOverride()
-                ?? UserDefaults.standard.string(forKey: "vab.apiBase")
+                ?? (DemoConfig.shouldIgnorePersistedDevelopmentApiBase(persisted: persisted) ? nil : persisted)
                 ?? DemoConfig.defaultApiBase
             let raw = configured
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -599,19 +600,22 @@ final class APIClient: @unchecked Sendable {
         agentID: String,
         transcript: String,
         locale: String?,
-        idempotencyKey: String
+        idempotencyKey: String,
+        sessionID: String? = nil
     ) async throws -> PhoneAskResponse {
         struct Body: Encodable {
             let transcript: String
             let locale: String?
             let idempotency_key: String
+            let session_id: String?
         }
         return try await post(
             "/v1/phone/agents/\(agentID)/asks",
             body: Body(
                 transcript: transcript,
                 locale: locale,
-                idempotency_key: idempotencyKey
+                idempotency_key: idempotencyKey,
+                session_id: sessionID
             ),
             auth: true
         )
@@ -715,25 +719,60 @@ final class APIClient: @unchecked Sendable {
     private func send<T: Decodable>(_ req: URLRequest) async throws -> T {
         var request = req
         request.timeoutInterval = 15
+        // Some mobile networks refuse Cloudflare's TCP/443 path while Safari
+        // still reaches the same Worker over HTTP/3. Advertise known HTTPS
+        // endpoints as HTTP/3-capable so URLSession can start QUIC immediately.
+        if request.url?.scheme?.lowercased() == "https" {
+            request.assumesHTTP3Capable = true
+        }
         let data: Data
         let resp: URLResponse
         do {
             (data, resp) = try await session.data(for: request)
-        } catch let error as URLError {
-            let path = request.url?.path ?? "request"
-            throw APIClientError.network("\(path): \(error.localizedDescription)")
         } catch {
-            let path = request.url?.path ?? "request"
-            throw APIClientError.network("\(path): \(error.localizedDescription)")
+            if APITransportPolicy.shouldRetryOverIPv4(error) {
+                do {
+                    (data, resp) = try await IPv4HTTPSClient.data(for: request)
+                } catch {
+                    let path = request.url?.path ?? "request"
+                    let host = request.url?.host ?? "unknown-host"
+                    throw APIClientError.network("\(path) via \(host): \(error.localizedDescription)")
+                }
+            } else {
+                let path = request.url?.path ?? "request"
+                let host = request.url?.host ?? "unknown-host"
+                throw APIClientError.network("\(path) via \(host): \(error.localizedDescription)")
+            }
         }
         guard let http = resp as? HTTPURLResponse else {
             throw APIClientError.network("The server response was not HTTP.")
         }
         let code = http.statusCode
         guard (200 ..< 300).contains(code) else {
-            let fallback = String(data: data, encoding: .utf8) ?? "Request failed"
+            let rawFallback = String(data: data, encoding: .utf8) ?? ""
+            let contentType = http.value(forHTTPHeaderField: "Content-Type")?.lowercased() ?? ""
+            let trimmedFallback = rawFallback.trimmingCharacters(in: .whitespacesAndNewlines)
+            let isMarkupResponse = contentType.contains("text/html")
+                || trimmedFallback.hasPrefix("<")
+            let fallback: String
+            if isMarkupResponse || trimmedFallback.isEmpty {
+                fallback = code >= 500
+                    ? "The service is temporarily unavailable. Please try again."
+                    : "The request could not be completed."
+            } else {
+                fallback = String(trimmedFallback.prefix(300))
+            }
             let decoded = try? JSONDecoder().decode(APIErrorBody.self, from: data)
-            let message = decoded?.message ?? fallback
+            let decodedMessage = decoded?.message.trimmingCharacters(in: .whitespacesAndNewlines)
+            let message: String
+            if let decodedMessage,
+               !decodedMessage.isEmpty,
+               !decodedMessage.hasPrefix("<"),
+               !decodedMessage.localizedCaseInsensitiveContains("<!DOCTYPE html") {
+                message = String(decodedMessage.prefix(300))
+            } else {
+                message = fallback
+            }
             let metadata = APIErrorMetadata(
                 retryable: decoded?.retryable ?? (code == 408 || code == 425 || code == 429 || code >= 500),
                 retryAfter: decoded?.retry_after ?? Int(http.value(forHTTPHeaderField: "Retry-After") ?? ""),

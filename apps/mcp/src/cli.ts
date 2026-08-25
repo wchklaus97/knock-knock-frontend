@@ -4,11 +4,14 @@
  */
 import { api, bridgeBaseUrl } from "./client.js";
 import {
+  boundAgentEnvFileName,
   normalizeApiBaseUrl,
   normalizePairingCode,
   pairingFailureMessage,
   writeAgentEnvFile,
 } from "./cli-support.js";
+import { listeningRegistrationPath, startListeningHeartbeat } from "./listening.js";
+import { listenerRegistrationBody } from "./thread-binding.js";
 
 const rawArgs = process.argv.slice(2);
 // pnpm forwards a separator for the documented `pnpm ... cli -- pair` form.
@@ -48,7 +51,8 @@ function usage(code = 0): never {
   vab progress --session ses_... --status running [--message "..."] [--percent 0-100]
   vab event --session ses_... --status needs_user --idemp KEY [--summary "..." ] [--service api] [--env prod] [--fact_status 失败] [--actions rollback,ack] [--force-push]
   vab pending [--session ses_...] [--claim false]
-  vab asks [--claim false]
+  vab asks [--claim false] [--takeover true]
+  vab listen [--takeover true]
   vab result --action act_... [--ok true|false] [--message done]
 
 Env:
@@ -94,8 +98,10 @@ async function main(): Promise<void> {
       }
       const envPath = valueArg("write-env");
       if (envPath && json.api_key) {
+        const writePath =
+          envPath === ".env.agent" ? boundAgentEnvFileName(pairingApiUrl) : envPath;
         const written = writeAgentEnvFile(
-          envPath,
+          writePath,
           json.api_key,
           pairingApiUrl,
           hasFlag("force"),
@@ -187,7 +193,22 @@ async function main(): Promise<void> {
     case "asks": {
       const claim = arg("claim", "true") !== "false";
       const q = `claim=${claim ? "true" : "false"}`;
+      await api(listeningRegistrationPath(), {
+        method: "POST",
+        json: listenerRegistrationBody(arg("takeover", "false") === "true"),
+      });
       console.log(JSON.stringify(await api(`/v1/agents/me/asks?${q}`), null, 2));
+      break;
+    }
+    case "listen": {
+      console.error(`listening on ${bridgeBaseUrl()} (thread-bound lease heartbeat)`);
+      startListeningHeartbeat(async () => {
+        await api(listeningRegistrationPath(), {
+          method: "POST",
+          json: listenerRegistrationBody(arg("takeover", "false") === "true"),
+        });
+      });
+      await new Promise(() => undefined);
       break;
     }
     case "result": {

@@ -14,6 +14,7 @@
     "test:canonical:codex": "bash scripts/canonical-codex-smoke.sh",
     "test:canonical:codex:multiturn": "bash scripts/canonical-codex-multiturn-smoke.sh",
     "test:ios": "bash scripts/ios-simulator-regression.sh",
+    "test:ios:listening": "bash scripts/ios-listening-truth-tests.sh",
     "test:installer": "bash scripts/install-agent-skill.test.sh",
     "test:rc": "bash scripts/rc-security-smoke.sh",
     "test:security": "pnpm audit --prod --audit-level=moderate",

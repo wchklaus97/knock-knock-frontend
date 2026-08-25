@@ -193,9 +193,9 @@ enum LocalCommandPromptJSON {
     }
 }
 
-/// When trusted keyword preflight does not recognize a command, the on-device
-/// model may choose one allowlisted intent. It cannot invent names, times, or
-/// a fifth command type.
+/// Unused on the live Ask front door. Unknown speech goes to the selected
+/// Home agent instead of a second on-device classification pass. Kept so
+/// parser tests can still pin the allowlisted JSON shape.
 enum LocalCommandIntentClassifier {
     static let allowedIntents: Set<String> = [
         "search_history",

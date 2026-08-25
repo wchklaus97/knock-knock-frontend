@@ -8,7 +8,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { api } from "./client.js";
+import { agentCredentialBindHint, api } from "./client.js";
+import {
+  agentAuthFailureMessage,
+  listeningRegistrationPath,
+  startListeningHeartbeat,
+} from "./listening.js";
+import { listenerRegistrationBody } from "./thread-binding.js";
 
 const server = new McpServer({
   name: "voice-agent-bridge",
@@ -20,7 +26,10 @@ function text(data: unknown) {
 }
 
 function errText(err: unknown) {
-  const message = err instanceof Error ? err.message : String(err);
+  const message =
+    agentAuthFailureMessage(err) ??
+    agentCredentialBindHint() ??
+    (err instanceof Error ? err.message : String(err));
   return {
     isError: true as const,
     content: [{ type: "text" as const, text: message }],
@@ -57,7 +66,7 @@ server.registerTool(
   {
     title: "Get user voice asks",
     description:
-      "Poll hold-to-speak asks from the iPhone for this agent. If asks is non-empty, immediately resume the returned session_id (skill_id phone.ask) and continue the normal session loop. Do not invent tool names. Poll this while idle so the phone can fail-closed when the host is not listening.",
+      "Poll hold-to-speak asks from the iPhone for this agent. Each ask includes the durable session_id, turn_sequence, and recent context_messages. Answer on that exact session with report_event status info and in_reply_to_ask_id so the phone can speak the response. Do not invent tool names. Poll this while idle so the phone can fail-closed when the host is not listening.",
     inputSchema: {
       claim: z.boolean().optional().describe("Claim asks for exclusive processing (default true)"),
       wait_ms: z.number().int().min(0).max(30_000).optional(),
@@ -67,6 +76,11 @@ server.registerTool(
     try {
       const q = new URLSearchParams({ claim: claim === false ? "false" : "true" });
       if (wait_ms !== undefined) q.set("wait_ms", String(wait_ms));
+      await api(listeningRegistrationPath(), {
+        method: "POST",
+        json: listenerRegistrationBody(),
+        timeoutMs: 5_000,
+      });
       return text(await api(`/v1/agents/me/asks?${q}`));
     } catch (e) {
       return errText(e);
@@ -107,11 +121,12 @@ server.registerTool(
   {
     title: "Report event",
     description:
-      "Agent-decided event. MAY push for needs_user (always), or succeeded/failed when actions are present or force_push. needs_user requires actions (skill action id strings). Center does not guess needs_user.",
+      "Agent response/event. Use info with in_reply_to_ask_id for an ordinary voice answer; the phone speaks its summary. MAY push for needs_user (always), or succeeded/failed when actions are present or force_push. needs_user requires actions. High-risk work still requires the confirmation gate.",
     inputSchema: {
       session_id: z.string(),
-      status: z.enum(["needs_user", "succeeded", "failed"]),
+      status: z.enum(["info", "needs_user", "succeeded", "failed"]),
       idempotency_key: z.string().min(1),
+      in_reply_to_ask_id: z.string().optional(),
       summary: z.string().max(280).optional(),
       facts: z.record(z.unknown()).optional(),
       actions: z
@@ -190,6 +205,17 @@ server.registerTool(
 async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  // Never block tool discovery with a Staging round-trip. Heartbeat only after
+  // stdio is live, so a bad key or slow network cannot kill Cursor MCP.
+  setTimeout(() => {
+    startListeningHeartbeat(async () => {
+      await api(listeningRegistrationPath(), {
+        method: "POST",
+        json: listenerRegistrationBody(),
+        timeoutMs: 5_000,
+      });
+    });
+  }, 2_000);
 }
 
 main().catch((err: unknown) => {

@@ -1,0 +1,43 @@
+name: iOS listening truth
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/ios/**"
+      - "scripts/ios-listening-truth-tests.sh"
+      - "package.json"
+      - ".github/workflows/ios-listening-truth.yml"
+  pull_request:
+    paths:
+      - "apps/ios/**"
+      - "scripts/ios-listening-truth-tests.sh"
+      - "package.json"
+      - ".github/workflows/ios-listening-truth.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  listening-truth:
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      KNOCK_SKIP_E5_COPY: "YES"
+      GIT_LFS_SKIP_SMUDGE: "1"
+      KNOCK_LISTENING_DERIVED_DATA: /tmp/knock-listening-truth-tests
+      KNOCK_LISTENING_RESULT_BUNDLE: /tmp/knock-listening-truth.xcresult
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install xcodegen
+        run: brew install xcodegen
+      - name: Run listening-truth xcodebuild
+        run: bash scripts/ios-listening-truth-tests.sh
+      - name: Upload xcresult
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-listening-truth
+          path: /tmp/knock-listening-truth.xcresult
+          if-no-files-found: ignore
