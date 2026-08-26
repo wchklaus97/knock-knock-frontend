@@ -106,6 +106,45 @@ enum AgentListening {
     }
 }
 
+/// Home Ask target: keep an explicit live selection, otherwise skip a stale
+/// drawer pick (e.g. last night's Codex) and use the agent that is listening.
+enum VoiceAskAgentResolver {
+    static func resolve(selectedId: String?, agents: [Agent], now: Date = Date()) -> Agent? {
+        let listening = agents.filter { $0.isListening(now: now) }
+        if let selectedId,
+           let selected = agents.first(where: { $0.agent_id == selectedId }),
+           selected.isListening(now: now) || listening.isEmpty
+        {
+            return selected
+        }
+        let candidates = listening.isEmpty ? agents : listening
+        return candidates.max { lhs, rhs in
+            (lhs.last_seen_at ?? "") < (rhs.last_seen_at ?? "")
+        }
+    }
+
+    /// Auto-select the single live listener when the drawer pick is missing
+    /// or not listening. Leave an explicit live pick and multi-listener
+    /// ambiguity alone.
+    static func defaultSelectedId(
+        currentId: String?,
+        agents: [Agent],
+        now: Date = Date()
+    ) -> String? {
+        let listening = agents.filter { $0.isListening(now: now) }
+        guard listening.count == 1, let live = listening.first else {
+            return currentId
+        }
+        if let currentId,
+           let current = agents.first(where: { $0.agent_id == currentId }),
+           current.isListening(now: now)
+        {
+            return currentId
+        }
+        return live.agent_id
+    }
+}
+
 struct AgentsResponse: Decodable {
     let agents: [Agent]
 }
