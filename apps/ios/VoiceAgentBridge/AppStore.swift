@@ -1347,20 +1347,21 @@ final class AppStore: ObservableObject {
     }
 
     private func resolvedVoiceAskAgent(now: Date = Date()) -> Agent? {
-        if let selectedAgentId,
-           let selected = agents.first(where: { $0.agent_id == selectedAgentId })
-        {
-            return selected
-        }
-        let listeningAgents = agents.filter { $0.isListening(now: now) }
-        let candidates = listeningAgents.isEmpty ? agents : listeningAgents
-        // Agent heartbeats are not pushed as realtime session events. The
-        // phone's cached 90-second listening window can therefore expire while
-        // the backend listener remains healthy. Route to the most recently
-        // seen candidate and let the authoritative Ask endpoint reject a truly
-        // offline agent instead of incorrectly demanding a manual selection.
-        return candidates.max { lhs, rhs in
-            (lhs.last_seen_at ?? "") < (rhs.last_seen_at ?? "")
+        VoiceAskAgentResolver.resolve(
+            selectedId: selectedAgentId,
+            agents: agents,
+            now: now
+        )
+    }
+
+    private func preferListeningAgentSelection(now: Date = Date()) {
+        let next = VoiceAskAgentResolver.defaultSelectedId(
+            currentId: selectedAgentId,
+            agents: agents,
+            now: now
+        )
+        if next != selectedAgentId {
+            selectAgent(next)
         }
     }
 
@@ -2482,6 +2483,7 @@ final class AppStore: ObservableObject {
                 self.selectedAgentId = nil
                 UserDefaults.standard.removeObject(forKey: "vab.selectedAgentId")
             }
+            preferListeningAgentSelection()
         }
         noteNewKnocks(newPushes)
         if headphonesSimulated, let newest = newPushes.first, newest.push_id != pushes.first?.push_id {

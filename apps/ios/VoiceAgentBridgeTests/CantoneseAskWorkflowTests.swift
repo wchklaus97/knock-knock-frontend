@@ -214,6 +214,91 @@ final class CantoneseAskWorkflowTests: XCTestCase {
         XCTAssertEqual(copy.action, "\(screenshotAgentLabel) is not listening.")
     }
 
+    func testAskPrefersListeningAgentOverStaleDrawerSelection() {
+        let now = ISO8601DateFormatter().date(from: "2026-08-26T01:20:00Z")!
+        let staleCodex = Agent(
+            agent_id: "agt_codex",
+            user_id: "usr_1",
+            label: "codex",
+            host_label: "cli",
+            created_at: "2026-08-18T00:00:00Z",
+            last_seen_at: "2026-08-18T00:00:00Z"
+        )
+        let liveCursor = Agent(
+            agent_id: "agt_cursor",
+            user_id: "usr_1",
+            label: "cursor-staging",
+            host_label: "cli",
+            created_at: "2026-08-18T00:00:00Z",
+            last_seen_at: "2026-08-26T01:19:30Z"
+        )
+        let olderLive = Agent(
+            agent_id: "agt_older",
+            user_id: "usr_1",
+            label: "older-live",
+            host_label: "cli",
+            created_at: "2026-08-18T00:00:00Z",
+            last_seen_at: "2026-08-26T01:19:00Z"
+        )
+
+        XCTAssertEqual(
+            VoiceAskAgentResolver.resolve(
+                selectedId: staleCodex.agent_id,
+                agents: [staleCodex, liveCursor],
+                now: now
+            )?.agent_id,
+            liveCursor.agent_id
+        )
+        XCTAssertEqual(
+            VoiceAskAgentResolver.resolve(
+                selectedId: liveCursor.agent_id,
+                agents: [staleCodex, liveCursor, olderLive],
+                now: now
+            )?.agent_id,
+            liveCursor.agent_id
+        )
+        XCTAssertEqual(
+            VoiceAskAgentResolver.resolve(
+                selectedId: staleCodex.agent_id,
+                agents: [staleCodex],
+                now: now
+            )?.agent_id,
+            staleCodex.agent_id
+        )
+        XCTAssertEqual(
+            VoiceAskAgentResolver.resolve(
+                selectedId: nil,
+                agents: [staleCodex, liveCursor, olderLive],
+                now: now
+            )?.agent_id,
+            liveCursor.agent_id
+        )
+        XCTAssertEqual(
+            VoiceAskAgentResolver.defaultSelectedId(
+                currentId: staleCodex.agent_id,
+                agents: [staleCodex, liveCursor],
+                now: now
+            ),
+            liveCursor.agent_id
+        )
+        XCTAssertEqual(
+            VoiceAskAgentResolver.defaultSelectedId(
+                currentId: liveCursor.agent_id,
+                agents: [staleCodex, liveCursor, olderLive],
+                now: now
+            ),
+            liveCursor.agent_id
+        )
+        XCTAssertEqual(
+            VoiceAskAgentResolver.defaultSelectedId(
+                currentId: staleCodex.agent_id,
+                agents: [staleCodex, liveCursor, olderLive],
+                now: now
+            ),
+            staleCodex.agent_id
+        )
+    }
+
     private func waitUntil(
         timeout: TimeInterval,
         file: StaticString = #filePath,
