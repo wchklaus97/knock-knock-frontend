@@ -5,9 +5,15 @@ private final class RecordingVoiceSynthesizer: VoiceSynthesizing {
     private(set) var spoken: [String] = []
     private(set) var stopCount = 0
     private(set) var pendingCompletionCount = 0
+    private(set) var maxSpeakDepth = 0
+    private(set) var maxCompletionDepth = 0
+    private(set) var synchronousEvents: [String] = []
     private let automaticallyCompletes: Bool
     private var completions: [(VoiceSynthesisResult) -> Void] = []
+    private var speakDepth = 0
+    private var completionDepth = 0
     var onStop: (() -> Void)?
+    var onSpeak: ((String) -> Void)?
 
     init(automaticallyCompletes: Bool = true) {
         self.automaticallyCompletes = automaticallyCompletes
@@ -17,13 +23,24 @@ private final class RecordingVoiceSynthesizer: VoiceSynthesizing {
         _ text: String,
         completion: @escaping (VoiceSynthesisResult) -> Void
     ) {
+        speakDepth += 1
+        maxSpeakDepth = max(maxSpeakDepth, speakDepth)
+        synchronousEvents.append("speak.begin:\(text)")
         spoken.append(text)
+        onSpeak?(text)
         if automaticallyCompletes {
+            completionDepth += 1
+            maxCompletionDepth = max(maxCompletionDepth, completionDepth)
+            synchronousEvents.append("completion.begin:\(text)")
             completion(.finished)
+            synchronousEvents.append("completion.end:\(text)")
+            completionDepth -= 1
         } else {
             completions.append(completion)
             pendingCompletionCount = completions.count
         }
+        synchronousEvents.append("speak.end:\(text)")
+        speakDepth -= 1
     }
 
     func stop() {
@@ -66,6 +83,30 @@ private final class APIErrorURLProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+}
+
+private final class InMemoryPendingAskRequestStore: PendingAskRequestStoring, @unchecked Sendable {
+    private(set) var request: PendingAskRequestIdentity?
+    private(set) var clearCount = 0
+    var clearSucceeds = true
+
+    func load() -> PendingAskRequestIdentity? {
+        request
+    }
+
+    @discardableResult
+    func save(_ request: PendingAskRequestIdentity) -> Bool {
+        self.request = request
+        return true
+    }
+
+    @discardableResult
+    func clear() -> Bool {
+        clearCount += 1
+        guard clearSucceeds else { return false }
+        request = nil
+        return true
+    }
 }
 
 @MainActor
@@ -419,6 +460,121 @@ final class BackendCommandPresentationTests: XCTestCase {
             JSONSerialization.jsonObject(with: requestBody) as? [String: Any]
         )
         XCTAssertEqual(requestJSON["session_id"] as? String, "ses_voice_context")
+    }
+
+    func testPhoneAskRequestBodyEncodesFrozenFenceAndTurnIdentity() throws {
+        let clientTurnID = "6E351AC6-595A-4A0B-B9B5-4E4E24B308D4"
+        let target = VoiceAskTarget(
+            agentID: "agt_cursor",
+            label: "cursor-staging",
+            bindingID: "binding_1",
+            leaseID: "lease_1",
+            generation: 7,
+            targetChatID: "chat_1"
+        )
+        let body = try PhoneAskRequestBody(
+            transcript: "Help with APNs",
+            locale: "en-US",
+            clientTurnID: clientTurnID,
+            target: target,
+            sessionID: "ses_voice_context"
+        )
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(body)) as? [String: Any]
+        )
+
+        XCTAssertEqual(json["transcript"] as? String, "Help with APNs")
+        XCTAssertEqual(json["locale"] as? String, "en-US")
+        XCTAssertEqual(json["client_turn_id"] as? String, clientTurnID)
+        XCTAssertEqual(json["idempotency_key"] as? String, "ask-\(clientTurnID)")
+        XCTAssertEqual(json["binding_id"] as? String, "binding_1")
+        XCTAssertEqual(json["lease_id"] as? String, "lease_1")
+        XCTAssertEqual(json["generation"] as? Int, 7)
+        XCTAssertEqual(json["target_chat_id"] as? String, "chat_1")
+        XCTAssertEqual(json["session_id"] as? String, "ses_voice_context")
+    }
+
+    func testPhoneAsk410SessionRetryReusesTurnIdentityIdempotencyAndFence() throws {
+        let target = VoiceAskTarget(
+            agentID: "agt_cursor",
+            label: "cursor-staging",
+            bindingID: "binding_1",
+            leaseID: "lease_1",
+            generation: 7,
+            targetChatID: "chat_1"
+        )
+        let initial = try PhoneAskRequestBody(
+            transcript: "Help with APNs",
+            locale: "en-US",
+            clientTurnID: "6E351AC6-595A-4A0B-B9B5-4E4E24B308D4",
+            target: target,
+            sessionID: "ses_expired"
+        )
+        let retry = initial.replacingSessionID(nil)
+
+        XCTAssertEqual(retry.client_turn_id, initial.client_turn_id)
+        XCTAssertEqual(retry.idempotency_key, initial.idempotency_key)
+        XCTAssertEqual(retry.binding_id, initial.binding_id)
+        XCTAssertEqual(retry.lease_id, initial.lease_id)
+        XCTAssertEqual(retry.generation, initial.generation)
+        XCTAssertEqual(retry.target_chat_id, initial.target_chat_id)
+        XCTAssertNil(retry.session_id)
+    }
+
+    func testAppStore410RetryPostsSameClientTurnSessionlessExactlyOnce() async throws {
+        let initial = try Self.askRequest(
+            clientTurnID: "6E351AC6-595A-4A0B-B9B5-4E4E24B308D4",
+            transcript: "Help with APNs",
+            sessionID: "ses_expired",
+            target: Self.askTarget(
+                bindingID: "binding_1",
+                leaseID: "lease_1",
+                generation: 7,
+                targetChatID: "chat_1"
+            )
+        )
+        var requests: [PendingAskRequestIdentity] = []
+        var expiredSessions: [String] = []
+        let response = Self.askResponse(
+            askID: "ask_410_recovered",
+            sessionID: "ses_recovered",
+            sequence: 7
+        )
+
+        let recovered = try await AppStore.performPhoneAskWithSessionlessRetry(
+            initial,
+            perform: { request in
+                requests.append(request)
+                if requests.count == 1 {
+                    throw APIClientError.badStatus(
+                        410,
+                        "Expired session",
+                        APIErrorMetadata(
+                            retryable: false,
+                            retryAfter: nil,
+                            requestID: nil,
+                            errorCode: "session_expired"
+                        )
+                    )
+                }
+                return response
+            },
+            prepareSessionless: { initial.replacingSessionID(nil) },
+            onExpiredSession: { expiredSessions.append($0) }
+        )
+
+        XCTAssertEqual(recovered, response)
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertEqual(expiredSessions, ["ses_expired"])
+        XCTAssertEqual(requests[0].clientTurnID, requests[1].clientTurnID)
+        XCTAssertEqual(requests[0].fingerprint, requests[1].fingerprint)
+        XCTAssertEqual(requests[0].request.idempotency_key, requests[1].request.idempotency_key)
+        XCTAssertEqual(requests[0].request.binding_id, requests[1].request.binding_id)
+        XCTAssertEqual(requests[0].request.lease_id, requests[1].request.lease_id)
+        XCTAssertEqual(requests[0].request.generation, requests[1].request.generation)
+        XCTAssertEqual(requests[0].request.target_chat_id, requests[1].request.target_chat_id)
+        XCTAssertEqual(requests[0].request.session_id, "ses_expired")
+        XCTAssertNil(requests[1].request.session_id)
     }
 
     func testCommandLifecycleConflictsAreDetectedFrom409Copy() {
@@ -1475,7 +1631,7 @@ final class BackendCommandPresentationTests: XCTestCase {
         )
     }
 
-    func testColdStartTerminalPresentationAndBackendTTSAreExactlyOncePerVersion() throws {
+    func testColdStartTerminalPresentationAndBackendTTSAreExactlyOncePerVersion() async throws {
         let url = Self.temporarySQLiteURL("terminal")
         defer { Self.removeSQLiteArtifacts(at: url) }
         let store = SQLiteStore(databaseURL: url)
@@ -1499,6 +1655,7 @@ final class BackendCommandPresentationTests: XCTestCase {
         let firstSynthesizer = RecordingVoiceSynthesizer()
         let first = ActiveCommandCheckpointCoordinator(store: store, synthesizer: firstSynthesizer)
         let restored = try XCTUnwrap(first.restore(scope: scope))
+        await drainDeferredAnnouncementCompletions()
         XCTAssertEqual(restored.message, "The server completed the command.")
         XCTAssertEqual(firstSynthesizer.spoken, ["Command complete."])
         XCTAssertEqual(firstSynthesizer.stopCount, 1)
@@ -1523,6 +1680,7 @@ final class BackendCommandPresentationTests: XCTestCase {
             try first.accept(response: versionEight, expectedCommandID: "cmd_terminal")?.outcome,
             .idempotent
         )
+        await drainDeferredAnnouncementCompletions()
         XCTAssertEqual(firstSynthesizer.spoken, ["Command complete.", "Command update complete."])
         XCTAssertEqual(firstSynthesizer.stopCount, 2)
         XCTAssertEqual(store.loadActiveCommandCheckpoint()?.lastAnnouncedVersion, 8)
@@ -1542,7 +1700,7 @@ final class BackendCommandPresentationTests: XCTestCase {
         XCTAssertNil(store.loadActiveCommandCheckpoint())
     }
 
-    func testAnnouncementVersionIsRecordedOnlyAfterSynthesisFinishes() throws {
+    func testAnnouncementVersionIsRecordedOnlyAfterSynthesisFinishes() async throws {
         let url = Self.temporarySQLiteURL("speech-completion")
         defer { Self.removeSQLiteArtifacts(at: url) }
         let store = SQLiteStore(databaseURL: url)
@@ -1576,6 +1734,7 @@ final class BackendCommandPresentationTests: XCTestCase {
         XCTAssertNil(coordinator.lastSpoken)
 
         synthesizer.finishNext()
+        await drainDeferredAnnouncementCompletions()
         try coordinator.announceDeferredIfNeeded()
 
         XCTAssertEqual(synthesizer.spoken, ["Completion must be observed."])
@@ -1583,7 +1742,71 @@ final class BackendCommandPresentationTests: XCTestCase {
         XCTAssertEqual(coordinator.lastSpoken, "Completion must be observed.")
     }
 
-    func testCancelledAnnouncementRemainsPendingAndReplaysExactlyOnce() throws {
+    func testStaleAnnouncementCompletionImmediatelyDrainsNewCanonicalCommandExactlyOnce() async throws {
+        let url = Self.temporarySQLiteURL("speech-stale-owner-drain")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let store = SQLiteStore(databaseURL: url)
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        XCTAssertTrue(store.saveActiveCommandCheckpoint(Self.checkpoint(
+            phase: .terminalPendingPresentation,
+            commandID: "cmd_a",
+            state: "succeeded",
+            version: 1,
+            presentation: Self.presentation(
+                displayText: "A complete.",
+                voiceScript: "Announcement A.",
+                terminal: true
+            )
+        )))
+
+        let synthesizer = RecordingVoiceSynthesizer(automaticallyCompletes: false)
+        let coordinator = ActiveCommandCheckpointCoordinator(
+            store: store,
+            synthesizer: synthesizer
+        )
+        _ = try coordinator.restore(scope: scope)
+        XCTAssertEqual(synthesizer.spoken, ["Announcement A."])
+
+        try coordinator.begin(
+            envelope: Self.envelope(commandID: "cmd_b"),
+            scope: scope
+        )
+        _ = try coordinator.accept(
+            response: Self.response(
+                commandID: "cmd_b",
+                state: "succeeded",
+                result: nil,
+                presentation: Self.presentation(
+                    displayText: "B complete.",
+                    voiceScript: "Announcement B.",
+                    terminal: true
+                ),
+                version: 1
+            ),
+            expectedCommandID: "cmd_b"
+        )
+        XCTAssertEqual(synthesizer.spoken, ["Announcement A."])
+
+        synthesizer.finishNext()
+        await drainDeferredAnnouncementCompletions()
+
+        XCTAssertEqual(synthesizer.spoken, ["Announcement A.", "Announcement B."])
+        XCTAssertEqual(synthesizer.pendingCompletionCount, 1)
+        XCTAssertNil(store.loadActiveCommandCheckpoint()?.lastAnnouncedVersion)
+
+        synthesizer.finishNext()
+        await drainDeferredAnnouncementCompletions()
+        try coordinator.announceDeferredIfNeeded()
+        try coordinator.announceDeferredIfNeeded()
+
+        XCTAssertEqual(synthesizer.spoken, ["Announcement A.", "Announcement B."])
+        XCTAssertEqual(store.loadActiveCommandCheckpoint()?.lastAnnouncedVersion, 1)
+    }
+
+    func testCancelledAnnouncementRemainsPendingAndReplaysExactlyOnce() async throws {
         let url = Self.temporarySQLiteURL("speech-cancellation")
         defer { Self.removeSQLiteArtifacts(at: url) }
         let store = SQLiteStore(databaseURL: url)
@@ -1612,6 +1835,7 @@ final class BackendCommandPresentationTests: XCTestCase {
         try coordinator.markPresented(commandID: "cmd_speech_cancellation", version: 11)
 
         synthesizer.stop()
+        await drainDeferredAnnouncementCompletions()
 
         XCTAssertNil(store.loadActiveCommandCheckpoint()?.lastAnnouncedVersion)
         XCTAssertEqual(store.loadActiveCommandCheckpoint()?.lastPresentedVersion, 11)
@@ -1626,6 +1850,7 @@ final class BackendCommandPresentationTests: XCTestCase {
         XCTAssertEqual(synthesizer.pendingCompletionCount, 1)
 
         synthesizer.finishNext()
+        await drainDeferredAnnouncementCompletions()
         try coordinator.announceDeferredIfNeeded()
 
         XCTAssertNil(store.loadActiveCommandCheckpoint())
@@ -1636,7 +1861,7 @@ final class BackendCommandPresentationTests: XCTestCase {
         XCTAssertEqual(coordinator.lastSpoken, "Replay after interruption.")
     }
 
-    func testBackgroundPresentationDefersSpeechUntilForegroundExactlyOnce() throws {
+    func testBackgroundPresentationDefersSpeechUntilForegroundExactlyOnce() async throws {
         let url = Self.temporarySQLiteURL("deferred-speech")
         defer { Self.removeSQLiteArtifacts(at: url) }
         let store = SQLiteStore(databaseURL: url)
@@ -1673,13 +1898,14 @@ final class BackendCommandPresentationTests: XCTestCase {
         isForeground = true
         try coordinator.announceDeferredIfNeeded()
         try coordinator.announceDeferredIfNeeded()
+        await drainDeferredAnnouncementCompletions()
 
         XCTAssertEqual(synthesizer.spoken, ["Background command complete."])
         XCTAssertEqual(synthesizer.stopCount, 1)
         XCTAssertEqual(store.loadActiveCommandCheckpoint()?.lastAnnouncedVersion, 4)
     }
 
-    func testMarkPresentedWhileSpeechDeferredSurvivesRelaunchAndDoesNotResurrectAfterAnnouncement() throws {
+    func testMarkPresentedWhileSpeechDeferredSurvivesRelaunchAndDoesNotResurrectAfterAnnouncement() async throws {
         let url = Self.temporarySQLiteURL("presented-before-deferred-speech")
         defer { Self.removeSQLiteArtifacts(at: url) }
         let store = SQLiteStore(databaseURL: url)
@@ -1726,6 +1952,7 @@ final class BackendCommandPresentationTests: XCTestCase {
         isForeground = true
         try reopened.announceDeferredIfNeeded()
         try reopened.announceDeferredIfNeeded()
+        await drainDeferredAnnouncementCompletions()
         try reopened.markPresented(commandID: "cmd_presented_before_speech", version: 6)
 
         XCTAssertEqual(reopenedSynthesizer.spoken, ["Deferred command complete."])
@@ -1776,6 +2003,1023 @@ final class BackendCommandPresentationTests: XCTestCase {
         XCTAssertNil(coordinator.checkpoint)
         XCTAssertNil(coordinator.presentation)
         XCTAssertNil(coordinator.lastSpoken)
+    }
+
+    func testAskAnswerAfterForegroundPollDeadlineUsesVersionedTTSEvenAfterAcknowledgement() async throws {
+        let url = Self.temporarySQLiteURL("ask-delayed")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let store = SQLiteStore(databaseURL: url)
+        let synthesizer = RecordingVoiceSynthesizer()
+        let requestStore = InMemoryPendingAskRequestStore()
+        let coordinator = ActiveCommandCheckpointCoordinator(
+            store: store,
+            synthesizer: synthesizer,
+            pendingAskRequestStore: requestStore
+        )
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        let target = Self.askTarget()
+        let clientTurnID = "11111111-1111-1111-1111-111111111111"
+        try coordinator.beginPendingAsk(
+            request: Self.askRequest(clientTurnID: clientTurnID, target: target),
+            scope: scope,
+            createdAt: Date(timeIntervalSince1970: 100)
+        )
+        let response = Self.askResponse(
+            askID: "ask_delayed",
+            sessionID: "ses_delayed",
+            sequence: 10
+        )
+        XCTAssertTrue(try coordinator.acceptAskSubmission(
+            response,
+            expectedClientTurnID: clientTurnID
+        ))
+
+        let persisted = try XCTUnwrap(store.loadPendingAskCheckpoint())
+        XCTAssertEqual(persisted.clientTurnID, clientTurnID)
+        XCTAssertEqual(persisted.askID, response.ask_id)
+        XCTAssertEqual(persisted.sessionID, response.session_id)
+        XCTAssertEqual(persisted.phase, .awaitingAnswer)
+
+        synthesizer.speak("Sent to Codex.") { _ in }
+        XCTAssertTrue(try coordinator.acceptPendingAskAnswer(Self.askMessage(
+            askID: response.ask_id,
+            clientTurnID: clientTurnID,
+            sessionID: "ses_delayed",
+            sequence: 11,
+            content: "The build passed after the wait."
+        )))
+        await drainDeferredAnnouncementCompletions()
+
+        XCTAssertEqual(
+            synthesizer.spoken,
+            ["Sent to Codex.", "The build passed after the wait."]
+        )
+        XCTAssertTrue(coordinator.hasCanonicalAnswer(for: response))
+        XCTAssertEqual(store.loadPendingAskCheckpoint()?.phase, .answerPresented)
+    }
+
+    func testDuplicateAPNSReconciliationDefersThenSpeaksOnceOnForeground() throws {
+        let url = Self.temporarySQLiteURL("ask-apns-duplicate")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        var speechAllowed = false
+        let store = SQLiteStore(databaseURL: url)
+        let synthesizer = RecordingVoiceSynthesizer()
+        let requestStore = InMemoryPendingAskRequestStore()
+        let coordinator = ActiveCommandCheckpointCoordinator(
+            store: store,
+            synthesizer: synthesizer,
+            pendingAskRequestStore: requestStore,
+            isSpeechAllowed: { speechAllowed }
+        )
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        let clientTurnID = "22222222-2222-2222-2222-222222222222"
+        try coordinator.beginPendingAsk(
+            request: Self.askRequest(clientTurnID: clientTurnID),
+            scope: scope
+        )
+        let response = Self.askResponse(
+            askID: "ask_apns",
+            sessionID: "ses_apns",
+            sequence: 20
+        )
+        XCTAssertTrue(try coordinator.acceptAskSubmission(
+            response,
+            expectedClientTurnID: clientTurnID
+        ))
+        let message = Self.askMessage(
+            askID: response.ask_id,
+            clientTurnID: clientTurnID,
+            sessionID: "ses_apns",
+            sequence: 21,
+            content: "Canonical APNs-reconciled answer."
+        )
+
+        XCTAssertTrue(try coordinator.acceptPendingAskAnswer(message))
+        XCTAssertFalse(try coordinator.acceptPendingAskAnswer(message))
+        XCTAssertTrue(synthesizer.spoken.isEmpty)
+        XCTAssertEqual(
+            store.loadPendingAskCheckpoint()?.phase,
+            .answerPendingAnnouncement
+        )
+
+        speechAllowed = true
+        try coordinator.announceDeferredIfNeeded()
+        try coordinator.announceDeferredIfNeeded()
+        XCTAssertFalse(try coordinator.acceptPendingAskAnswer(message))
+        XCTAssertEqual(synthesizer.spoken, ["Canonical APNs-reconciled answer."])
+    }
+
+    func testPendingAskAnswerSurvivesRelaunchAndDoesNotResurrectAfterSpeech() async throws {
+        let url = Self.temporarySQLiteURL("ask-relaunch")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        let clientTurnID = "33333333-3333-3333-3333-333333333333"
+        let requestStore = InMemoryPendingAskRequestStore()
+        let first = ActiveCommandCheckpointCoordinator(
+            store: SQLiteStore(databaseURL: url),
+            synthesizer: RecordingVoiceSynthesizer(),
+            pendingAskRequestStore: requestStore,
+            isSpeechAllowed: { false }
+        )
+        try first.beginPendingAsk(
+            request: Self.askRequest(clientTurnID: clientTurnID),
+            scope: scope
+        )
+        let response = Self.askResponse(
+            askID: "ask_relaunch",
+            sessionID: "ses_relaunch",
+            sequence: 30
+        )
+        XCTAssertTrue(try first.acceptAskSubmission(
+            response,
+            expectedClientTurnID: clientTurnID
+        ))
+        XCTAssertTrue(try first.acceptPendingAskAnswer(Self.askMessage(
+            askID: response.ask_id,
+            clientTurnID: clientTurnID,
+            sessionID: "ses_relaunch",
+            sequence: 31,
+            content: "Answer restored after relaunch."
+        )))
+
+        let relaunchedSynthesizer = RecordingVoiceSynthesizer()
+        let relaunched = ActiveCommandCheckpointCoordinator(
+            store: SQLiteStore(databaseURL: url),
+            synthesizer: relaunchedSynthesizer,
+            pendingAskRequestStore: requestStore,
+            isSpeechAllowed: { true }
+        )
+        _ = try relaunched.restore(scope: scope)
+        XCTAssertEqual(relaunchedSynthesizer.spoken, ["Answer restored after relaunch."])
+        await drainDeferredAnnouncementCompletions()
+
+        let secondRelaunchSynthesizer = RecordingVoiceSynthesizer()
+        let secondRelaunch = ActiveCommandCheckpointCoordinator(
+            store: SQLiteStore(databaseURL: url),
+            synthesizer: secondRelaunchSynthesizer,
+            pendingAskRequestStore: requestStore,
+            isSpeechAllowed: { true }
+        )
+        _ = try secondRelaunch.restore(scope: scope)
+        XCTAssertTrue(secondRelaunchSynthesizer.spoken.isEmpty)
+    }
+
+    func testPendingAskSpeechRightIsClaimedBeforeAudioAndForceQuitDoesNotRepeat() throws {
+        let url = Self.temporarySQLiteURL("ask-at-most-once-force-quit")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        let clientTurnID = "34343434-3434-3434-3434-343434343434"
+        let requestStore = InMemoryPendingAskRequestStore()
+        let answer = "Keep this answer visible after a force quit."
+        let firstSynthesizer = RecordingVoiceSynthesizer(automaticallyCompletes: false)
+
+        do {
+            let store = SQLiteStore(databaseURL: url)
+            let first = ActiveCommandCheckpointCoordinator(
+                store: store,
+                synthesizer: firstSynthesizer,
+                pendingAskRequestStore: requestStore
+            )
+            try first.beginPendingAsk(
+                request: Self.askRequest(clientTurnID: clientTurnID),
+                scope: scope
+            )
+            let response = Self.askResponse(
+                askID: "ask_at_most_once",
+                sessionID: "ses_at_most_once",
+                sequence: 50
+            )
+            XCTAssertTrue(try first.acceptAskSubmission(
+                response,
+                expectedClientTurnID: clientTurnID
+            ))
+            XCTAssertTrue(try first.acceptPendingAskAnswer(Self.askMessage(
+                askID: response.ask_id,
+                clientTurnID: clientTurnID,
+                sessionID: try XCTUnwrap(response.session_id),
+                sequence: 51,
+                content: answer
+            )))
+
+            let claimed = try XCTUnwrap(store.loadPendingAskCheckpoint())
+            XCTAssertEqual(claimed.phase, .answerPresented)
+            XCTAssertEqual(claimed.lastAnnouncedSequence, 51)
+            XCTAssertEqual(claimed.answerText, answer)
+            XCTAssertEqual(firstSynthesizer.spoken, [answer])
+            XCTAssertEqual(firstSynthesizer.pendingCompletionCount, 1)
+            XCTAssertNil(first.lastSpoken)
+        }
+
+        let relaunchedSynthesizer = RecordingVoiceSynthesizer()
+        let relaunched = ActiveCommandCheckpointCoordinator(
+            store: SQLiteStore(databaseURL: url),
+            synthesizer: relaunchedSynthesizer,
+            pendingAskRequestStore: requestStore
+        )
+        _ = try relaunched.restore(scope: scope)
+
+        XCTAssertTrue(relaunchedSynthesizer.spoken.isEmpty)
+        XCTAssertEqual(relaunched.pendingAskCheckpoint?.phase, .answerPresented)
+        XCTAssertEqual(relaunched.pendingAskCheckpoint?.lastAnnouncedSequence, 51)
+        XCTAssertEqual(relaunched.pendingAskCheckpoint?.answerText, answer)
+    }
+
+    func testOlderAskAnswerCannotSpeakOverNewerSelectedTurn() throws {
+        let url = Self.temporarySQLiteURL("ask-stale-turn")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let synthesizer = RecordingVoiceSynthesizer()
+        let requestStore = InMemoryPendingAskRequestStore()
+        let coordinator = ActiveCommandCheckpointCoordinator(
+            store: SQLiteStore(databaseURL: url),
+            synthesizer: synthesizer,
+            pendingAskRequestStore: requestStore
+        )
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        let target = Self.askTarget()
+        let oldTurn = "44444444-4444-4444-4444-444444444444"
+        try coordinator.beginPendingAsk(
+            request: Self.askRequest(clientTurnID: oldTurn, target: target),
+            scope: scope
+        )
+        let oldResponse = Self.askResponse(
+            askID: "ask_old",
+            sessionID: "ses_shared",
+            sequence: 40
+        )
+        XCTAssertTrue(try coordinator.acceptAskSubmission(
+            oldResponse,
+            expectedClientTurnID: oldTurn
+        ))
+
+        let newTurn = "55555555-5555-5555-5555-555555555555"
+        try coordinator.beginPendingAsk(
+            request: Self.askRequest(clientTurnID: newTurn, target: target),
+            scope: scope
+        )
+        XCTAssertFalse(try coordinator.acceptPendingAskAnswer(Self.askMessage(
+            askID: oldResponse.ask_id,
+            clientTurnID: oldTurn,
+            sessionID: "ses_shared",
+            sequence: 41,
+            content: "Stale answer must stay silent."
+        )))
+
+        let newResponse = Self.askResponse(
+            askID: "ask_new",
+            sessionID: "ses_shared",
+            sequence: 42
+        )
+        XCTAssertTrue(try coordinator.acceptAskSubmission(
+            newResponse,
+            expectedClientTurnID: newTurn
+        ))
+        XCTAssertTrue(try coordinator.acceptPendingAskAnswer(Self.askMessage(
+            askID: newResponse.ask_id,
+            clientTurnID: newTurn,
+            sessionID: "ses_shared",
+            sequence: 43,
+            content: "Newest selected turn answer."
+        )))
+        XCTAssertEqual(synthesizer.spoken, ["Newest selected turn answer."])
+    }
+
+    func testSelectedAskReplaysSameIdentityAfterAcceptedResponseWasLost() async throws {
+        let url = Self.temporarySQLiteURL("ask-selected-response-lost")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let store = SQLiteStore(databaseURL: url)
+        let requestStore = InMemoryPendingAskRequestStore()
+        let synthesizer = RecordingVoiceSynthesizer()
+        let coordinator = ActiveCommandCheckpointCoordinator(
+            store: store,
+            synthesizer: synthesizer,
+            pendingAskRequestStore: requestStore
+        )
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        let clientTurnID = "66666666-6666-6666-6666-666666666666"
+        let frozenRequest = try Self.askRequest(
+            clientTurnID: clientTurnID,
+            transcript: "  Check the build  ",
+            sessionID: "ses_previous"
+        )
+        try coordinator.beginPendingAsk(request: frozenRequest, scope: scope)
+        var replayed: [PendingAskRequestIdentity] = []
+
+        do {
+            _ = try await coordinator.reconcileSelectedPendingAsk(
+                scope: scope,
+                replay: { request in
+                    replayed.append(request)
+                    throw APIClientError.network("response lost after acceptance")
+                },
+                definitelyRejected: { AppStore.askSubmissionDefinitelyRejected($0) }
+            )
+            XCTFail("Expected ambiguous delivery to remain selected")
+        } catch let error as APIClientError {
+            guard case .network = error else {
+                return XCTFail("Expected the simulated response loss")
+            }
+        }
+
+        XCTAssertEqual(replayed, [frozenRequest])
+        XCTAssertEqual(store.loadPendingAskCheckpoint()?.phase, .selected)
+        XCTAssertEqual(requestStore.load(), frozenRequest)
+
+        let response = Self.askResponse(
+            askID: "ask_recovered",
+            sessionID: "ses_recovered",
+            sequence: 60
+        )
+        let recovered = try await coordinator.reconcileSelectedPendingAsk(
+            scope: scope,
+            replay: { request in
+                replayed.append(request)
+                return response
+            },
+            definitelyRejected: { AppStore.askSubmissionDefinitelyRejected($0) }
+        )
+        XCTAssertEqual(recovered?.ask_id, response.ask_id)
+        XCTAssertEqual(replayed, [frozenRequest, frozenRequest])
+        XCTAssertEqual(store.loadPendingAskCheckpoint()?.phase, .awaitingAnswer)
+        XCTAssertNil(requestStore.load())
+
+        let answer = Self.askMessage(
+            askID: response.ask_id,
+            clientTurnID: clientTurnID,
+            sessionID: "ses_recovered",
+            sequence: 61,
+            content: "Recovered canonical answer."
+        )
+        XCTAssertTrue(try coordinator.acceptPendingAskAnswer(answer))
+        XCTAssertFalse(try coordinator.acceptPendingAskAnswer(answer))
+        XCTAssertEqual(synthesizer.spoken, ["Recovered canonical answer."])
+    }
+
+    func testSelectedAskSurvivesRelaunchAndReplaysFrozenIdentity() async throws {
+        let url = Self.temporarySQLiteURL("ask-selected-relaunch")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        let requestStore = InMemoryPendingAskRequestStore()
+        let clientTurnID = "77777777-7777-7777-7777-777777777777"
+        let frozenRequest = try Self.askRequest(
+            clientTurnID: clientTurnID,
+            transcript: "Inspect APNs",
+            sessionID: "ses_frozen"
+        )
+        let first = ActiveCommandCheckpointCoordinator(
+            store: SQLiteStore(databaseURL: url),
+            synthesizer: RecordingVoiceSynthesizer(),
+            pendingAskRequestStore: requestStore
+        )
+        try first.beginPendingAsk(request: frozenRequest, scope: scope)
+        first.discardInMemory()
+
+        let relaunched = ActiveCommandCheckpointCoordinator(
+            store: SQLiteStore(databaseURL: url),
+            synthesizer: RecordingVoiceSynthesizer(),
+            pendingAskRequestStore: requestStore
+        )
+        _ = try relaunched.restore(scope: scope)
+        var replayed: PendingAskRequestIdentity?
+        let response = Self.askResponse(
+            askID: "ask_relaunch_selected",
+            sessionID: "ses_relaunch_selected",
+            sequence: 70
+        )
+        let recovered = try await relaunched.reconcileSelectedPendingAsk(
+            scope: scope,
+            replay: { request in
+                replayed = request
+                return response
+            },
+            definitelyRejected: { AppStore.askSubmissionDefinitelyRejected($0) }
+        )
+
+        XCTAssertEqual(replayed, frozenRequest)
+        XCTAssertEqual(recovered?.ask_id, response.ask_id)
+        XCTAssertEqual(
+            relaunched.pendingAskSessionIDForReconciliation,
+            "ses_relaunch_selected"
+        )
+        XCTAssertNil(requestStore.load())
+    }
+
+    func testSelectedAskStaleFenceFailsClosedWithoutRetargeting() async throws {
+        let url = Self.temporarySQLiteURL("ask-selected-stale-fence")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let requestStore = InMemoryPendingAskRequestStore()
+        let store = SQLiteStore(databaseURL: url)
+        let coordinator = ActiveCommandCheckpointCoordinator(
+            store: store,
+            synthesizer: RecordingVoiceSynthesizer(),
+            pendingAskRequestStore: requestStore
+        )
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        let oldTarget = Self.askTarget(
+            bindingID: "binding_old",
+            leaseID: "lease_old",
+            generation: 9,
+            targetChatID: "chat_old"
+        )
+        let frozenRequest = try Self.askRequest(
+            clientTurnID: "88888888-8888-8888-8888-888888888888",
+            transcript: "Use only the old listener",
+            target: oldTarget
+        )
+        try coordinator.beginPendingAsk(request: frozenRequest, scope: scope)
+        var replayCount = 0
+
+        do {
+            _ = try await coordinator.reconcileSelectedPendingAsk(
+                scope: scope,
+                replay: { request in
+                    replayCount += 1
+                    XCTAssertEqual(request, frozenRequest)
+                    throw APIClientError.badStatus(
+                        409,
+                        "The listener fence is no longer active.",
+                        APIErrorMetadata(
+                            retryable: false,
+                            retryAfter: nil,
+                            requestID: nil,
+                            errorCode: "ask_listener_fence_mismatch"
+                        )
+                    )
+                },
+                definitelyRejected: { AppStore.askSubmissionDefinitelyRejected($0) }
+            )
+            XCTFail("Expected stale fence rejection")
+        } catch let error as APIClientError {
+            guard case let .badStatus(status, _, _) = error else {
+                return XCTFail("Expected the stale fence response")
+            }
+            XCTAssertEqual(status, 409)
+        }
+
+        XCTAssertEqual(replayCount, 1)
+        XCTAssertNil(store.loadPendingAskCheckpoint())
+        XCTAssertNil(requestStore.load())
+    }
+
+    func testSameTurnRetryAdoptsAPNSAcceptanceAndCanonicalPresentationWithoutStoppingTTS() async throws {
+        let url = Self.temporarySQLiteURL("ask-apns-accepted-race")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let store = SQLiteStore(databaseURL: url)
+        let requestStore = InMemoryPendingAskRequestStore()
+        let synthesizer = RecordingVoiceSynthesizer(automaticallyCompletes: false)
+        let coordinator = ActiveCommandCheckpointCoordinator(
+            store: store,
+            synthesizer: synthesizer,
+            pendingAskRequestStore: requestStore
+        )
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        let clientTurnID = "99999999-9999-9999-9999-999999999999"
+        let request = try Self.askRequest(clientTurnID: clientTurnID)
+
+        guard case .selected = try coordinator.beginPendingAsk(
+            request: request,
+            scope: scope
+        ) else {
+            return XCTFail("The first attempt must journal one selected request")
+        }
+        let response = Self.askResponse(
+            askID: "ask_apns_race",
+            sessionID: "ses_apns_race",
+            sequence: 80
+        )
+        XCTAssertTrue(try coordinator.acceptAskSubmission(
+            response,
+            expectedClientTurnID: clientTurnID
+        ))
+
+        let stopCountAfterAPNSAcceptance = synthesizer.stopCount
+        guard case let .alreadyAccepted(adopted) = try coordinator.beginPendingAsk(
+            request: request,
+            scope: scope
+        ) else {
+            return XCTFail("The retry must adopt the APNs-confirmed response")
+        }
+        XCTAssertEqual(adopted, response)
+        XCTAssertEqual(synthesizer.stopCount, stopCountAfterAPNSAcceptance)
+
+        let answer = Self.askMessage(
+            askID: response.ask_id,
+            clientTurnID: clientTurnID,
+            sessionID: "ses_apns_race",
+            sequence: 81,
+            content: "Canonical race answer."
+        )
+        XCTAssertTrue(try coordinator.acceptPendingAskAnswer(answer))
+        XCTAssertEqual(synthesizer.spoken, ["Canonical race answer."])
+        XCTAssertEqual(synthesizer.pendingCompletionCount, 1)
+        let stopCountWhileCanonicalTTSOwnsSpeech = synthesizer.stopCount
+
+        guard case .alreadyReconciled = try coordinator.beginPendingAsk(
+            request: request,
+            scope: scope
+        ) else {
+            return XCTFail("The retry must adopt coordinator-owned canonical presentation")
+        }
+        XCTAssertEqual(synthesizer.stopCount, stopCountWhileCanonicalTTSOwnsSpeech)
+        XCTAssertEqual(synthesizer.spoken, ["Canonical race answer."])
+
+        synthesizer.finishNext()
+        await drainDeferredAnnouncementCompletions()
+        XCTAssertFalse(try coordinator.acceptPendingAskAnswer(answer))
+        XCTAssertEqual(synthesizer.spoken, ["Canonical race answer."])
+        XCTAssertEqual(store.loadPendingAskCheckpoint()?.phase, .answerPresented)
+    }
+
+    func testAcceptedDeleteFailurePersistsCleanupDebtUntilForegroundRetrySucceeds() throws {
+        let url = Self.temporarySQLiteURL("ask-cleanup-accepted")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let store = SQLiteStore(databaseURL: url)
+        let requestStore = InMemoryPendingAskRequestStore()
+        let coordinator = ActiveCommandCheckpointCoordinator(
+            store: store,
+            synthesizer: RecordingVoiceSynthesizer(),
+            pendingAskRequestStore: requestStore
+        )
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        let request = try Self.askRequest(
+            clientTurnID: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
+        )
+        try coordinator.beginPendingAsk(request: request, scope: scope)
+        requestStore.clearSucceeds = false
+
+        XCTAssertTrue(try coordinator.acceptAskSubmission(
+            Self.askResponse(askID: "ask_cleanup", sessionID: "ses_cleanup", sequence: 90),
+            expectedClientTurnID: request.clientTurnID
+        ))
+
+        XCTAssertEqual(store.loadPendingAskCheckpoint()?.phase, .awaitingAnswer)
+        XCTAssertEqual(requestStore.load(), request)
+        XCTAssertTrue(coordinator.hasPendingSensitiveCleanup)
+        XCTAssertEqual(
+            store.loadPendingAskSensitiveCleanupCheckpoint()?.requestFingerprint,
+            request.fingerprint
+        )
+        XCTAssertEqual(
+            store.loadPendingAskSensitiveCleanupCheckpoint()?.clearPendingAskCheckpoint,
+            false
+        )
+
+        requestStore.clearSucceeds = true
+        XCTAssertTrue(try coordinator.retryPendingSensitiveCleanup())
+        XCTAssertNil(requestStore.load())
+        XCTAssertFalse(coordinator.hasPendingSensitiveCleanup)
+        XCTAssertEqual(store.loadPendingAskCheckpoint()?.phase, .awaitingAnswer)
+    }
+
+    func testAcceptedCleanupDebtSurvivesRelaunchAndRestoreEventuallyDeletes() throws {
+        let url = Self.temporarySQLiteURL("ask-cleanup-relaunch")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let store = SQLiteStore(databaseURL: url)
+        let requestStore = InMemoryPendingAskRequestStore()
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        let request = try Self.askRequest(
+            clientTurnID: "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"
+        )
+        let first = ActiveCommandCheckpointCoordinator(
+            store: store,
+            synthesizer: RecordingVoiceSynthesizer(),
+            pendingAskRequestStore: requestStore
+        )
+        try first.beginPendingAsk(request: request, scope: scope)
+        requestStore.clearSucceeds = false
+        XCTAssertTrue(try first.acceptAskSubmission(
+            Self.askResponse(
+                askID: "ask_relaunch_cleanup",
+                sessionID: "ses_relaunch_cleanup",
+                sequence: 100
+            ),
+            expectedClientTurnID: request.clientTurnID
+        ))
+        first.discardInMemory()
+
+        let relaunched = ActiveCommandCheckpointCoordinator(
+            store: SQLiteStore(databaseURL: url),
+            synthesizer: RecordingVoiceSynthesizer(),
+            pendingAskRequestStore: requestStore
+        )
+        _ = try relaunched.restore(scope: scope)
+        XCTAssertTrue(relaunched.hasPendingSensitiveCleanup)
+        XCTAssertEqual(relaunched.pendingAskSessionIDForReconciliation, "ses_relaunch_cleanup")
+        XCTAssertEqual(requestStore.load(), request)
+
+        requestStore.clearSucceeds = true
+        _ = try relaunched.restore(scope: scope)
+        XCTAssertFalse(relaunched.hasPendingSensitiveCleanup)
+        XCTAssertNil(requestStore.load())
+        XCTAssertEqual(relaunched.pendingAskSessionIDForReconciliation, "ses_relaunch_cleanup")
+    }
+
+    func testTerminalDeleteFailureRetainsCleanupDebtAndDoesNotReplayAnswer() async throws {
+        let url = Self.temporarySQLiteURL("ask-cleanup-terminal")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let store = SQLiteStore(databaseURL: url)
+        let requestStore = InMemoryPendingAskRequestStore()
+        let synthesizer = RecordingVoiceSynthesizer()
+        let coordinator = ActiveCommandCheckpointCoordinator(
+            store: store,
+            synthesizer: synthesizer,
+            pendingAskRequestStore: requestStore
+        )
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        let request = try Self.askRequest(
+            clientTurnID: "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC"
+        )
+        try coordinator.beginPendingAsk(request: request, scope: scope)
+        requestStore.clearSucceeds = false
+        let response = Self.askResponse(
+            askID: "ask_terminal_cleanup",
+            sessionID: "ses_terminal_cleanup",
+            sequence: 110
+        )
+        XCTAssertTrue(try coordinator.acceptAskSubmission(
+            response,
+            expectedClientTurnID: request.clientTurnID
+        ))
+        let answer = Self.askMessage(
+            askID: response.ask_id,
+            clientTurnID: request.clientTurnID,
+            sessionID: "ses_terminal_cleanup",
+            sequence: 111,
+            content: "Terminal cleanup answer."
+        )
+
+        XCTAssertTrue(try coordinator.acceptPendingAskAnswer(answer))
+        await drainDeferredAnnouncementCompletions()
+        XCTAssertEqual(synthesizer.spoken, ["Terminal cleanup answer."])
+        XCTAssertEqual(store.loadPendingAskCheckpoint()?.phase, .answerPresented)
+        XCTAssertEqual(requestStore.load(), request)
+        XCTAssertTrue(coordinator.hasPendingSensitiveCleanup)
+
+        requestStore.clearSucceeds = true
+        try coordinator.announceDeferredIfNeeded()
+        try coordinator.announceDeferredIfNeeded()
+
+        XCTAssertNil(requestStore.load())
+        XCTAssertFalse(coordinator.hasPendingSensitiveCleanup)
+        XCTAssertEqual(store.loadPendingAskCheckpoint()?.phase, .answerPresented)
+        XCTAssertEqual(synthesizer.spoken, ["Terminal cleanup answer."])
+        XCTAssertFalse(try coordinator.acceptPendingAskAnswer(answer))
+    }
+
+    func testSupersessionDeleteFailureBlocksRetargetUntilSameCleanupSucceeds() throws {
+        let url = Self.temporarySQLiteURL("ask-cleanup-supersession")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let store = SQLiteStore(databaseURL: url)
+        let requestStore = InMemoryPendingAskRequestStore()
+        let coordinator = ActiveCommandCheckpointCoordinator(
+            store: store,
+            synthesizer: RecordingVoiceSynthesizer(),
+            pendingAskRequestStore: requestStore
+        )
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        let oldRequest = try Self.askRequest(
+            clientTurnID: "DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD"
+        )
+        let newRequest = try Self.askRequest(
+            clientTurnID: "EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE"
+        )
+        try coordinator.beginPendingAsk(request: oldRequest, scope: scope)
+        requestStore.clearSucceeds = false
+
+        XCTAssertThrowsError(try coordinator.beginPendingAsk(request: newRequest, scope: scope)) { error in
+            guard let checkpointError = error as? ActiveCommandCheckpointError,
+                  case .sensitiveCleanupPending = checkpointError
+            else {
+                return XCTFail("Supersession must fail closed on sensitive cleanup debt")
+            }
+        }
+        XCTAssertEqual(requestStore.load(), oldRequest)
+        XCTAssertEqual(store.loadPendingAskCheckpoint()?.clientTurnID, oldRequest.clientTurnID)
+        XCTAssertEqual(
+            store.loadPendingAskSensitiveCleanupCheckpoint()?.requestFingerprint,
+            oldRequest.fingerprint
+        )
+        XCTAssertEqual(
+            store.loadPendingAskSensitiveCleanupCheckpoint()?.clearPendingAskCheckpoint,
+            true
+        )
+
+        requestStore.clearSucceeds = true
+        guard case let .selected(replayed) = try coordinator.beginPendingAsk(
+            request: newRequest,
+            scope: scope
+        ) else {
+            return XCTFail("The new request may start only after old sensitive state is deleted")
+        }
+        XCTAssertEqual(replayed, newRequest)
+        XCTAssertEqual(requestStore.load(), newRequest)
+        XCTAssertEqual(store.loadPendingAskCheckpoint()?.clientTurnID, newRequest.clientTurnID)
+        XCTAssertNil(store.loadPendingAskSensitiveCleanupCheckpoint())
+    }
+
+    func testScopeChangeDeleteFailureRetainsDurableDebtUntilRetrySucceeds() throws {
+        let url = Self.temporarySQLiteURL("ask-cleanup-scope")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let store = SQLiteStore(databaseURL: url)
+        let requestStore = InMemoryPendingAskRequestStore()
+        let coordinator = ActiveCommandCheckpointCoordinator(
+            store: store,
+            synthesizer: RecordingVoiceSynthesizer(),
+            pendingAskRequestStore: requestStore
+        )
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        let request = try Self.askRequest(
+            clientTurnID: "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF"
+        )
+        try coordinator.beginPendingAsk(request: request, scope: scope)
+        requestStore.clearSucceeds = false
+
+        XCTAssertThrowsError(try coordinator.clearForScopeChange()) { error in
+            guard let checkpointError = error as? ActiveCommandCheckpointError,
+                  case .sensitiveCleanupPending = checkpointError
+            else {
+                return XCTFail("Scope change must retain state while sensitive cleanup is pending")
+            }
+        }
+        XCTAssertEqual(requestStore.load(), request)
+        XCTAssertEqual(store.loadPendingAskCheckpoint()?.clientTurnID, request.clientTurnID)
+        XCTAssertTrue(coordinator.hasPendingSensitiveCleanup)
+
+        requestStore.clearSucceeds = true
+        try coordinator.clearForScopeChange()
+
+        XCTAssertNil(requestStore.load())
+        XCTAssertNil(store.loadPendingAskCheckpoint())
+        XCTAssertNil(store.loadPendingAskSensitiveCleanupCheckpoint())
+        XCTAssertFalse(coordinator.hasPendingSensitiveCleanup)
+    }
+
+    func testSynchronousSpeechCompletionDefersCanonicalDrainAndIsExactlyOnce() async throws {
+        let url = Self.temporarySQLiteURL("command-synchronous-completion")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let store = SQLiteStore(databaseURL: url)
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        XCTAssertTrue(store.saveActiveCommandCheckpoint(Self.checkpoint(
+            phase: .terminalPendingPresentation,
+            commandID: "cmd_sync_a",
+            state: "succeeded",
+            version: 1,
+            presentation: Self.presentation(
+                displayText: "A complete.",
+                voiceScript: "Synchronous announcement A.",
+                terminal: true
+            )
+        )))
+
+        let synthesizer = RecordingVoiceSynthesizer(automaticallyCompletes: true)
+        let coordinator = ActiveCommandCheckpointCoordinator(
+            store: store,
+            synthesizer: synthesizer
+        )
+        var installedB = false
+        synthesizer.onSpeak = { text in
+            guard text == "Synchronous announcement A." else { return }
+            do {
+                try coordinator.begin(
+                    envelope: Self.envelope(commandID: "cmd_sync_b"),
+                    scope: scope
+                )
+                _ = try coordinator.accept(
+                    response: Self.response(
+                        commandID: "cmd_sync_b",
+                        state: "succeeded",
+                        result: nil,
+                        presentation: Self.presentation(
+                            displayText: "B complete.",
+                            voiceScript: "Synchronous announcement B.",
+                            terminal: true
+                        ),
+                        version: 1
+                    ),
+                    expectedCommandID: "cmd_sync_b"
+                )
+                installedB = true
+            } catch {
+                XCTFail("Newer canonical command installation failed: \(error)")
+            }
+        }
+
+        _ = try coordinator.restore(scope: scope)
+
+        XCTAssertTrue(installedB)
+        XCTAssertEqual(synthesizer.spoken, ["Synchronous announcement A."])
+        XCTAssertEqual(synthesizer.maxSpeakDepth, 1)
+        XCTAssertEqual(synthesizer.maxCompletionDepth, 1)
+        XCTAssertEqual(store.loadActiveCommandCheckpoint()?.commandID, "cmd_sync_b")
+        XCTAssertNil(store.loadActiveCommandCheckpoint()?.lastAnnouncedVersion)
+        XCTAssertEqual(
+            synthesizer.synchronousEvents,
+            [
+                "speak.begin:Synchronous announcement A.",
+                "completion.begin:Synchronous announcement A.",
+                "completion.end:Synchronous announcement A.",
+                "speak.end:Synchronous announcement A.",
+            ]
+        )
+
+        await drainDeferredAnnouncementCompletions(turns: 2)
+        try coordinator.announceDeferredIfNeeded()
+        await drainDeferredAnnouncementCompletions()
+
+        XCTAssertEqual(
+            synthesizer.spoken,
+            ["Synchronous announcement A.", "Synchronous announcement B."]
+        )
+        XCTAssertEqual(synthesizer.maxSpeakDepth, 1)
+        XCTAssertEqual(synthesizer.maxCompletionDepth, 1)
+        XCTAssertEqual(
+            synthesizer.synchronousEvents,
+            [
+                "speak.begin:Synchronous announcement A.",
+                "completion.begin:Synchronous announcement A.",
+                "completion.end:Synchronous announcement A.",
+                "speak.end:Synchronous announcement A.",
+                "speak.begin:Synchronous announcement B.",
+                "completion.begin:Synchronous announcement B.",
+                "completion.end:Synchronous announcement B.",
+                "speak.end:Synchronous announcement B.",
+            ]
+        )
+        XCTAssertEqual(store.loadActiveCommandCheckpoint()?.commandID, "cmd_sync_b")
+        XCTAssertEqual(store.loadActiveCommandCheckpoint()?.lastAnnouncedVersion, 1)
+    }
+
+    func testLogoutFailsClosedUntilSensitiveAskDeletionSucceeds() throws {
+        let url = Self.temporarySQLiteURL("ask-cleanup-logout")
+        defer { Self.removeSQLiteArtifacts(at: url) }
+        let localStore = SQLiteStore(databaseURL: url)
+        let requestStore = InMemoryPendingAskRequestStore()
+        let seedingCoordinator = ActiveCommandCheckpointCoordinator(
+            store: localStore,
+            synthesizer: RecordingVoiceSynthesizer(),
+            pendingAskRequestStore: requestStore
+        )
+        let scope = try XCTUnwrap(ActiveCommandScope(
+            backendURL: URL(string: "https://api.example.com"),
+            ownerUserID: "usr_stable"
+        ))
+        let request = try Self.askRequest(
+            clientTurnID: "13131313-1313-1313-1313-131313131313"
+        )
+        try seedingCoordinator.beginPendingAsk(request: request, scope: scope)
+        requestStore.clearSucceeds = false
+        let appStore = AppStore(
+            localStore: localStore,
+            commandSynthesizer: RecordingVoiceSynthesizer(),
+            pendingAskRequestStore: requestStore,
+            backgroundReconciliationDispatcher: BackgroundReconciliationDispatcher()
+        )
+
+        XCTAssertFalse(appStore.logout())
+
+        XCTAssertEqual(requestStore.load(), request)
+        XCTAssertEqual(localStore.loadPendingAskCheckpoint()?.clientTurnID, request.clientTurnID)
+        XCTAssertEqual(
+            localStore.loadPendingAskSensitiveCleanupCheckpoint()?.requestFingerprint,
+            request.fingerprint
+        )
+        XCTAssertTrue(appStore.sensitiveAskCleanupPending)
+        XCTAssertEqual(
+            appStore.errorMessage,
+            ActiveCommandCheckpointError.sensitiveCleanupPending.localizedDescription
+        )
+
+        requestStore.clearSucceeds = true
+        XCTAssertTrue(appStore.logout())
+
+        XCTAssertNil(requestStore.load())
+        XCTAssertNil(localStore.loadPendingAskCheckpoint())
+        XCTAssertNil(localStore.loadPendingAskSensitiveCleanupCheckpoint())
+        XCTAssertFalse(appStore.sensitiveAskCleanupPending)
+    }
+
+    private func drainDeferredAnnouncementCompletions(turns: Int = 1) async {
+        for _ in 0..<turns {
+            await withCheckedContinuation {
+                (continuation: CheckedContinuation<Void, Never>) in
+                DispatchQueue.main.async {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
+    private nonisolated static func askResponse(
+        askID: String,
+        sessionID: String,
+        sequence: Int
+    ) -> PhoneAskResponse {
+        PhoneAskResponse(
+            ask_id: askID,
+            agent_id: "agt_codex",
+            agent_label: "Codex",
+            session_id: sessionID,
+            turn_sequence: sequence,
+            status: "queued"
+        )
+    }
+
+    private nonisolated static func askTarget(
+        bindingID: String = "binding_1",
+        leaseID: String = "lease_1",
+        generation: Int = 4,
+        targetChatID: String = "chat_1"
+    ) -> VoiceAskTarget {
+        VoiceAskTarget(
+            agentID: "agt_codex",
+            label: "Codex",
+            bindingID: bindingID,
+            leaseID: leaseID,
+            generation: generation,
+            targetChatID: targetChatID
+        )
+    }
+
+    private nonisolated static func askRequest(
+        clientTurnID: String,
+        transcript: String = "Check the build",
+        sessionID: String? = nil,
+        target suppliedTarget: VoiceAskTarget? = nil
+    ) throws -> PendingAskRequestIdentity {
+        let target = suppliedTarget ?? askTarget()
+        return try PendingAskRequestIdentity(
+            transcript: transcript,
+            locale: "en-HK",
+            clientTurnID: clientTurnID,
+            target: target,
+            sessionID: sessionID
+        )
+    }
+
+    private nonisolated static func askMessage(
+        askID: String,
+        clientTurnID: String,
+        sessionID: String,
+        sequence: Int,
+        content: String
+    ) -> SessionMessage {
+        SessionMessage(
+            message_id: "msg_\(sequence)",
+            session_id: sessionID,
+            role: "agent",
+            content: content,
+            metadata: [
+                "ask_id": .string(askID),
+                "client_turn_id": .string(clientTurnID),
+            ],
+            command_id: nil,
+            sequence: sequence,
+            created_at: "2030-01-01T00:00:00.000Z"
+        )
     }
 
     private nonisolated static func response(
@@ -1932,11 +3176,19 @@ final class AppStoreVoiceLifecycleTests: XCTestCase {
         store.apiBase = originalURL == URL(string: "http://127.0.0.1:39281")
             ? "http://127.0.0.1:39282"
             : "http://127.0.0.1:39281"
+#if DEBUG && !KNOCK_STAGING
         XCTAssertTrue(store.applyApiBase())
 
         XCTAssertEqual(store.localVoiceScopeGeneration, originalGeneration + 1)
         XCTAssertFalse(urlsObservedAtStop.isEmpty)
         XCTAssertTrue(urlsObservedAtStop.allSatisfy { $0 == originalURL })
+#else
+        XCTAssertFalse(store.applyApiBase())
+
+        XCTAssertEqual(store.client.baseURL, originalURL)
+        XCTAssertEqual(store.localVoiceScopeGeneration, originalGeneration)
+        XCTAssertTrue(urlsObservedAtStop.isEmpty)
+#endif
         XCTAssertNil(store.voiceController)
         XCTAssertEqual(store.voiceModelStatus, "Not prepared")
     }

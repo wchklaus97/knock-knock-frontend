@@ -33,7 +33,7 @@ final class CantoneseAskWorkflowTests: XCTestCase {
         XCTAssertNotEqual(copy.action, "Understanding your command…")
     }
 
-    func testIdleAgentRowUsesListeningWindowInsteadOfConnected() {
+    func testIdleAgentRowRequiresActiveModernListenerFence() {
         let stale = Agent(
             agent_id: "agt_gate",
             user_id: "usr_1",
@@ -48,7 +48,12 @@ final class CantoneseAskWorkflowTests: XCTestCase {
             label: "cursor-staging",
             host_label: "cli",
             created_at: "2026-08-18T00:00:00Z",
-            last_seen_at: "2026-08-18T12:40:00.000Z"
+            last_seen_at: "2026-08-18T12:40:00.000Z",
+            listener_binding_id: "binding_cursor",
+            listener_lease_id: "lease_cursor",
+            listener_generation: 1,
+            listener_chat_id: "chat_cursor",
+            listener_expires_at: "2026-08-18T12:41:00Z"
         )
         let unseen = Agent(
             agent_id: "agt_unseen",
@@ -64,7 +69,12 @@ final class CantoneseAskWorkflowTests: XCTestCase {
             label: "just-inside",
             host_label: "cli",
             created_at: "2026-08-18T00:00:00Z",
-            last_seen_at: "2026-08-18T12:39:01Z"
+            last_seen_at: "2026-08-18T12:39:01Z",
+            listener_binding_id: "binding_inside",
+            listener_lease_id: "lease_inside",
+            listener_generation: 1,
+            listener_chat_id: "chat_inside",
+            listener_expires_at: "2026-08-18T12:40:31Z"
         )
         let exactNinety = Agent(
             agent_id: "agt_exact_90",
@@ -152,6 +162,212 @@ final class CantoneseAskWorkflowTests: XCTestCase {
         XCTAssertEqual(exactNinety.timeIntervalSince(seen), 90.000, accuracy: 0.000_000_1)
     }
 
+    func testAgentWireDecodingUsesActiveModernListenerLease() throws {
+        let now = ISO8601DateFormatter().date(from: "2026-08-26T01:20:00Z")!
+        let agent = try JSONDecoder().decode(Agent.self, from: Data("""
+        {
+          "agent_id": "agt_modern",
+          "user_id": "usr_1",
+          "label": "cursor-staging",
+          "host_label": "cli",
+          "created_at": "2026-08-18T00:00:00Z",
+          "last_seen_at": "2026-08-18T00:00:00Z",
+          "listener_binding_id": "binding_1",
+          "listener_lease_id": "lease_1",
+          "listener_generation": 7,
+          "listener_chat_id": "chat_1",
+          "listener_chat_title": "Structured memory",
+          "listener_expires_at": "2026-08-26T01:21:00Z",
+          "binding_id": "binding_1",
+          "lease_id": "lease_1",
+          "generation": 7,
+          "target_chat_id": "chat_1"
+        }
+        """.utf8))
+
+        XCTAssertEqual(agent.listener_binding_id, "binding_1")
+        XCTAssertEqual(agent.listener_lease_id, "lease_1")
+        XCTAssertEqual(agent.listener_generation, 7)
+        XCTAssertEqual(agent.listener_chat_id, "chat_1")
+        XCTAssertEqual(agent.listener_chat_title, "Structured memory")
+        XCTAssertEqual(agent.listener_expires_at, "2026-08-26T01:21:00Z")
+        XCTAssertEqual(agent.binding_id, "binding_1")
+        XCTAssertEqual(agent.lease_id, "lease_1")
+        XCTAssertEqual(agent.generation, 7)
+        XCTAssertEqual(agent.target_chat_id, "chat_1")
+        XCTAssertTrue(agent.isListening(now: now))
+        let target = try XCTUnwrap(agent.voiceAskTarget(now: now))
+        XCTAssertTrue(target.hasCompleteFence)
+        XCTAssertEqual(target.bindingID, "binding_1")
+        XCTAssertEqual(target.leaseID, "lease_1")
+        XCTAssertEqual(target.generation, 7)
+        XCTAssertEqual(target.targetChatID, "chat_1")
+        XCTAssertEqual(
+            VoiceAskAgentResolver.resolve(
+                selectedId: agent.agent_id,
+                agents: [agent],
+                now: now
+            )?.agent_id,
+            agent.agent_id
+        )
+    }
+
+    func testAgentWireDecodingTreatsExplicitNullModernListenerAsNotListening() throws {
+        let now = ISO8601DateFormatter().date(from: "2026-08-26T01:20:00Z")!
+        let agent = try JSONDecoder().decode(Agent.self, from: Data("""
+        {
+          "agent_id": "agt_null",
+          "user_id": "usr_1",
+          "label": "stale-selection",
+          "host_label": "cli",
+          "created_at": "2026-08-18T00:00:00Z",
+          "last_seen_at": "2026-08-26T01:19:30Z",
+          "listener_binding_id": null,
+          "listener_lease_id": null,
+          "listener_generation": null,
+          "listener_chat_id": null,
+          "listener_chat_title": null,
+          "listener_expires_at": null,
+          "binding_id": null,
+          "lease_id": null,
+          "generation": null,
+          "target_chat_id": null
+        }
+        """.utf8))
+
+        XCTAssertNil(agent.listener_binding_id)
+        XCTAssertNil(agent.listener_lease_id)
+        XCTAssertNil(agent.listener_generation)
+        XCTAssertNil(agent.listener_chat_id)
+        XCTAssertNil(agent.listener_chat_title)
+        XCTAssertNil(agent.listener_expires_at)
+        XCTAssertNil(agent.binding_id)
+        XCTAssertNil(agent.lease_id)
+        XCTAssertNil(agent.generation)
+        XCTAssertNil(agent.target_chat_id)
+        XCTAssertFalse(agent.isListening(now: now))
+        XCTAssertNil(VoiceAskAgentResolver.resolve(
+            selectedId: agent.agent_id,
+            agents: [agent],
+            now: now
+        ))
+    }
+
+    func testAgentWireDecodingKeepsLegacyAgentDrainOnly() throws {
+        let formatter = ISO8601DateFormatter()
+        let now = formatter.date(from: "2026-08-26T01:20:00Z")!
+        let agent = try JSONDecoder().decode(Agent.self, from: Data("""
+        {
+          "agent_id": "agt_legacy",
+          "user_id": "usr_1",
+          "label": "legacy-agent",
+          "host_label": "cli",
+          "created_at": "2026-08-18T00:00:00Z",
+          "last_seen_at": "2026-08-26T01:19:30Z"
+        }
+        """.utf8))
+
+        XCTAssertFalse(agent.isListening(now: now))
+        XCTAssertFalse(agent.isListening(now: now.addingTimeInterval(60)))
+        XCTAssertNil(VoiceAskAgentResolver.resolve(
+            selectedId: nil,
+            agents: [agent],
+            now: now
+        ))
+        XCTAssertNil(VoiceAskAgentResolver.defaultSelectedId(
+            currentId: agent.agent_id,
+            agents: [agent],
+            now: now
+        ))
+        XCTAssertNil(agent.voiceAskTarget(now: now))
+    }
+
+    func testAgentWireDecodingAcceptsOneCompleteFlatFenceAtomically() throws {
+        let now = ISO8601DateFormatter().date(from: "2026-08-26T01:20:00Z")!
+        let agent = try JSONDecoder().decode(Agent.self, from: Data("""
+        {
+          "agent_id": "agt_flat",
+          "user_id": "usr_1",
+          "label": "flat-agent",
+          "host_label": "cli",
+          "created_at": "2026-08-18T00:00:00Z",
+          "last_seen_at": "2026-08-18T00:00:00Z",
+          "listener_expires_at": "2026-08-26T01:21:00Z",
+          "binding_id": "binding_flat",
+          "lease_id": "lease_flat",
+          "generation": 3,
+          "target_chat_id": "chat_flat"
+        }
+        """.utf8))
+
+        XCTAssertEqual(agent.listener_binding_id, "binding_flat")
+        XCTAssertEqual(agent.listener_lease_id, "lease_flat")
+        XCTAssertEqual(agent.listener_generation, 3)
+        XCTAssertEqual(agent.listener_chat_id, "chat_flat")
+        XCTAssertTrue(agent.isListening(now: now))
+        XCTAssertTrue(try XCTUnwrap(agent.voiceAskTarget(now: now)).hasCompleteFence)
+    }
+
+    func testAgentWireDecodingRejectsPartialSchemasWithoutMixingFenceFields() throws {
+        let now = ISO8601DateFormatter().date(from: "2026-08-26T01:20:00Z")!
+        let agent = try JSONDecoder().decode(Agent.self, from: Data("""
+        {
+          "agent_id": "agt_partial",
+          "user_id": "usr_1",
+          "label": "partial-agent",
+          "host_label": "cli",
+          "created_at": "2026-08-18T00:00:00Z",
+          "last_seen_at": "2026-08-26T01:19:30Z",
+          "listener_binding_id": "binding_listener",
+          "listener_lease_id": "lease_listener",
+          "listener_expires_at": "2026-08-26T01:21:00Z",
+          "generation": 4,
+          "target_chat_id": "chat_flat"
+        }
+        """.utf8))
+
+        XCTAssertNil(agent.listener_binding_id)
+        XCTAssertNil(agent.listener_lease_id)
+        XCTAssertNil(agent.listener_generation)
+        XCTAssertNil(agent.listener_chat_id)
+        XCTAssertNil(agent.binding_id)
+        XCTAssertNil(agent.lease_id)
+        XCTAssertNil(agent.generation)
+        XCTAssertNil(agent.target_chat_id)
+        XCTAssertFalse(agent.isListening(now: now))
+        XCTAssertNil(agent.voiceAskTarget(now: now))
+    }
+
+    func testAgentWireDecodingRejectsConflictingCompleteFenceSchemas() throws {
+        let now = ISO8601DateFormatter().date(from: "2026-08-26T01:20:00Z")!
+        let agent = try JSONDecoder().decode(Agent.self, from: Data("""
+        {
+          "agent_id": "agt_conflict",
+          "user_id": "usr_1",
+          "label": "conflicting-agent",
+          "host_label": "cli",
+          "created_at": "2026-08-18T00:00:00Z",
+          "last_seen_at": "2026-08-26T01:19:30Z",
+          "listener_binding_id": "binding_listener",
+          "listener_lease_id": "lease_listener",
+          "listener_generation": 4,
+          "listener_chat_id": "chat_listener",
+          "listener_expires_at": "2026-08-26T01:21:00Z",
+          "binding_id": "binding_flat",
+          "lease_id": "lease_flat",
+          "generation": 5,
+          "target_chat_id": "chat_flat"
+        }
+        """.utf8))
+
+        XCTAssertNil(agent.binding_id)
+        XCTAssertNil(agent.lease_id)
+        XCTAssertNil(agent.generation)
+        XCTAssertNil(agent.target_chat_id)
+        XCTAssertFalse(agent.isListening(now: now))
+        XCTAssertNil(agent.voiceAskTarget(now: now))
+    }
+
     func testScreenshotUtteranceAsksAndFailClosesWhenHostIsNotPolling() async throws {
         let capture = ControlledVoiceCapture()
         let generator = ControlledCommandGenerator()
@@ -214,7 +430,7 @@ final class CantoneseAskWorkflowTests: XCTestCase {
         XCTAssertEqual(copy.action, "\(screenshotAgentLabel) is not listening.")
     }
 
-    func testAskPrefersListeningAgentOverStaleDrawerSelection() {
+    func testAskResolverAutoSwitchesStaleSelectionOnlyForSingleLiveListener() {
         let now = ISO8601DateFormatter().date(from: "2026-08-26T01:20:00Z")!
         let staleCodex = Agent(
             agent_id: "agt_codex",
@@ -230,7 +446,12 @@ final class CantoneseAskWorkflowTests: XCTestCase {
             label: "cursor-staging",
             host_label: "cli",
             created_at: "2026-08-18T00:00:00Z",
-            last_seen_at: "2026-08-26T01:19:30Z"
+            last_seen_at: "2026-08-26T01:19:30Z",
+            listener_binding_id: "binding_cursor",
+            listener_lease_id: "lease_cursor",
+            listener_generation: 1,
+            listener_chat_id: "chat_cursor",
+            listener_expires_at: "2026-08-26T01:21:00Z"
         )
         let olderLive = Agent(
             agent_id: "agt_older",
@@ -238,7 +459,12 @@ final class CantoneseAskWorkflowTests: XCTestCase {
             label: "older-live",
             host_label: "cli",
             created_at: "2026-08-18T00:00:00Z",
-            last_seen_at: "2026-08-26T01:19:00Z"
+            last_seen_at: "2026-08-26T01:19:00Z",
+            listener_binding_id: "binding_older",
+            listener_lease_id: "lease_older",
+            listener_generation: 1,
+            listener_chat_id: "chat_older",
+            listener_expires_at: "2026-08-26T01:21:00Z"
         )
 
         XCTAssertEqual(
@@ -257,21 +483,26 @@ final class CantoneseAskWorkflowTests: XCTestCase {
             )?.agent_id,
             liveCursor.agent_id
         )
-        XCTAssertEqual(
+        XCTAssertNil(
             VoiceAskAgentResolver.resolve(
                 selectedId: staleCodex.agent_id,
                 agents: [staleCodex],
                 now: now
-            )?.agent_id,
-            staleCodex.agent_id
+            )
         )
-        XCTAssertEqual(
+        XCTAssertNil(
+            VoiceAskAgentResolver.resolve(
+                selectedId: staleCodex.agent_id,
+                agents: [staleCodex, liveCursor, olderLive],
+                now: now
+            )
+        )
+        XCTAssertNil(
             VoiceAskAgentResolver.resolve(
                 selectedId: nil,
                 agents: [staleCodex, liveCursor, olderLive],
                 now: now
-            )?.agent_id,
-            liveCursor.agent_id
+            )
         )
         XCTAssertEqual(
             VoiceAskAgentResolver.defaultSelectedId(
@@ -289,13 +520,12 @@ final class CantoneseAskWorkflowTests: XCTestCase {
             ),
             liveCursor.agent_id
         )
-        XCTAssertEqual(
+        XCTAssertNil(
             VoiceAskAgentResolver.defaultSelectedId(
                 currentId: staleCodex.agent_id,
                 agents: [staleCodex, liveCursor, olderLive],
                 now: now
-            ),
-            staleCodex.agent_id
+            )
         )
     }
 

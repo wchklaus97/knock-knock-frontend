@@ -64,6 +64,7 @@ final class AppStore: ObservableObject {
     @Published var selectedAgentId: String? = UserDefaults.standard.string(forKey: "vab.selectedAgentId")
     @Published var pushes: [DevPush] = []
     @Published var errorMessage: String?
+    @Published private(set) var sensitiveAskCleanupPending = false
     @Published var headphonesSimulated = false
     @Published var lastSpoken: String?
     @Published var apiBase: String = ""
@@ -213,9 +214,11 @@ final class AppStore: ObservableObject {
     nonisolated static func shouldPersistApiBase(
         runtimeOverride: String?,
         persistedApiBase: String?,
-        resolvedApiBase: String
+        resolvedApiBase: String,
+        buildChannel: DemoConfig.BuildChannel = DemoConfig.buildChannel
     ) -> Bool {
-        runtimeOverride == nil
+        buildChannel != .staging
+            && runtimeOverride == nil
             && persistedApiBase == nil
             && !resolvedApiBase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -245,9 +248,30 @@ final class AppStore: ObservableObject {
         }
     }
 
+    nonisolated static func askSubmissionDefinitelyRejected(_ error: Error) -> Bool {
+        guard let apiError = error as? APIClientError else { return false }
+        switch apiError {
+        case .noToken, .missingPushToken, .invalidPushToken, .invalidBaseURL:
+            return true
+        case let .badStatus(_, _, metadata):
+            guard !metadata.retryable else { return false }
+            return [
+                "agent_not_listening",
+                "ask_listener_fence_mismatch",
+                "legacy_ask_fence_unavailable",
+                "validation_error",
+                "unauthorized",
+                "not_found",
+            ].contains(metadata.errorCode)
+        case .network, .decoding:
+            return false
+        }
+    }
+
     init(
         localStore: SQLiteStore = .shared,
         commandSynthesizer: VoiceSynthesizing = SystemVoiceSynthesizer(),
+        pendingAskRequestStore: PendingAskRequestStoring = KeychainPendingAskRequestStore(),
         backgroundReconciliationDispatcher: BackgroundReconciliationDispatcher = .shared,
         client: APIClient = APIClient(),
         memorySnapshotLoader: MemorySnapshotLoader? = nil,
@@ -272,6 +296,7 @@ final class AppStore: ObservableObject {
         activeCommandCoordinator = ActiveCommandCheckpointCoordinator(
             store: localStore,
             synthesizer: commandSynthesizer,
+            pendingAskRequestStore: pendingAskRequestStore,
             isSpeechAllowed: {
                 UIApplication.shared.applicationState == .active
             }
@@ -338,11 +363,14 @@ final class AppStore: ObservableObject {
         ) {
             UserDefaults.standard.removeObject(forKey: "vab.apiBase")
         }
+        if DemoConfig.buildChannel == .staging {
+            UserDefaults.standard.removeObject(forKey: "vab.apiBase")
+        }
 
         email = UserDefaults.standard.string(forKey: "vab.email") ?? DemoConfig.email
         let runtimeApiBase = DemoConfig.runtimeApiBaseOverride()
         let persistedApiBase = UserDefaults.standard.string(forKey: "vab.apiBase")
-        apiBase = runtimeApiBase ?? persistedApiBase ?? DemoConfig.defaultApiBase
+        apiBase = DemoConfig.resolvedApiBase(persisted: persistedApiBase)
         if !email.isEmpty && UserDefaults.standard.string(forKey: "vab.email") == nil {
             UserDefaults.standard.set(email, forKey: "vab.email")
         }
@@ -544,6 +572,7 @@ final class AppStore: ObservableObject {
 
     private func publishActiveCommandState() {
         activeCommandPresentation = activeCommandCoordinator.presentation
+        sensitiveAskCleanupPending = activeCommandCoordinator.hasPendingSensitiveCleanup
         if let durableConfirmation = activeCommandCoordinator.durablePendingConfirmation {
             pendingCommandConfirmation = durableConfirmation
             localStore.savePendingCommandConfirmation(durableConfirmation)
@@ -574,6 +603,7 @@ final class AppStore: ObservableObject {
     /// silent while the app was inactive or running background reconciliation.
     func resumeDeferredCommandAnnouncement() {
         do {
+            _ = try activeCommandCoordinator.retryPendingSensitiveCleanup()
             try activeCommandCoordinator.announceDeferredIfNeeded()
             publishActiveCommandState()
         } catch {
@@ -702,13 +732,19 @@ final class AppStore: ObservableObject {
     @discardableResult
     func applyApiBase(persist: Bool = true) -> Bool {
         let trimmed = apiBase.trimmingCharacters(in: .whitespacesAndNewlines)
-        #if DEBUG
-        let requiresHTTPS = false
-        #else
-        let requiresHTTPS = true
-        #endif
-        guard DemoConfig.isValidApiBase(trimmed, requireHTTPS: requiresHTTPS),
-              let url = URL(string: trimmed)
+        if DemoConfig.buildChannel == .staging,
+           trimmed != DemoConfig.stagingApiBase {
+            errorMessage = APIClientError.invalidBaseURL.localizedDescription
+            return false
+        }
+        let resolved = DemoConfig.buildChannel == .staging
+            ? DemoConfig.stagingApiBase
+            : trimmed
+        guard DemoConfig.isValidApiBase(
+                  resolved,
+                  requireHTTPS: DemoConfig.requiresHTTPS
+              ),
+              let url = URL(string: resolved)
         else {
             errorMessage = APIClientError.invalidBaseURL.localizedDescription
             return false
@@ -726,9 +762,11 @@ final class AppStore: ObservableObject {
                 return false
             }
         }
-        apiBase = trimmed
-        if persist {
-            UserDefaults.standard.set(trimmed, forKey: "vab.apiBase")
+        apiBase = resolved
+        if DemoConfig.buildChannel == .staging {
+            UserDefaults.standard.removeObject(forKey: "vab.apiBase")
+        } else if persist {
+            UserDefaults.standard.set(resolved, forKey: "vab.apiBase")
         }
         stopEventStream()
         stopReconciliation()
@@ -1322,11 +1360,16 @@ final class AppStore: ObservableObject {
             askTarget: { [weak self] in
                 self?.voiceAskTarget()
             },
-            submitAsk: { [weak self] transcript in
+            submitAskOutcome: { [weak self] transcript, target, clientTurnID in
                 guard let self else {
                     throw APIClientError.network("Knock Knock is no longer available")
                 }
-                return try await self.submitPhoneAsk(transcript, scope: scope)
+                return try await self.submitPhoneAsk(
+                    transcript,
+                    target: target,
+                    clientTurnID: clientTurnID,
+                    scope: scope
+                )
             },
             streamAskResponses: { [weak self] response, onResponse in
                 guard let self else { throw CancellationError() }
@@ -1343,11 +1386,11 @@ final class AppStore: ObservableObject {
     }
 
     var voiceAskTargetLabel: String? {
-        resolvedVoiceAskAgent()?.voiceDisplayLabel
+        voiceAskTargetResolution().target?.label
     }
 
-    private func resolvedVoiceAskAgent(now: Date = Date()) -> Agent? {
-        VoiceAskAgentResolver.resolve(
+    func voiceAskTargetResolution(now: Date = Date()) -> VoiceAskTargetResolution {
+        VoiceAskAgentResolver.targetResolution(
             selectedId: selectedAgentId,
             agents: agents,
             now: now
@@ -1366,75 +1409,190 @@ final class AppStore: ObservableObject {
     }
 
     private func voiceAskTarget() -> VoiceAskTarget? {
-        guard let agent = resolvedVoiceAskAgent() else { return nil }
-        return VoiceAskTarget(agentID: agent.agent_id, label: agent.voiceDisplayLabel)
+        voiceAskTargetResolution().target
     }
 
     private func submitPhoneAsk(
         _ transcript: String,
+        target: VoiceAskTarget,
+        clientTurnID: String,
         scope: LocalVoiceWorkScope
-    ) async throws -> PhoneAskResponse {
+    ) async throws -> PhoneAskSubmissionOutcome {
         try Task.checkCancellation()
-        guard localVoiceScopeIsCurrent(scope),
-              let agent = resolvedVoiceAskAgent()
-        else { throw CancellationError() }
-        let agentID = agent.agent_id
-        let conversationKey = "\(agentID)|\(agent.listener_chat_id ?? "unbound")"
-        struct Body: Encodable {
-            let transcript: String
-            let locale: String?
-            let idempotency_key: String
-            let session_id: String?
-        }
+        guard localVoiceScopeIsCurrent(scope) else { throw CancellationError() }
+        let agentID = target.agentID
         let locale = Locale.current.identifier
+        let sessionlessRequestBody = try PhoneAskRequestBody(
+            transcript: transcript,
+            locale: locale.count >= 2 && locale.count <= 35 ? locale : nil,
+            clientTurnID: clientTurnID,
+            target: target,
+            sessionID: nil
+        )
+        guard let activeCommandScope,
+              activeCommandScope.backendOrigin == ActiveCommandScope.origin(
+                  for: scope.apiBaseURL
+              ),
+              activeCommandScope.ownerUserID == scope.ownerUserID
+        else { throw CancellationError() }
+        let conversationKey = "\(agentID)|\(sessionlessRequestBody.target_chat_id)"
         let conversationSessionID = voiceConversationSessionsByAgent[conversationKey]
             ?? sessions
-                .filter { $0.agent_id == agentID && $0.skill_id == "phone.ask" }
+                .filter {
+                    $0.agent_id == agentID
+                        && $0.skill_id == "phone.ask"
+                        && $0.chat_id == sessionlessRequestBody.target_chat_id
+                }
                 .max { $0.updated_at < $1.updated_at }?
                 .session_id
-        let idempotencyKey = "ask-\(UUID().uuidString)"
-        func makeRequest(sessionID: String?) throws -> URLRequest {
-            let body = try JSONEncoder().encode(
-                Body(
-                    transcript: transcript,
-                    locale: locale.count >= 2 && locale.count <= 35 ? locale : nil,
-                    idempotency_key: idempotencyKey,
-                    session_id: sessionID
-                )
+        let proposedRequest = try PendingAskRequestIdentity(
+            transcript: transcript,
+            locale: sessionlessRequestBody.locale,
+            clientTurnID: clientTurnID,
+            target: target,
+            sessionID: conversationSessionID
+        )
+        let beginOutcome = try activeCommandCoordinator.beginPendingAsk(
+            request: proposedRequest,
+            scope: activeCommandScope
+        )
+        publishActiveCommandState()
+
+        let frozenRequest: PendingAskRequestIdentity
+        switch beginOutcome {
+        case let .selected(request):
+            frozenRequest = request
+        case let .alreadyAccepted(response):
+            return .alreadyAccepted(response)
+        case .alreadyReconciled:
+            return .alreadyReconciled
+        }
+
+        do {
+            let response = try await performFrozenPhoneAskRequest(
+                frozenRequest,
+                scope: scope
             )
-            return try makeLocalVoiceRequest(
-                path: "/v1/phone/agents/\(agentID)/asks",
+            try Task.checkCancellation()
+            guard localVoiceScopeIsCurrent(scope) else { throw CancellationError() }
+            let accepted = try activeCommandCoordinator.acceptAskSubmission(
+                response,
+                expectedClientTurnID: clientTurnID
+            )
+            guard accepted else {
+                throw PhoneAskResponseValidationError.checkpointChanged
+            }
+            publishActiveCommandState()
+            if let sessionID = response.session_id {
+                voiceConversationSessionsByAgent[conversationKey] = sessionID
+            }
+            Task { @MainActor [weak self] in
+                guard let self, self.localVoiceScopeIsCurrent(scope) else { return }
+                await self.refresh()
+            }
+            return .accepted(response)
+        } catch {
+            if Self.askSubmissionDefinitelyRejected(error) {
+                try activeCommandCoordinator.abandonPendingAskSelection(
+                    expectedClientTurnID: clientTurnID
+                )
+                publishActiveCommandState()
+            }
+            throw error
+        }
+    }
+
+    private func performFrozenPhoneAskRequest(
+        _ frozenRequest: PendingAskRequestIdentity,
+        scope: LocalVoiceWorkScope
+    ) async throws -> PhoneAskResponse {
+        func perform(_ identity: PendingAskRequestIdentity) async throws -> PhoneAskResponse {
+            let body = try JSONEncoder().encode(identity.request)
+            let request = try makeLocalVoiceRequest(
+                path: "/v1/phone/agents/\(identity.agentID)/asks",
                 method: "POST",
                 body: body,
                 scope: scope
             )
+            return try await performLocalVoiceRequest(request)
         }
 
-        let response: PhoneAskResponse
-        do {
-            response = try await performLocalVoiceRequest(
-                makeRequest(sessionID: conversationSessionID)
-            )
-        } catch APIClientError.badStatus(410, _, _) where conversationSessionID != nil {
-            if let expiredSessionID = conversationSessionID {
-                voiceConversationSessionsByAgent[conversationKey] = nil
-                removeLocalSession(expiredSessionID)
+        return try await Self.performPhoneAskWithSessionlessRetry(
+            frozenRequest,
+            perform: perform,
+            prepareSessionless: { [activeCommandCoordinator] in
+                guard self.localVoiceScopeIsCurrent(scope) else {
+                    throw CancellationError()
+                }
+                let request = try activeCommandCoordinator
+                    .prepareSessionlessPendingAskRetry(
+                        expectedClientTurnID: frozenRequest.request.client_turn_id
+                    )
+                self.publishActiveCommandState()
+                return request
+            },
+            onExpiredSession: { expiredSessionID in
+                let conversationKey = "\(frozenRequest.agentID)|\(frozenRequest.request.target_chat_id)"
+                self.voiceConversationSessionsByAgent[conversationKey] = nil
+                self.removeLocalSession(expiredSessionID)
             }
-            response = try await performLocalVoiceRequest(makeRequest(sessionID: nil))
+        )
+    }
+
+    static func performPhoneAskWithSessionlessRetry(
+        _ frozenRequest: PendingAskRequestIdentity,
+        perform: (PendingAskRequestIdentity) async throws -> PhoneAskResponse,
+        prepareSessionless: () throws -> PendingAskRequestIdentity,
+        onExpiredSession: (String) -> Void
+    ) async throws -> PhoneAskResponse {
+        do {
+            return try await perform(frozenRequest)
+        } catch APIClientError.badStatus(410, _, _)
+            where frozenRequest.request.session_id != nil
+        {
+            if let expiredSessionID = frozenRequest.request.session_id {
+                onExpiredSession(expiredSessionID)
+            }
+            return try await perform(prepareSessionless())
         }
-        try Task.checkCancellation()
-        guard localVoiceScopeIsCurrent(scope) else { throw CancellationError() }
-        if let sessionID = response.session_id {
-            voiceConversationSessionsByAgent[conversationKey] = sessionID
+    }
+
+    private func reconcileSelectedPhoneAskIfNeeded() async throws {
+        _ = try activeCommandCoordinator.retryPendingSensitiveCleanup()
+        publishActiveCommandState()
+        guard activeCommandCoordinator.hasPendingAskSelection else { return }
+        guard let scope = localVoiceWorkScope,
+              let activeCommandScope,
+              activeCommandScope.backendOrigin == ActiveCommandScope.origin(
+                  for: scope.apiBaseURL
+              ),
+              activeCommandScope.ownerUserID == scope.ownerUserID
+        else { throw CancellationError() }
+
+        let response = try await activeCommandCoordinator.reconcileSelectedPendingAsk(
+            scope: activeCommandScope,
+            replay: { [weak self] frozenRequest in
+                guard let self, self.localVoiceScopeIsCurrent(scope) else {
+                    throw CancellationError()
+                }
+                return try await self.performFrozenPhoneAskRequest(
+                    frozenRequest,
+                    scope: scope
+                )
+            },
+            definitelyRejected: { error in
+                Self.askSubmissionDefinitelyRejected(error)
+            }
+        )
+        if response != nil {
+            publishActiveCommandState()
         }
-        await refresh()
-        return response
     }
 
     private func streamPhoneAskResponses(
         _ response: PhoneAskResponse,
         scope: LocalVoiceWorkScope,
-        onResponse: @escaping @Sendable (String) async -> Void
+        onResponse _: @escaping @Sendable (String) async -> Void
     ) async throws -> Bool {
         guard let sessionID = response.session_id,
               let turnSequence = response.turn_sequence
@@ -1463,26 +1621,23 @@ final class AppStore: ObservableObject {
 
             for message in candidates {
                 newestSequence = max(newestSequence, message.sequence)
-                if case let .string(askID)? = message.metadata["ask_id"],
-                   askID != response.ask_id
-                {
-                    continue
+                if try activeCommandCoordinator.acceptPendingAskAnswer(message) {
+                    publishActiveCommandState()
+                    deliveredResponse = true
+                    lastDeliveryAt = Date()
                 }
-                let text = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { continue }
-                await onResponse(text)
-                deliveredResponse = true
-                lastDeliveryAt = Date()
             }
 
             if let lastDeliveryAt,
                Date().timeIntervalSince(lastDeliveryAt) >= Self.voiceResponseQuietPeriod
             {
                 return deliveredResponse
+                    || activeCommandCoordinator.hasCanonicalAnswer(for: response)
             }
             try await Task.sleep(nanoseconds: Self.voiceResponsePollNanoseconds)
         }
         return deliveredResponse
+            || activeCommandCoordinator.hasCanonicalAnswer(for: response)
     }
 
     private func submitLocalCommand(
@@ -1806,7 +1961,17 @@ final class AppStore: ObservableObject {
         }
     }
 
-    func logout() {
+    @discardableResult
+    func logout() -> Bool {
+        do {
+            try activeCommandCoordinator.clearForScopeChange()
+            publishActiveCommandState()
+        } catch {
+            publishActiveCommandState()
+            sensitiveAskCleanupPending = true
+            errorMessage = ActiveCommandCheckpointError.sensitiveCleanupPending.localizedDescription
+            return false
+        }
         invalidateLocalVoiceWork()
         if let refreshToken {
             let client = self.client
@@ -1856,6 +2021,7 @@ final class AppStore: ObservableObject {
         hasSeededPushIds = false
         knockAlert = nil
         resetEventCursor()
+        return true
     }
 
     /// Starts the foreground-only realtime transport only after a durable REST
@@ -2419,8 +2585,13 @@ final class AppStore: ObservableObject {
     }
 
     private func loadRemoteState(includeAgents: Bool, generation: Int? = nil) async throws {
+        try await reconcileSelectedPhoneAskIfNeeded()
         async let s = client.listSessionsPage(limit: Self.initialSessionPageSize)
         async let p = client.listPushes()
+        let askTask: Task<MessagePage, Error>? =
+            activeCommandCoordinator.pendingAskSessionIDForReconciliation.map { sessionID in
+                Task { try await client.listMessages(sessionId: sessionID) }
+            }
         let commandTask: Task<ActiveCommandApplication?, Error>? =
             activeCommandCoordinator.commandIDForReconciliation == nil
             ? nil
@@ -2453,10 +2624,24 @@ final class AppStore: ObservableObject {
         if let commandTask {
             commandApplication = try await commandTask.value
         }
+        let askPage: MessagePage?
+        if let askTask {
+            askPage = try? await askTask.value
+        } else {
+            askPage = nil
+        }
         if let generation,
            (generation != reconciliationGeneration || token == nil || Task.isCancelled)
         {
             throw CancellationError()
+        }
+        if let askPage {
+            for message in askPage.messages.sorted(by: { $0.sequence < $1.sequence }) {
+                if try activeCommandCoordinator.acceptPendingAskAnswer(message) {
+                    publishActiveCommandState()
+                    break
+                }
+            }
         }
         let candidateCursor = remoteSessionPage.next_cursor?
             .trimmingCharacters(in: .whitespacesAndNewlines)

@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 struct ActiveCommandScope: Equatable {
     let backendOrigin: String
@@ -29,11 +30,82 @@ struct ActiveCommandScope: Equatable {
     }
 }
 
+protocol PendingAskRequestStoring: AnyObject {
+    func load() -> PendingAskRequestIdentity?
+    @discardableResult
+    func save(_ request: PendingAskRequestIdentity) -> Bool
+    @discardableResult
+    func clear() -> Bool
+}
+
+/// Stores the sensitive replay payload in the OS-encrypted Keychain. SQLite
+/// keeps only a SHA-256 fingerprint, so transcript and listener fence values
+/// never enter the local database or diagnostic output.
+final class KeychainPendingAskRequestStore: PendingAskRequestStoring {
+    private static let service = "\(Bundle.main.bundleIdentifier ?? "hk.knockknock.app").pending-ask"
+    private static let account = "pending-ask-request-v1"
+
+    func load() -> PendingAskRequestIdentity? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.service,
+            kSecAttrAccount as String: Self.account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data,
+              let request = try? JSONDecoder().decode(
+                  PendingAskRequestIdentity.self,
+                  from: data
+              ),
+              request.isStructurallyValid
+        else { return nil }
+        return request
+    }
+
+    @discardableResult
+    func save(_ request: PendingAskRequestIdentity) -> Bool {
+        guard request.isStructurallyValid,
+              let data = try? JSONEncoder().encode(request)
+        else { return false }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.service,
+            kSecAttrAccount as String: Self.account,
+        ]
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if status == errSecSuccess { return true }
+        guard status == errSecItemNotFound else { return false }
+        var item = query
+        item.merge(attributes) { _, new in new }
+        return SecItemAdd(item as CFDictionary, nil) == errSecSuccess
+    }
+
+    @discardableResult
+    func clear() -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.service,
+            kSecAttrAccount as String: Self.account,
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
+    }
+}
+
 enum ActiveCommandCheckpointError: LocalizedError, Equatable {
     case commandInProgress(String)
     case persistenceFailed
     case rejectedResponse(ActiveCommandCheckpointReducer.Rejection)
     case currentCommandMissing(String)
+    case pendingAskRecoveryUnavailable
+    case sensitiveCleanupPending
 
     var errorDescription: String? {
         switch self {
@@ -45,6 +117,10 @@ enum ActiveCommandCheckpointError: LocalizedError, Equatable {
             return "The backend command response was rejected (\(reason.description))."
         case let .currentCommandMissing(commandID):
             return "Command \(commandID) is missing from the backend and cannot be reconciled safely."
+        case .pendingAskRecoveryUnavailable:
+            return "An unfinished Ask could not be recovered safely. Please ask again."
+        case .sensitiveCleanupPending:
+            return "Sensitive Ask cleanup is still pending. Retry when the device is unlocked."
         }
     }
 }
@@ -344,35 +420,45 @@ struct ActiveCommandApplication {
 }
 
 /// Coordinates the durable checkpoint and its only external side effect, TTS.
-/// Every write happens before the corresponding POST or announcement.
+/// A phone Ask answer claims its durable at-most-once speech right before audio
+/// starts. Completion callbacks are advisory and remain fenced to that owner.
 @MainActor
 final class ActiveCommandCheckpointCoordinator {
+    private enum AnnouncementOwner: Equatable {
+        case command(commandID: String, version: Int)
+        case ask(clientTurnID: String, askID: String, sequence: Int)
+    }
+
     private struct ActiveAnnouncement: Equatable {
         let id: UInt64
-        let commandID: String
-        let version: Int
+        let owner: AnnouncementOwner
         let voiceScript: String
     }
 
     private let store: SQLiteStore
     private let synthesizer: VoiceSynthesizing
     private let isSpeechAllowed: () -> Bool
+    private let pendingAskRequestStore: PendingAskRequestStoring
 
     private(set) var checkpoint: ActiveCommandCheckpoint?
     private(set) var presentation: BackendCommandPresentation?
+    private(set) var pendingAskCheckpoint: PendingAskCheckpoint?
     private(set) var lastSpoken: String?
     var onAnnouncementStateChange: ((ActiveCommandCheckpointError?) -> Void)?
 
     private var nextAnnouncementID: UInt64 = 0
     private var activeAnnouncement: ActiveAnnouncement?
+    private var lastCompletedAskID: String?
 
     init(
         store: SQLiteStore,
         synthesizer: VoiceSynthesizing,
+        pendingAskRequestStore: PendingAskRequestStoring = KeychainPendingAskRequestStore(),
         isSpeechAllowed: @escaping () -> Bool = { true }
     ) {
         self.store = store
         self.synthesizer = synthesizer
+        self.pendingAskRequestStore = pendingAskRequestStore
         self.isSpeechAllowed = isSpeechAllowed
     }
 
@@ -387,33 +473,127 @@ final class ActiveCommandCheckpointCoordinator {
         checkpoint?.pendingConfirmation
     }
 
+    var pendingAskSessionIDForReconciliation: String? {
+        guard pendingAskCheckpoint?.phase == .awaitingAnswer else { return nil }
+        return pendingAskCheckpoint?.sessionID
+    }
+
+    var hasPendingAskSelection: Bool {
+        pendingAskCheckpoint?.phase == .selected
+    }
+
+    var hasPendingSensitiveCleanup: Bool {
+        store.loadPendingAskSensitiveCleanupCheckpoint() != nil
+    }
+
+    func hasCanonicalAnswer(for response: PhoneAskResponse) -> Bool {
+        if lastCompletedAskID == response.ask_id {
+            return true
+        }
+        guard let pendingAskCheckpoint,
+              pendingAskCheckpoint.askID == response.ask_id,
+              pendingAskCheckpoint.sessionID == response.session_id
+        else { return false }
+        return pendingAskCheckpoint.phase == .answerPendingAnnouncement
+            || pendingAskCheckpoint.phase == .answerPresented
+    }
+
     @discardableResult
     func restore(scope: ActiveCommandScope) throws -> BackendCommandPresentation? {
-        guard let stored = store.loadActiveCommandCheckpoint() else {
-            checkpoint = nil
-            presentation = nil
-            return nil
-        }
-        guard stored.backendOrigin == scope.backendOrigin,
-              stored.ownerUserID == scope.ownerUserID
-        else {
-            guard store.clearActiveCommandCheckpoint() else {
-                throw ActiveCommandCheckpointError.persistenceFailed
+        if let stored = store.loadActiveCommandCheckpoint() {
+            if stored.backendOrigin == scope.backendOrigin,
+               stored.ownerUserID == scope.ownerUserID
+            {
+                if deliveryObligationsAreSatisfied(for: stored) {
+                    guard store.clearActiveCommandCheckpoint() else {
+                        throw ActiveCommandCheckpointError.persistenceFailed
+                    }
+                    checkpoint = nil
+                    presentation = nil
+                } else {
+                    checkpoint = stored
+                    presentation = BackendCommandPresentation(checkpoint: stored)
+                }
+            } else {
+                guard store.clearActiveCommandCheckpoint() else {
+                    throw ActiveCommandCheckpointError.persistenceFailed
+                }
+                checkpoint = nil
+                presentation = nil
             }
+        } else {
             checkpoint = nil
             presentation = nil
-            return nil
         }
-        if deliveryObligationsAreSatisfied(for: stored) {
-            guard store.clearActiveCommandCheckpoint() else {
-                throw ActiveCommandCheckpointError.persistenceFailed
+
+        let cleanupFinished = try retryPendingSensitiveCleanup()
+        if !cleanupFinished,
+           store.loadPendingAskSensitiveCleanupCheckpoint()?.clearPendingAskCheckpoint == true
+        {
+            pendingAskCheckpoint = store.loadPendingAskCheckpoint()
+            throw ActiveCommandCheckpointError.sensitiveCleanupPending
+        }
+
+        if let storedAsk = store.loadPendingAskCheckpoint() {
+            if storedAsk.backendOrigin == scope.backendOrigin,
+               storedAsk.ownerUserID == scope.ownerUserID
+            {
+                pendingAskCheckpoint = storedAsk
+                switch storedAsk.phase {
+                case .selected:
+                    if validatedPendingAskRequest(for: storedAsk) == nil {
+                        if let orphan = pendingAskRequestStore.load() {
+                            guard try requestSensitiveCleanup(
+                                fingerprint: orphan.fingerprint,
+                                clearPendingAskCheckpoint: true
+                            ) else {
+                                throw ActiveCommandCheckpointError.sensitiveCleanupPending
+                            }
+                        } else {
+                            guard store.clearPendingAskCheckpoint() else {
+                                throw ActiveCommandCheckpointError.persistenceFailed
+                            }
+                            pendingAskCheckpoint = nil
+                        }
+                        throw ActiveCommandCheckpointError.pendingAskRecoveryUnavailable
+                    }
+                case .awaitingAnswer:
+                    try retryAcceptedSensitiveCleanup(for: storedAsk)
+                case .answerPendingAnnouncement:
+                    if askDeliveryObligationIsSatisfied(for: storedAsk) {
+                        let presented = try answerPresentedCheckpoint(from: storedAsk)
+                        pendingAskCheckpoint = presented
+                        lastCompletedAskID = presented.askID
+                    }
+                    try retryAcceptedSensitiveCleanup(
+                        for: pendingAskCheckpoint ?? storedAsk
+                    )
+                case .answerPresented:
+                    lastCompletedAskID = storedAsk.askID
+                    try retryAcceptedSensitiveCleanup(for: storedAsk)
+                }
+            } else {
+                pendingAskCheckpoint = storedAsk
+                guard try requestSensitiveCleanup(
+                    for: storedAsk,
+                    clearPendingAskCheckpoint: true
+                ) else {
+                    throw ActiveCommandCheckpointError.sensitiveCleanupPending
+                }
+                pendingAskCheckpoint = nil
             }
-            checkpoint = nil
-            presentation = nil
-            return nil
+        } else {
+            pendingAskCheckpoint = nil
+            if let orphan = pendingAskRequestStore.load() {
+                guard try requestSensitiveCleanup(
+                    fingerprint: orphan.fingerprint,
+                    clearPendingAskCheckpoint: false
+                ) else {
+                    throw ActiveCommandCheckpointError.sensitiveCleanupPending
+                }
+            }
         }
-        checkpoint = stored
-        presentation = BackendCommandPresentation(checkpoint: stored)
+
         try announceIfNeeded()
         return presentation
     }
@@ -434,6 +614,272 @@ final class ActiveCommandCheckpointCoordinator {
         }
         checkpoint = next
         presentation = BackendCommandPresentation(checkpoint: next)
+    }
+
+    /// Journals the newest selected Ask before its POST. Repeating the same
+    /// client turn is idempotent so an ambiguous delivery retry keeps one
+    /// durable identity; a newer client turn supersedes every older answer.
+    @discardableResult
+    func beginPendingAsk(
+        request: PendingAskRequestIdentity,
+        scope: ActiveCommandScope,
+        createdAt: Date = Date()
+    ) throws -> PendingAskBeginOutcome {
+        guard request.isStructurallyValid else {
+            throw ActiveCommandCheckpointError.pendingAskRecoveryUnavailable
+        }
+        if let current = pendingAskCheckpoint,
+           current.clientTurnID == request.clientTurnID
+        {
+            guard current.agentID == request.agentID,
+                  current.agentLabel == request.agentLabel,
+                  current.requestFingerprint == request.fingerprint,
+                  current.backendOrigin == scope.backendOrigin,
+                  current.ownerUserID == scope.ownerUserID
+            else {
+                throw ActiveCommandCheckpointError.pendingAskRecoveryUnavailable
+            }
+            switch current.phase {
+            case .selected:
+                guard let storedRequest = validatedPendingAskRequest(for: current),
+                      storedRequest.hasSameFrozenIdentity(as: request)
+                else {
+                    throw ActiveCommandCheckpointError.pendingAskRecoveryUnavailable
+                }
+                return .selected(storedRequest)
+            case .awaitingAnswer:
+                return .alreadyAccepted(try acceptedResponse(from: current))
+            case .answerPendingAnnouncement, .answerPresented:
+                return .alreadyReconciled
+            }
+        }
+
+        guard try retryPendingSensitiveCleanup() else {
+            throw ActiveCommandCheckpointError.sensitiveCleanupPending
+        }
+        if let current = pendingAskCheckpoint {
+            guard try requestSensitiveCleanup(
+                for: current,
+                clearPendingAskCheckpoint: true
+            ) else {
+                throw ActiveCommandCheckpointError.sensitiveCleanupPending
+            }
+        }
+        let next = PendingAskCheckpoint(
+            phase: .selected,
+            clientTurnID: request.clientTurnID,
+            agentID: request.agentID,
+            agentLabel: request.agentLabel,
+            requestFingerprint: request.fingerprint,
+            askID: nil,
+            sessionID: nil,
+            initialTurnSequence: nil,
+            answerSequence: nil,
+            answerText: nil,
+            lastAnnouncedSequence: nil,
+            backendOrigin: scope.backendOrigin,
+            ownerUserID: scope.ownerUserID,
+            createdAt: createdAt
+        )
+        let previousRequest = pendingAskRequestStore.load()
+        guard next.isStructurallyValid,
+              pendingAskRequestStore.save(request)
+        else {
+            throw ActiveCommandCheckpointError.persistenceFailed
+        }
+        guard store.savePendingAskCheckpoint(next) else {
+            if let previousRequest {
+                _ = pendingAskRequestStore.save(previousRequest)
+            } else {
+                _ = pendingAskRequestStore.clear()
+            }
+            throw ActiveCommandCheckpointError.persistenceFailed
+        }
+        if let activeAnnouncement,
+           case .ask = activeAnnouncement.owner
+        {
+            self.activeAnnouncement = nil
+            synthesizer.stop()
+        }
+        pendingAskCheckpoint = next
+        lastCompletedAskID = nil
+        return .selected(request)
+    }
+
+    @discardableResult
+    func acceptAskSubmission(
+        _ response: PhoneAskResponse,
+        expectedClientTurnID: String
+    ) throws -> Bool {
+        guard let current = pendingAskCheckpoint,
+              current.clientTurnID == expectedClientTurnID
+        else { return false }
+        try response.validate(expectedAgentID: current.agentID)
+        guard let sessionID = response.session_id,
+              let turnSequence = response.turn_sequence
+        else { throw PhoneAskResponseValidationError.checkpointChanged }
+        let askID = response.ask_id
+        if current.phase != .selected {
+            return current.askID == askID
+                && current.sessionID == sessionID
+                && current.initialTurnSequence == turnSequence
+        }
+        let next = PendingAskCheckpoint(
+            phase: .awaitingAnswer,
+            clientTurnID: current.clientTurnID,
+            agentID: current.agentID,
+            agentLabel: current.agentLabel,
+            requestFingerprint: current.requestFingerprint,
+            askID: askID,
+            sessionID: sessionID,
+            initialTurnSequence: turnSequence,
+            answerSequence: nil,
+            answerText: nil,
+            lastAnnouncedSequence: nil,
+            backendOrigin: current.backendOrigin,
+            ownerUserID: current.ownerUserID,
+            createdAt: current.createdAt
+        )
+        guard next.isStructurallyValid,
+              store.savePendingAskCheckpoint(next)
+        else {
+            throw ActiveCommandCheckpointError.persistenceFailed
+        }
+        pendingAskCheckpoint = next
+        do {
+            _ = try requestSensitiveCleanup(
+                for: next,
+                clearPendingAskCheckpoint: false
+            )
+        } catch let error as ActiveCommandCheckpointError {
+            onAnnouncementStateChange?(error)
+        } catch {
+            onAnnouncementStateChange?(.persistenceFailed)
+        }
+        return true
+    }
+
+    func prepareSessionlessPendingAskRetry(
+        expectedClientTurnID: String
+    ) throws -> PendingAskRequestIdentity {
+        guard let current = pendingAskCheckpoint,
+              current.phase == .selected,
+              current.clientTurnID == expectedClientTurnID,
+              let request = validatedPendingAskRequest(for: current)
+        else {
+            throw ActiveCommandCheckpointError.pendingAskRecoveryUnavailable
+        }
+        guard request.request.session_id != nil else { return request }
+        let sessionless = request.replacingSessionID(nil)
+        guard sessionless.fingerprint == current.requestFingerprint,
+              pendingAskRequestStore.save(sessionless)
+        else {
+            throw ActiveCommandCheckpointError.persistenceFailed
+        }
+        return sessionless
+    }
+
+    func reconcileSelectedPendingAsk(
+        scope: ActiveCommandScope,
+        replay: (PendingAskRequestIdentity) async throws -> PhoneAskResponse,
+        definitelyRejected: (Error) -> Bool
+    ) async throws -> PhoneAskResponse? {
+        guard let current = pendingAskCheckpoint,
+              current.phase == .selected
+        else { return nil }
+        guard current.backendOrigin == scope.backendOrigin,
+              current.ownerUserID == scope.ownerUserID,
+              let request = validatedPendingAskRequest(for: current)
+        else {
+            throw ActiveCommandCheckpointError.pendingAskRecoveryUnavailable
+        }
+        do {
+            let response = try await replay(request)
+            guard pendingAskCheckpoint?.clientTurnID == current.clientTurnID else {
+                return nil
+            }
+            guard try acceptAskSubmission(
+                response,
+                expectedClientTurnID: current.clientTurnID
+            ) else {
+                return nil
+            }
+            return response
+        } catch {
+            if definitelyRejected(error) {
+                try abandonPendingAskSelection(
+                    expectedClientTurnID: current.clientTurnID
+                )
+            }
+            throw error
+        }
+    }
+
+    func abandonPendingAskSelection(expectedClientTurnID: String) throws {
+        guard let pendingAskCheckpoint,
+              pendingAskCheckpoint.clientTurnID == expectedClientTurnID,
+              pendingAskCheckpoint.phase == .selected
+        else { return }
+        guard try requestSensitiveCleanup(
+            for: pendingAskCheckpoint,
+            clearPendingAskCheckpoint: true
+        ) else {
+            throw ActiveCommandCheckpointError.sensitiveCleanupPending
+        }
+    }
+
+    /// Accepts only one canonical agent message for the currently selected
+    /// Ask. Sequence is the backend version and Ask metadata prevents an older
+    /// answer from the same conversation speaking over a newer turn.
+    @discardableResult
+    func acceptPendingAskAnswer(_ message: SessionMessage) throws -> Bool {
+        guard let current = pendingAskCheckpoint,
+              current.phase == .awaitingAnswer
+                  || current.phase == .answerPendingAnnouncement,
+              let askID = current.askID,
+              let sessionID = current.sessionID,
+              let initialTurnSequence = current.initialTurnSequence,
+              message.session_id == sessionID,
+              message.role == "agent",
+              message.sequence > initialTurnSequence,
+              case let .string(messageAskID)? = message.metadata["ask_id"],
+              messageAskID == askID
+        else { return false }
+        if case let .string(messageClientTurnID)? = message.metadata["client_turn_id"],
+           messageClientTurnID != current.clientTurnID
+        {
+            return false
+        }
+        if current.phase == .answerPendingAnnouncement {
+            try announceIfNeeded()
+            return false
+        }
+        let text = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return false }
+        let next = PendingAskCheckpoint(
+            phase: .answerPendingAnnouncement,
+            clientTurnID: current.clientTurnID,
+            agentID: current.agentID,
+            agentLabel: current.agentLabel,
+            requestFingerprint: current.requestFingerprint,
+            askID: askID,
+            sessionID: sessionID,
+            initialTurnSequence: initialTurnSequence,
+            answerSequence: message.sequence,
+            answerText: text,
+            lastAnnouncedSequence: nil,
+            backendOrigin: current.backendOrigin,
+            ownerUserID: current.ownerUserID,
+            createdAt: current.createdAt
+        )
+        guard next.isStructurallyValid,
+              store.savePendingAskCheckpoint(next)
+        else {
+            throw ActiveCommandCheckpointError.persistenceFailed
+        }
+        pendingAskCheckpoint = next
+        try announceIfNeeded()
+        return true
     }
 
     func submit(
@@ -578,7 +1024,29 @@ final class ActiveCommandCheckpointCoordinator {
     }
 
     func clearForScopeChange() throws {
-        guard store.clearActiveCommandCheckpoint() else {
+        guard try retryPendingSensitiveCleanup() else {
+            throw ActiveCommandCheckpointError.sensitiveCleanupPending
+        }
+        if let pending = pendingAskCheckpoint ?? store.loadPendingAskCheckpoint() {
+            pendingAskCheckpoint = pending
+            guard try requestSensitiveCleanup(
+                for: pending,
+                clearPendingAskCheckpoint: true
+            ) else {
+                throw ActiveCommandCheckpointError.sensitiveCleanupPending
+            }
+        } else if let orphan = pendingAskRequestStore.load() {
+            guard try requestSensitiveCleanup(
+                fingerprint: orphan.fingerprint,
+                clearPendingAskCheckpoint: false
+            ) else {
+                throw ActiveCommandCheckpointError.sensitiveCleanupPending
+            }
+        }
+        guard store.clearActiveCommandCheckpoint(),
+              store.clearPendingAskCheckpoint(),
+              store.clearPendingAskSensitiveCleanupCheckpoint()
+        else {
             throw ActiveCommandCheckpointError.persistenceFailed
         }
         discardInMemory()
@@ -593,6 +1061,8 @@ final class ActiveCommandCheckpointCoordinator {
         synthesizer.stop()
         checkpoint = nil
         presentation = nil
+        pendingAskCheckpoint = nil
+        lastCompletedAskID = nil
         lastSpoken = nil
     }
 
@@ -601,6 +1071,7 @@ final class ActiveCommandCheckpointCoordinator {
     /// method so that exact durable version is announced once, after the app
     /// becomes active.
     func announceDeferredIfNeeded() throws {
+        _ = try retryPendingSensitiveCleanup()
         try announceIfNeeded()
     }
 
@@ -621,31 +1092,65 @@ final class ActiveCommandCheckpointCoordinator {
     }
 
     private func announceIfNeeded() throws {
-        guard let checkpoint,
-              let presentation,
-              let voiceScript = presentation.voiceScript,
-              checkpoint.lastAnnouncedVersion != presentation.version,
-              isSpeechAllowed()
-        else { return }
-        if let activeAnnouncement,
-           activeAnnouncement.commandID == presentation.commandID,
-           activeAnnouncement.version == presentation.version
+        guard activeAnnouncement == nil, isSpeechAllowed() else { return }
+        if let checkpoint,
+           let presentation,
+           let voiceScript = presentation.voiceScript,
+           checkpoint.lastAnnouncedVersion != presentation.version
         {
+            startAnnouncement(
+                owner: .command(
+                    commandID: presentation.commandID,
+                    version: presentation.version
+                ),
+                voiceScript: voiceScript
+            )
             return
         }
+        if let pendingAskCheckpoint,
+           pendingAskCheckpoint.phase == .answerPendingAnnouncement,
+           let askID = pendingAskCheckpoint.askID,
+           let sequence = pendingAskCheckpoint.answerSequence,
+           let answerText = pendingAskCheckpoint.answerText,
+           pendingAskCheckpoint.lastAnnouncedSequence != sequence
+        {
+            var claimed = pendingAskCheckpoint
+            claimed.lastAnnouncedSequence = sequence
+            let presented = try answerPresentedCheckpoint(from: claimed)
+            self.pendingAskCheckpoint = presented
+            lastCompletedAskID = askID
+            startAnnouncement(
+                owner: .ask(
+                    clientTurnID: pendingAskCheckpoint.clientTurnID,
+                    askID: askID,
+                    sequence: sequence
+                ),
+                voiceScript: answerText
+            )
+        }
+    }
 
+    private func startAnnouncement(
+        owner: AnnouncementOwner,
+        voiceScript: String
+    ) {
         activeAnnouncement = nil
         synthesizer.stop()
         nextAnnouncementID += 1
         let announcement = ActiveAnnouncement(
             id: nextAnnouncementID,
-            commandID: presentation.commandID,
-            version: presentation.version,
+            owner: owner,
             voiceScript: voiceScript
         )
         activeAnnouncement = announcement
         synthesizer.speak(voiceScript) { [weak self] result in
-            self?.completeAnnouncement(announcement, result: result)
+            // Some synthesizers complete inline. Always leave their speak stack
+            // before mutating durable ownership or draining the next announcement.
+            // The weak capture and ActiveAnnouncement identity check make this
+            // queued callback inert after cancellation, scope reset, or teardown.
+            DispatchQueue.main.async { [weak self] in
+                self?.completeAnnouncement(announcement, result: result)
+            }
         }
     }
 
@@ -655,34 +1160,237 @@ final class ActiveCommandCheckpointCoordinator {
     ) {
         guard activeAnnouncement == announcement else { return }
         activeAnnouncement = nil
-        guard result == .finished,
-              var checkpoint,
-              checkpoint.commandID == announcement.commandID,
-              checkpoint.backendVersion == announcement.version,
-              let presentation,
-              presentation.commandID == announcement.commandID,
-              presentation.version == announcement.version,
-              presentation.voiceScript == announcement.voiceScript,
-              checkpoint.lastAnnouncedVersion != announcement.version
-        else { return }
-
-        checkpoint.lastAnnouncedVersion = announcement.version
-        guard checkpoint.isStructurallyValid,
-              store.saveActiveCommandCheckpoint(checkpoint)
-        else {
-            onAnnouncementStateChange?(.persistenceFailed)
+        guard result == .finished else {
+            drainCurrentAnnouncementAfterStaleCompletion()
             return
         }
-        self.checkpoint = checkpoint
-        lastSpoken = announcement.voiceScript
+
+        switch announcement.owner {
+        case let .command(commandID, version):
+            guard var checkpoint,
+                  checkpoint.commandID == commandID,
+                  checkpoint.backendVersion == version,
+                  let presentation,
+                  presentation.commandID == commandID,
+                  presentation.version == version,
+                  presentation.voiceScript == announcement.voiceScript,
+                  checkpoint.lastAnnouncedVersion != version
+            else {
+                drainCurrentAnnouncementAfterStaleCompletion()
+                return
+            }
+            checkpoint.lastAnnouncedVersion = version
+            guard checkpoint.isStructurallyValid,
+                  store.saveActiveCommandCheckpoint(checkpoint)
+            else {
+                onAnnouncementStateChange?(.persistenceFailed)
+                return
+            }
+            self.checkpoint = checkpoint
+            lastSpoken = announcement.voiceScript
+            do {
+                try clearDurableCheckpointIfDelivered()
+                try announceIfNeeded()
+                onAnnouncementStateChange?(nil)
+            } catch let error as ActiveCommandCheckpointError {
+                onAnnouncementStateChange?(error)
+            } catch {
+                onAnnouncementStateChange?(.persistenceFailed)
+            }
+        case let .ask(clientTurnID, askID, sequence):
+            guard let pendingAskCheckpoint,
+                  pendingAskCheckpoint.phase == .answerPresented,
+                  pendingAskCheckpoint.clientTurnID == clientTurnID,
+                  pendingAskCheckpoint.askID == askID,
+                  pendingAskCheckpoint.answerSequence == sequence,
+                  pendingAskCheckpoint.answerText == announcement.voiceScript,
+                  pendingAskCheckpoint.lastAnnouncedSequence == sequence
+            else {
+                drainCurrentAnnouncementAfterStaleCompletion()
+                return
+            }
+            lastSpoken = announcement.voiceScript
+            lastCompletedAskID = askID
+            do {
+                let cleanupFinished = try requestSensitiveCleanup(
+                    for: pendingAskCheckpoint,
+                    clearPendingAskCheckpoint: false
+                )
+                try announceIfNeeded()
+                onAnnouncementStateChange?(cleanupFinished ? nil : .sensitiveCleanupPending)
+            } catch let error as ActiveCommandCheckpointError {
+                onAnnouncementStateChange?(error)
+            } catch {
+                onAnnouncementStateChange?(.persistenceFailed)
+            }
+        }
+    }
+
+    private func drainCurrentAnnouncementAfterStaleCompletion() {
         do {
-            try clearDurableCheckpointIfDelivered()
+            try announceIfNeeded()
             onAnnouncementStateChange?(nil)
         } catch let error as ActiveCommandCheckpointError {
             onAnnouncementStateChange?(error)
         } catch {
             onAnnouncementStateChange?(.persistenceFailed)
         }
+    }
+
+    @discardableResult
+    func retryPendingSensitiveCleanup() throws -> Bool {
+        guard let cleanup = store.loadPendingAskSensitiveCleanupCheckpoint() else {
+            return true
+        }
+        if let request = pendingAskRequestStore.load(),
+           request.fingerprint != cleanup.requestFingerprint
+        {
+            throw ActiveCommandCheckpointError.pendingAskRecoveryUnavailable
+        }
+        guard pendingAskRequestStore.clear() else {
+            onAnnouncementStateChange?(.sensitiveCleanupPending)
+            return false
+        }
+        if cleanup.clearPendingAskCheckpoint {
+            guard store.clearPendingAskCheckpoint() else {
+                throw ActiveCommandCheckpointError.persistenceFailed
+            }
+            if pendingAskCheckpoint?.requestFingerprint == cleanup.requestFingerprint
+                || pendingAskCheckpoint?.requestFingerprint == nil
+            {
+                pendingAskCheckpoint = nil
+            }
+        }
+        guard store.clearPendingAskSensitiveCleanupCheckpoint() else {
+            throw ActiveCommandCheckpointError.persistenceFailed
+        }
+        onAnnouncementStateChange?(nil)
+        return true
+    }
+
+    private func retryAcceptedSensitiveCleanup(
+        for checkpoint: PendingAskCheckpoint
+    ) throws {
+        guard pendingAskRequestStore.load() != nil
+                || store.loadPendingAskSensitiveCleanupCheckpoint() != nil
+        else { return }
+        _ = try requestSensitiveCleanup(
+            for: checkpoint,
+            clearPendingAskCheckpoint: false
+        )
+    }
+
+    @discardableResult
+    private func requestSensitiveCleanup(
+        for checkpoint: PendingAskCheckpoint,
+        clearPendingAskCheckpoint: Bool
+    ) throws -> Bool {
+        guard let fingerprint = checkpoint.requestFingerprint
+                ?? pendingAskRequestStore.load()?.fingerprint
+        else {
+            if clearPendingAskCheckpoint {
+                guard store.clearPendingAskCheckpoint() else {
+                    throw ActiveCommandCheckpointError.persistenceFailed
+                }
+                pendingAskCheckpoint = nil
+            }
+            return true
+        }
+        return try requestSensitiveCleanup(
+            fingerprint: fingerprint,
+            clearPendingAskCheckpoint: clearPendingAskCheckpoint
+        )
+    }
+
+    @discardableResult
+    private func requestSensitiveCleanup(
+        fingerprint: String,
+        clearPendingAskCheckpoint: Bool
+    ) throws -> Bool {
+        if let existing = store.loadPendingAskSensitiveCleanupCheckpoint(),
+           existing.requestFingerprint != fingerprint
+        {
+            guard try retryPendingSensitiveCleanup() else { return false }
+        }
+        let existing = store.loadPendingAskSensitiveCleanupCheckpoint()
+        let cleanup = PendingAskSensitiveCleanupCheckpoint(
+            requestFingerprint: fingerprint,
+            clearPendingAskCheckpoint: clearPendingAskCheckpoint
+                || existing?.clearPendingAskCheckpoint == true,
+            createdAt: existing?.createdAt ?? Date()
+        )
+        guard cleanup.isStructurallyValid,
+              store.savePendingAskSensitiveCleanupCheckpoint(cleanup)
+        else {
+            throw ActiveCommandCheckpointError.persistenceFailed
+        }
+        return try retryPendingSensitiveCleanup()
+    }
+
+    private func acceptedResponse(
+        from checkpoint: PendingAskCheckpoint
+    ) throws -> PhoneAskResponse {
+        guard let askID = checkpoint.askID,
+              let sessionID = checkpoint.sessionID,
+              let turnSequence = checkpoint.initialTurnSequence
+        else {
+            throw ActiveCommandCheckpointError.pendingAskRecoveryUnavailable
+        }
+        return PhoneAskResponse(
+            ask_id: askID,
+            agent_id: checkpoint.agentID,
+            agent_label: checkpoint.agentLabel,
+            session_id: sessionID,
+            turn_sequence: turnSequence,
+            status: "queued"
+        )
+    }
+
+    private func answerPresentedCheckpoint(
+        from checkpoint: PendingAskCheckpoint
+    ) throws -> PendingAskCheckpoint {
+        guard let answerSequence = checkpoint.answerSequence,
+              checkpoint.lastAnnouncedSequence == answerSequence
+        else {
+            throw ActiveCommandCheckpointError.persistenceFailed
+        }
+        let presented = PendingAskCheckpoint(
+            phase: .answerPresented,
+            clientTurnID: checkpoint.clientTurnID,
+            agentID: checkpoint.agentID,
+            agentLabel: checkpoint.agentLabel,
+            requestFingerprint: checkpoint.requestFingerprint,
+            askID: checkpoint.askID,
+            sessionID: checkpoint.sessionID,
+            initialTurnSequence: checkpoint.initialTurnSequence,
+            answerSequence: answerSequence,
+            answerText: checkpoint.answerText,
+            lastAnnouncedSequence: answerSequence,
+            backendOrigin: checkpoint.backendOrigin,
+            ownerUserID: checkpoint.ownerUserID,
+            createdAt: checkpoint.createdAt
+        )
+        guard presented.isStructurallyValid,
+              store.savePendingAskCheckpoint(presented)
+        else {
+            throw ActiveCommandCheckpointError.persistenceFailed
+        }
+        return presented
+    }
+
+    private func validatedPendingAskRequest(
+        for checkpoint: PendingAskCheckpoint
+    ) -> PendingAskRequestIdentity? {
+        guard checkpoint.phase == .selected,
+              let fingerprint = checkpoint.requestFingerprint,
+              let request = pendingAskRequestStore.load(),
+              request.isStructurallyValid,
+              request.fingerprint == fingerprint,
+              request.clientTurnID == checkpoint.clientTurnID,
+              request.agentID == checkpoint.agentID,
+              request.agentLabel == checkpoint.agentLabel
+        else { return nil }
+        return request
     }
 
     private func clearDurableCheckpointIfDelivered() throws {
@@ -703,5 +1411,23 @@ final class ActiveCommandCheckpointCoordinator {
         else { return false }
         return checkpoint.validatedPresentation?.voice_script == nil
             || checkpoint.lastAnnouncedVersion == version
+    }
+
+    private func askDeliveryObligationIsSatisfied(
+        for checkpoint: PendingAskCheckpoint
+    ) -> Bool {
+        checkpoint.phase == .answerPendingAnnouncement
+            && checkpoint.answerSequence != nil
+            && checkpoint.lastAnnouncedSequence == checkpoint.answerSequence
+    }
+
+    private func normalizedIdentifier(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed == raw,
+              !raw.isEmpty,
+              raw.utf8.count <= 128
+        else { return nil }
+        return raw
     }
 }

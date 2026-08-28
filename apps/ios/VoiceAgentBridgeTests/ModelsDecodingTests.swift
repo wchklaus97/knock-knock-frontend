@@ -20,11 +20,16 @@ final class ModelsDecodingTests: XCTestCase {
             persistedApiBase: "https://saved.example.com",
             resolvedApiBase: "https://saved.example.com"
         ))
-        XCTAssertTrue(AppStore.shouldPersistApiBase(
+        let shouldPersistBundledDefault = AppStore.shouldPersistApiBase(
             runtimeOverride: nil,
             persistedApiBase: nil,
             resolvedApiBase: "https://bundled.example.com"
-        ))
+        )
+        #if KNOCK_STAGING
+        XCTAssertFalse(shouldPersistBundledDefault)
+        #else
+        XCTAssertTrue(shouldPersistBundledDefault)
+        #endif
     }
 
     func testPhysicalDeviceRegistrationRequiresValidAPNsToken() throws {
@@ -117,10 +122,70 @@ final class ModelsDecodingTests: XCTestCase {
             "KNOCK_API_BASE_URL": "http://127.0.0.1:8797"
         ])
 
-        #if DEBUG
+        #if DEBUG && !KNOCK_STAGING
         XCTAssertEqual(override, "http://127.0.0.1:8798")
         #else
         XCTAssertNil(override)
+        #endif
+    }
+
+    func testStagingOriginIgnoresHostileLookalikeProductionAndLocalOverrides() {
+        let hostileInputs = [
+            "https://knock-knock-backend-staging.wch-klaus.workers.dev.evil.example",
+            "https://knock-knock-backend-production.wch-klaus.workers.dev",
+            "http://127.0.0.1:8787",
+            "http://localhost:8787",
+            "https://staging.example.com",
+        ]
+
+        for hostile in hostileInputs {
+            XCTAssertEqual(
+                DemoConfig.resolvedApiBase(
+                    persisted: hostile,
+                    environment: [
+                        "KNOCK_UI_TEST_API_BASE_URL": hostile,
+                        "KNOCK_API_BASE_URL": hostile,
+                    ],
+                    channel: .staging,
+                    bundled: hostile,
+                    isSimulator: true
+                ),
+                DemoConfig.stagingApiBase
+            )
+        }
+        XCTAssertNil(DemoConfig.runtimeApiBaseOverride(
+            environment: ["KNOCK_API_BASE_URL": "http://127.0.0.1:8787"],
+            channel: .staging
+        ))
+    }
+
+    func testDevelopmentOriginRetainsExplicitAndSimulatorLocalAbility() {
+        XCTAssertEqual(
+            DemoConfig.resolvedApiBase(
+                persisted: nil,
+                environment: ["KNOCK_API_BASE_URL": "http://127.0.0.1:8797"],
+                channel: .development,
+                bundled: nil,
+                isSimulator: true
+            ),
+            "http://127.0.0.1:8797"
+        )
+        XCTAssertEqual(
+            DemoConfig.resolvedApiBase(
+                persisted: nil,
+                environment: [:],
+                channel: .development,
+                bundled: nil,
+                isSimulator: true
+            ),
+            "http://127.0.0.1:8787"
+        )
+    }
+
+    func testCompiledStagingChannelUsesCanonicalOrigin() {
+        #if KNOCK_STAGING
+        XCTAssertEqual(DemoConfig.buildChannel, .staging)
+        XCTAssertEqual(DemoConfig.defaultApiBase, DemoConfig.stagingApiBase)
         #endif
     }
 

@@ -8,12 +8,19 @@
     "vab": "./dist/cli.js"
   },
   "scripts": {
+    "postinstall": "node scripts/build-macos-deny-attach.mjs",
+    "build:native": "node scripts/build-macos-deny-attach.mjs",
+    "predev": "pnpm run build:native",
     "dev": "tsx src/index.ts",
+    "prestart": "pnpm run build:native",
     "start": "tsx src/index.ts",
+    "prebuild": "pnpm run build:native",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test src/cli-support.test.ts src/listening.test.ts",
+    "pretest": "pnpm run build:native",
+    "test": "tsx --test src/cli-support.test.ts src/listening.test.ts src/final-blockers.test.ts src/macos-anti-attach.test.ts",
     "test:paperclip": "tsx src/paperclip-smoke.ts",
+    "precli": "pnpm run build:native",
     "cli": "tsx src/cli.ts"
   },
   "engines": {

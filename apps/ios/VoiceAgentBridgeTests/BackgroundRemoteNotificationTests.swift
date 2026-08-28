@@ -1,4 +1,5 @@
 import UIKit
+import UserNotifications
 import XCTest
 @testable import VoiceAgentBridge
 
@@ -60,6 +61,34 @@ final class BackgroundRemoteNotificationTests: XCTestCase {
 
         XCTAssertEqual(receivedHints, [.session])
         XCTAssertEqual(completionResults, [.newData])
+    }
+
+    func testForegroundLateSessionHintUsesSameReconciliationDispatcher() {
+        let dispatcher = BackgroundReconciliationDispatcher()
+        let delegate = AppDelegate(
+            backgroundReconciliationDispatcher: dispatcher,
+            backgroundCompletionTimeout: 60
+        )
+        var receivedHints: [RemoteNotificationWakeHint] = []
+        dispatcher.bind { request in
+            receivedHints.append(request.hint)
+            XCTAssertTrue(request.claim())
+            request.complete(.newData)
+        }
+
+        var presentationOptions: UNNotificationPresentationOptions?
+        delegate.handleForegroundRemoteNotification(
+            [
+                "aps": ["content-available": 1],
+                "session_id": "ses_late_foreground",
+                "event_id": "evt_late_foreground",
+            ],
+            presentationCompletionHandler: { presentationOptions = $0 }
+        )
+
+        XCTAssertEqual(receivedHints, [.session])
+        XCTAssertTrue(presentationOptions?.contains(.banner) == true)
+        XCTAssertTrue(presentationOptions?.contains(.sound) == true)
     }
 
     func testMalformedPayloadCompletesWithNoDataWithoutSchedulingReconciliation() {

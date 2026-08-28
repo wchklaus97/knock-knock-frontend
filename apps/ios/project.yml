@@ -38,6 +38,7 @@ settings:
     Staging:
       KNOCK_API_BASE_URL: "https://knock-knock-backend-staging.wch-klaus.workers.dev"
       APS_ENVIRONMENT: development
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) DEBUG KNOCK_STAGING"
     Release:
       CODE_SIGN_IDENTITY: "Apple Distribution"
       KNOCK_API_BASE_URL: "https://knock-knock-backend-production.wch-klaus.workers.dev"

@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 
@@ -1133,8 +1134,44 @@ struct HomeVoiceDockCopy: Equatable {
         followUpListenIsBody: Bool = false,
         targetLabel: String?,
         presentation: BackendCommandPresentation?,
-        isAwaitingConfirmation: Bool
+        isAwaitingConfirmation: Bool,
+        targetResolution: VoiceAskTargetResolution? = nil
     ) -> HomeVoiceDockCopy {
+        if presentation == nil,
+           !isAwaitingConfirmation,
+           !isFollowUpListen,
+           let targetResolution
+        {
+            switch voice {
+            case .idle, .submitted, .asked, .failed:
+                switch targetResolution {
+                case .unavailable:
+                    return .init(
+                        title: "No agents listening",
+                        status: "Unavailable",
+                        action: "Wait for an agent to start listening",
+                        accessibilityValue: "No agents listening",
+                        accessibilityHint: "Voice capture is unavailable until an agent is listening.",
+                        usesActiveColor: false,
+                        systemImage: "mic.slash"
+                    )
+                case .selectionRequired:
+                    return .init(
+                        title: "Select an agent",
+                        status: "Not ready",
+                        action: "Choose who to ask",
+                        accessibilityValue: "Agent selection required",
+                        accessibilityHint: "Open the list of listening agents and choose one before recording.",
+                        usesActiveColor: false,
+                        systemImage: "person.2"
+                    )
+                case .resolved:
+                    break
+                }
+            default:
+                break
+            }
+        }
         let holdTitle = targetLabel.map { "Ask \($0)" } ?? "Voice"
         switch voice {
         case .requestingPermissions:
@@ -1406,8 +1443,22 @@ struct HomeVoiceDockCopy: Equatable {
 struct HomeVoiceDock: View {
     @ObservedObject var controller: LocalVoiceCommandController
     let targetLabel: String?
+    let targetResolution: (Date) -> VoiceAskTargetResolution
+    let onSelectAgent: (String) -> Void
     var presentation: BackendCommandPresentation? = nil
     var isAwaitingConfirmation = false
+    @State private var resolutionNow = Date()
+    @State private var recordingTarget: VoiceAskTarget?
+    @State private var showingAgentSelection = false
+
+    private var resolvedTargetState: VoiceAskTargetResolution {
+        targetResolution(resolutionNow)
+    }
+
+    private var selectionTargets: [VoiceAskTarget] {
+        guard case let .selectionRequired(targets) = resolvedTargetState else { return [] }
+        return targets
+    }
 
     private var copy: HomeVoiceDockCopy {
         HomeVoiceDockCopy.make(
@@ -1416,7 +1467,8 @@ struct HomeVoiceDock: View {
             followUpListenIsBody: controller.followUpListenIsBody,
             targetLabel: targetLabel,
             presentation: presentation,
-            isAwaitingConfirmation: isAwaitingConfirmation
+            isAwaitingConfirmation: isAwaitingConfirmation,
+            targetResolution: resolvedTargetState
         )
     }
 
@@ -1455,8 +1507,17 @@ struct HomeVoiceDock: View {
                 guard !controller.isFollowUpListen else { return }
                 if controller.state.isListening {
                     controller.stop()
+                    recordingTarget = nil
                 } else {
-                    controller.start()
+                    switch resolvedTargetState {
+                    case let .resolved(target):
+                        recordingTarget = target
+                        controller.start(resolvedAskTarget: target)
+                    case .selectionRequired:
+                        showingAgentSelection = true
+                    case .unavailable:
+                        break
+                    }
                 }
             }
             .accessibilityElement(children: .ignore)
@@ -1469,6 +1530,32 @@ struct HomeVoiceDock: View {
         .padding(.top, 11)
         .padding(.bottom, 8)
         .background(KnockDesign.canvas.opacity(0.98))
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { now in
+            let nextResolution = targetResolution(now)
+            switch controller.state {
+            case .requestingPermissions, .listening:
+                if let recordingTarget,
+                   recordingTarget != nextResolution.target
+                {
+                    controller.abort()
+                    self.recordingTarget = nil
+                }
+            default:
+                recordingTarget = nil
+            }
+            resolutionNow = now
+        }
+        .confirmationDialog(
+            "Select an agent",
+            isPresented: $showingAgentSelection,
+            titleVisibility: .visible
+        ) {
+            ForEach(selectionTargets, id: \.agentID) { target in
+                Button(target.label) {
+                    onSelectAgent(target.agentID)
+                }
+            }
+        }
     }
 }
 
@@ -1659,6 +1746,12 @@ struct ProductionHomeView: View {
                         HomeVoiceDock(
                             controller: controller,
                             targetLabel: store.voiceAskTargetLabel,
+                            targetResolution: { now in
+                                store.voiceAskTargetResolution(now: now)
+                            },
+                            onSelectAgent: { agentID in
+                                store.selectAgent(agentID)
+                            },
                             presentation: store.activeCommandPresentation,
                             isAwaitingConfirmation: store.pendingCommandConfirmation != nil
                         )

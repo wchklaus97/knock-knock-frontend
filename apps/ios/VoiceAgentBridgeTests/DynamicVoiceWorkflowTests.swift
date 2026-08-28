@@ -169,7 +169,7 @@ final class DynamicVoiceWorkflowTests: XCTestCase {
             generator: generator,
             capture: capture,
             synthesizer: synthesizer,
-            submitAsk: { _ in
+            submitAsk: { _, _ in
                 asked.value = true
                 return Self.askResponse()
             }
@@ -223,7 +223,7 @@ final class DynamicVoiceWorkflowTests: XCTestCase {
             capture: capture,
             synthesizer: synthesizer,
             askTarget: { nil },
-            submitAsk: { _ in
+            submitAsk: { _, _ in
                 postedAsk.value = true
                 return Self.askResponse()
             }
@@ -270,6 +270,150 @@ final class DynamicVoiceWorkflowTests: XCTestCase {
         XCTAssertFalse(HomeVoicePrepareDockCopy.title.localizedCaseInsensitiveContains("Settings"))
     }
 
+    func testVoiceDockWithZeroUsableListenersIsUnavailable() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let resolution = VoiceAskAgentResolver.targetResolution(
+            selectedId: nil,
+            agents: [],
+            now: now
+        )
+        XCTAssertEqual(resolution, .unavailable)
+        XCTAssertNil(resolution.target)
+        let copy = HomeVoiceDockCopy.make(
+            voice: .idle,
+            isFollowUpListen: false,
+            targetLabel: nil,
+            presentation: nil,
+            isAwaitingConfirmation: false,
+            targetResolution: resolution
+        )
+        XCTAssertEqual(copy.title, "No agents listening")
+        XCTAssertNotEqual(copy.status, "Ready")
+    }
+
+    func testSubmittedVoiceDockWithStaleTargetNeverReportsReady() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let stale = voiceTargetAgent("agt_stale_submitted", expiresIn: -1, now: now)
+        let resolution = VoiceAskAgentResolver.targetResolution(
+            selectedId: stale.agent_id,
+            agents: [stale],
+            now: now
+        )
+        XCTAssertEqual(resolution, .unavailable)
+
+        let copy = HomeVoiceDockCopy.make(
+            voice: .submitted("cmd_timed_out"),
+            isFollowUpListen: false,
+            targetLabel: stale.label,
+            presentation: nil,
+            isAwaitingConfirmation: false,
+            targetResolution: resolution
+        )
+
+        XCTAssertEqual(copy.title, "No agents listening")
+        XCTAssertEqual(copy.status, "Unavailable")
+        XCTAssertNotEqual(copy.status, "Ready")
+    }
+
+    func testVoiceDockAutoResolvesSoleUsableListener() throws {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let sole = voiceTargetAgent("agt_sole", expiresIn: 60, now: now)
+        let resolution = VoiceAskAgentResolver.targetResolution(
+            selectedId: nil,
+            agents: [sole],
+            now: now
+        )
+        let target = try XCTUnwrap(resolution.target)
+        XCTAssertEqual(target.agentID, sole.agent_id)
+        let copy = HomeVoiceDockCopy.make(
+            voice: .idle,
+            isFollowUpListen: false,
+            targetLabel: target.label,
+            presentation: nil,
+            isAwaitingConfirmation: false,
+            targetResolution: resolution
+        )
+        XCTAssertEqual(copy.status, "Ready")
+        XCTAssertEqual(copy.action, "Tap to talk to \(target.label)")
+    }
+
+    func testVoiceDockRequiresSelectionForMultipleUsableListeners() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let first = voiceTargetAgent("agt_first", expiresIn: 60, now: now)
+        let second = voiceTargetAgent("agt_second", expiresIn: 60, now: now)
+        let resolution = VoiceAskAgentResolver.targetResolution(
+            selectedId: nil,
+            agents: [first, second],
+            now: now
+        )
+        guard case let .selectionRequired(targets) = resolution else {
+            return XCTFail("Expected an explicit selection requirement")
+        }
+        XCTAssertEqual(targets.map(\.agentID), [first.agent_id, second.agent_id])
+        XCTAssertNil(resolution.target)
+        let copy = HomeVoiceDockCopy.make(
+            voice: .idle,
+            isFollowUpListen: false,
+            targetLabel: nil,
+            presentation: nil,
+            isAwaitingConfirmation: false,
+            targetResolution: resolution
+        )
+        XCTAssertEqual(copy.title, "Select an agent")
+        XCTAssertNotEqual(copy.status, "Ready")
+    }
+
+    func testVoiceDockResolvesValidExplicitSelectionAmongMultipleListeners() throws {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let first = voiceTargetAgent("agt_first", expiresIn: 60, now: now)
+        let selected = voiceTargetAgent("agt_selected", expiresIn: 60, now: now)
+        let resolution = VoiceAskAgentResolver.targetResolution(
+            selectedId: selected.agent_id,
+            agents: [first, selected],
+            now: now
+        )
+        XCTAssertEqual(try XCTUnwrap(resolution.target).agentID, selected.agent_id)
+    }
+
+    func testVoiceDockRejectsStaleSelectionWithoutRetargetingAmbiguousListeners() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let stale = voiceTargetAgent("agt_stale", expiresIn: -1, now: now)
+        let first = voiceTargetAgent("agt_first", expiresIn: 60, now: now)
+        let second = voiceTargetAgent("agt_second", expiresIn: 60, now: now)
+        let resolution = VoiceAskAgentResolver.targetResolution(
+            selectedId: stale.agent_id,
+            agents: [stale, first, second],
+            now: now
+        )
+        guard case let .selectionRequired(targets) = resolution else {
+            return XCTFail("A stale pick must not silently retarget an ambiguous listener set")
+        }
+        XCTAssertEqual(targets.map(\.agentID), [first.agent_id, second.agent_id])
+        XCTAssertNil(resolution.target)
+    }
+
+    private func voiceTargetAgent(
+        _ id: String,
+        expiresIn seconds: TimeInterval,
+        now: Date
+    ) -> Agent {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return Agent(
+            agent_id: id,
+            user_id: "usr_voice_target",
+            label: id,
+            host_label: nil,
+            created_at: formatter.string(from: now.addingTimeInterval(-3_600)),
+            last_seen_at: formatter.string(from: now.addingTimeInterval(-10)),
+            listener_binding_id: "binding_\(id)",
+            listener_lease_id: "lease_\(id)",
+            listener_generation: 1,
+            listener_chat_id: "chat_\(id)",
+            listener_expires_at: formatter.string(from: now.addingTimeInterval(seconds))
+        )
+    }
+
     func testAskFailsClosedWhenAgentIsNotListening() async throws {
         let capture = ControlledVoiceCapture()
         let generator = ControlledCommandGenerator()
@@ -279,7 +423,7 @@ final class DynamicVoiceWorkflowTests: XCTestCase {
             generator: generator,
             capture: capture,
             synthesizer: synthesizer,
-            submitAsk: { transcript in
+            submitAsk: { transcript, _ in
                 received.value = transcript
                 throw APIClientError.badStatus(
                     409,
@@ -331,7 +475,7 @@ final class DynamicVoiceWorkflowTests: XCTestCase {
             generator: generator,
             capture: capture,
             synthesizer: synthesizer,
-            submitAsk: { _ in
+            submitAsk: { _, _ in
                 asked.value = true
                 return Self.askResponse()
             }
@@ -378,7 +522,7 @@ final class DynamicVoiceWorkflowTests: XCTestCase {
             generator: generator,
             capture: capture,
             synthesizer: synthesizer,
-            submitAsk: { transcript in
+            submitAsk: { transcript, _ in
                 received.value = transcript
                 await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                     askGate.value = continuation
@@ -451,7 +595,7 @@ final class DynamicVoiceWorkflowTests: XCTestCase {
         askTarget: @escaping () -> VoiceAskTarget? = {
             VoiceAskTarget(agentID: "agt_home", label: "cursor-staging")
         },
-        submitAsk: (@Sendable (String) async throws -> PhoneAskResponse)?,
+        submitAsk: (@Sendable (String, VoiceAskTarget) async throws -> PhoneAskResponse)?,
         submit: @escaping @Sendable (CommandEnvelope) async throws -> CommandResponse
     ) -> LocalVoiceCommandController {
         LocalVoiceCommandController(
@@ -551,6 +695,7 @@ final class DynamicVoiceWorkflowTests: XCTestCase {
             agent_id: "agt_home",
             agent_label: "cursor-staging",
             session_id: "ses_ask_dynamic",
+            turn_sequence: 1,
             status: "queued"
         )
     }

@@ -6,7 +6,28 @@ import Foundation
 /// address. A production endpoint can be supplied through the
 /// `KNOCK_API_BASE_URL` bundle setting or entered by the user in Settings.
 enum DemoConfig {
+    enum BuildChannel: Equatable {
+        case development
+        case staging
+        case production
+    }
+
+    static let stagingApiBase = "https://knock-knock-backend-staging.wch-klaus.workers.dev"
     static let productionApiBase = "https://knock-knock-backend-production.wch-klaus.workers.dev"
+
+    static var buildChannel: BuildChannel {
+        #if KNOCK_STAGING
+        return .staging
+        #elseif DEBUG
+        return .development
+        #else
+        return .production
+        #endif
+    }
+
+    static var requiresHTTPS: Bool {
+        buildChannel != .development
+    }
 
     static var buildLabel: String {
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
@@ -38,24 +59,33 @@ enum DemoConfig {
     }
 
     static var defaultApiBase: String {
-        if let bundled = Bundle.main.object(forInfoDictionaryKey: "KNOCK_API_BASE_URL") as? String {
-            let trimmed = bundled.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty && !trimmed.hasPrefix("$(") {
-                return trimmed
-            }
-        }
+        defaultApiBase(
+            channel: buildChannel,
+            bundled: bundledApiBase,
+            isSimulator: isSimulatorBuild
+        )
+    }
 
-        #if DEBUG
-        #if targetEnvironment(simulator)
-        // Only the simulator may safely assume the Mac loopback address.
-        return "http://127.0.0.1:8787"
-        #else
-        // A physical phone must use the current Mac LAN address supplied by the user.
-        return ""
-        #endif
-        #else
-        return productionApiBase
-        #endif
+    static func defaultApiBase(
+        channel: BuildChannel,
+        bundled: String?,
+        isSimulator: Bool
+    ) -> String {
+        if channel == .staging {
+            return stagingApiBase
+        }
+        if let bundled = normalizedConfiguredApiBase(bundled) {
+            return bundled
+        }
+        switch channel {
+        case .development:
+            // Only the simulator may safely assume the Mac loopback address.
+            return isSimulator ? "http://127.0.0.1:8787" : ""
+        case .staging:
+            return stagingApiBase
+        case .production:
+            return productionApiBase
+        }
     }
 
     /// Returns an explicit endpoint supplied by a local Debug/UI-test launch.
@@ -64,18 +94,67 @@ enum DemoConfig {
     /// an older `vab.apiBase` value and silently send a test run to the wrong
     /// Worker. Release builds intentionally ignore process environment values.
     static func runtimeApiBaseOverride(
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        channel: BuildChannel = buildChannel
     ) -> String? {
-        #if DEBUG
+        guard channel == .development else { return nil }
         for key in ["KNOCK_UI_TEST_API_BASE_URL", "KNOCK_API_BASE_URL"] {
-            guard let value = environment[key] else { continue }
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty && !trimmed.hasPrefix("$(") {
-                return trimmed
-            }
+            guard let value = normalizedConfiguredApiBase(environment[key]) else { continue }
+            return value
         }
-        #endif
         return nil
+    }
+
+    /// Resolves the launch endpoint under an explicit build policy.
+    ///
+    /// Staging is intentionally a compile-time lock. Bundle substitutions,
+    /// process environment, persisted Settings values, and simulator defaults
+    /// are all untrusted inputs for that channel.
+    static func resolvedApiBase(
+        persisted: String?,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        channel: BuildChannel = buildChannel,
+        bundled: String? = bundledApiBase,
+        isSimulator: Bool = isSimulatorBuild
+    ) -> String {
+        switch channel {
+        case .staging:
+            return stagingApiBase
+        case .development:
+            if let runtime = runtimeApiBaseOverride(
+                environment: environment,
+                channel: channel
+            ) {
+                return runtime
+            }
+            if !shouldIgnorePersistedDevelopmentApiBase(
+                persisted: persisted,
+                bundledDefault: defaultApiBase(
+                    channel: channel,
+                    bundled: bundled,
+                    isSimulator: isSimulator
+                )
+            ), let persisted = normalizedConfiguredApiBase(persisted) {
+                return persisted
+            }
+            return defaultApiBase(
+                channel: channel,
+                bundled: bundled,
+                isSimulator: isSimulator
+            )
+        case .production:
+            if let persisted = normalizedConfiguredApiBase(persisted),
+               isValidApiBase(persisted, requireHTTPS: true),
+               !isLegacyDevelopmentApiBase(persisted, requireHTTPS: true)
+            {
+                return persisted
+            }
+            return defaultApiBase(
+                channel: channel,
+                bundled: bundled,
+                isSimulator: isSimulator
+            )
+        }
     }
 
     /// Validates an API base URL for the current build policy.
@@ -136,5 +215,24 @@ enum DemoConfig {
     ) -> Bool {
         isValidApiBase(bundledDefault, requireHTTPS: true)
             && isLegacyDevelopmentApiBase(persisted, requireHTTPS: false)
+    }
+
+    private static var bundledApiBase: String? {
+        Bundle.main.object(forInfoDictionaryKey: "KNOCK_API_BASE_URL") as? String
+    }
+
+    private static var isSimulatorBuild: Bool {
+        #if targetEnvironment(simulator)
+        return true
+        #else
+        return false
+        #endif
+    }
+
+    private static func normalizedConfiguredApiBase(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("$(") else { return nil }
+        return trimmed
     }
 }

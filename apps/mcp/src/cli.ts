@@ -3,6 +3,11 @@
  * `vab` CLI — pair | session | progress | event | pending | result
  */
 import { api, bridgeBaseUrl } from "./client.js";
+import { pathToFileURL } from "node:url";
+import {
+  claimAgentAsks,
+  readAgentAsks,
+} from "./ask-transport.js";
 import {
   boundAgentEnvFileName,
   normalizeApiBaseUrl,
@@ -10,8 +15,19 @@ import {
   pairingFailureMessage,
   writeAgentEnvFile,
 } from "./cli-support.js";
-import { listeningRegistrationPath, startListeningHeartbeat } from "./listening.js";
-import { listenerRegistrationBody } from "./thread-binding.js";
+import {
+  createListeningShutdownController,
+  listeningHeartbeatPath,
+  listeningRegistrationPath,
+  negotiateListenerLease,
+  releaseListeningLease,
+  startListeningHeartbeat,
+  type ListeningHeartbeatHandle,
+  type ListeningShutdownController,
+  type ListeningShutdownEventSource,
+} from "./listening.js";
+import { safeErrorMessage, sanitizeSensitiveData } from "./redaction.js";
+import { listenerRegistrationBody, listenerRenewalBody } from "./thread-binding.js";
 
 const rawArgs = process.argv.slice(2);
 // pnpm forwards a separator for the documented `pnpm ... cli -- pair` form.
@@ -44,6 +60,10 @@ function numberArg(name: string): number | undefined {
   return parsed;
 }
 
+function printJson(value: unknown): void {
+  console.log(JSON.stringify(sanitizeSensitiveData(value), null, 2));
+}
+
 function usage(code = 0): never {
   console.log(`Usage:
   vab pair --code pair_... --label my-agent [--host cli] [--api-url URL] [--write-env .env.agent [--force]]
@@ -51,7 +71,7 @@ function usage(code = 0): never {
   vab progress --session ses_... --status running [--message "..."] [--percent 0-100]
   vab event --session ses_... --status needs_user --idemp KEY [--summary "..." ] [--service api] [--env prod] [--fact_status 失败] [--actions rollback,ack] [--force-push]
   vab pending [--session ses_...] [--claim false]
-  vab asks [--claim false] [--takeover true]
+  vab asks [--claim true] [--takeover true]
   vab listen [--takeover true]
   vab result --action act_... [--ok true|false] [--message done]
 
@@ -64,6 +84,62 @@ Notes:
   progress NEVER pushes; event MAY push (needs_user / actions / --force-push).
 `);
   process.exit(code);
+}
+
+function cliListeningTransport() {
+  return {
+    acquire: (takeover: boolean) =>
+      api(listeningRegistrationPath(), {
+        method: "POST",
+        json: listenerRegistrationBody(takeover),
+        timeoutMs: 5_000,
+      }),
+    renew: (lease: Parameters<typeof listenerRenewalBody>[0]) =>
+      api(listeningHeartbeatPath(), {
+        method: "POST",
+        json: listenerRenewalBody(lease),
+        timeoutMs: 5_000,
+      }),
+    release: (lease: Parameters<typeof listenerRenewalBody>[0]) =>
+      releaseListeningLease(
+        (path, init) =>
+          api(path, {
+            ...init,
+            timeoutMs: 5_000,
+          }),
+        lease,
+      ),
+  };
+}
+
+export async function runCliListenerLifecycle<T>(
+  heartbeat: ListeningHeartbeatHandle,
+  operation: (shutdown: ListeningShutdownController) => Promise<T>,
+  options: {
+    processEvents?: ListeningShutdownEventSource;
+    inputEvents?: ListeningShutdownEventSource;
+    onError?: (error: unknown) => void;
+  } = {},
+): Promise<T> {
+  const processEvents = options.processEvents ?? process;
+  const inputEvents = options.inputEvents ?? process.stdin;
+  const shutdown = createListeningShutdownController(heartbeat, {
+    bindings: [
+      { source: processEvents, event: "SIGINT", reason: "sigint" },
+      { source: processEvents, event: "SIGTERM", reason: "sigterm" },
+      { source: inputEvents, event: "end", reason: "stdin_end" },
+      { source: inputEvents, event: "close", reason: "stdin_close" },
+    ],
+    onError: options.onError ?? ((error) => console.error(safeErrorMessage(error))),
+  });
+  try {
+    return await operation(shutdown);
+  } catch (error: unknown) {
+    await shutdown.stop("cli_fatal");
+    throw error;
+  } finally {
+    await shutdown.stop("cli_return");
+  }
 }
 
 async function main(): Promise<void> {
@@ -106,31 +182,27 @@ async function main(): Promise<void> {
           pairingApiUrl,
           hasFlag("force"),
         );
-        console.log(JSON.stringify({ env_file: written, api_url: pairingApiUrl }, null, 2));
+        printJson({ env_file: written, api_url: pairingApiUrl });
         console.error(`Saved agent credentials to ${written}`);
       } else {
-        console.log(JSON.stringify(json, null, 2));
+        printJson(json);
       }
       if (json.api_key && !envPath) {
-        console.error(`\nExport: export BRIDGE_AGENT_KEY=${json.api_key}`);
+        console.error("\nCredential output was redacted; use --write-env to store it securely.");
       }
       break;
     }
     case "session": {
-      console.log(
-        JSON.stringify(
-          await api("/v1/sessions", {
-            method: "POST",
-            json: {
-              skill_id: arg("skill", "deploy.result"),
-              session_id: arg("session"),
-              title: arg("title"),
-              chat_id: arg("chat"),
-            },
-          }),
-          null,
-          2,
-        ),
+      printJson(
+        await api("/v1/sessions", {
+          method: "POST",
+          json: {
+            skill_id: arg("skill", "deploy.result"),
+            session_id: arg("session"),
+            title: arg("title"),
+            chat_id: arg("chat"),
+          },
+        }),
       );
       break;
     }
@@ -138,15 +210,11 @@ async function main(): Promise<void> {
       const sid = arg("session");
       if (!sid) throw new Error("--session required");
       const percent = numberArg("percent");
-      console.log(
-        JSON.stringify(
-          await api(`/v1/sessions/${encodeURIComponent(sid)}/progress`, {
-            method: "POST",
-            json: { status: arg("status", "running"), message: arg("message"), percent },
-          }),
-          null,
-          2,
-        ),
+      printJson(
+        await api(`/v1/sessions/${encodeURIComponent(sid)}/progress`, {
+          method: "POST",
+          json: { status: arg("status", "running"), message: arg("message"), percent },
+        }),
       );
       break;
     }
@@ -157,26 +225,22 @@ async function main(): Promise<void> {
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean);
-      console.log(
-        JSON.stringify(
-          await api(`/v1/sessions/${encodeURIComponent(sid)}/events`, {
-            method: "POST",
-            json: {
-              status: arg("status", "needs_user"),
-              idempotency_key: arg("idemp", `cli-${Date.now()}`),
-              summary: arg("summary"),
-              facts: {
-                service: arg("service", "api"),
-                status: arg("fact_status", "失败"),
-                env: arg("env", "prod"),
-              },
-              actions,
-              force_push: rest.includes("--force-push") || arg("force-push") === "true",
+      printJson(
+        await api(`/v1/sessions/${encodeURIComponent(sid)}/events`, {
+          method: "POST",
+          json: {
+            status: arg("status", "needs_user"),
+            idempotency_key: arg("idemp", `cli-${Date.now()}`),
+            summary: arg("summary"),
+            facts: {
+              service: arg("service", "api"),
+              status: arg("fact_status", "失败"),
+              env: arg("env", "prod"),
             },
-          }),
-          null,
-          2,
-        ),
+            actions,
+            force_push: rest.includes("--force-push") || arg("force-push") === "true",
+          },
+        }),
       );
       break;
     }
@@ -187,45 +251,65 @@ async function main(): Promise<void> {
       const path = sid
         ? `/v1/sessions/${encodeURIComponent(sid)}/actions/pending?${q}`
         : `/v1/agents/me/actions/pending?${q}`;
-      console.log(JSON.stringify(await api(path), null, 2));
+      printJson(await api(path));
       break;
     }
     case "asks": {
-      const claim = arg("claim", "true") !== "false";
-      const q = `claim=${claim ? "true" : "false"}`;
-      await api(listeningRegistrationPath(), {
+      const claim = arg("claim", "false") === "true";
+      const registration = await api(listeningRegistrationPath(), {
         method: "POST",
         json: listenerRegistrationBody(arg("takeover", "false") === "true"),
+        timeoutMs: 5_000,
       });
-      console.log(JSON.stringify(await api(`/v1/agents/me/asks?${q}`), null, 2));
+      const lease = negotiateListenerLease(registration);
+      if (!lease && claim) {
+        throw new Error("legacy listener is drain-only and cannot claim Ask authority");
+      }
+      if (!lease) console.error("legacy listener detected: explicit drain-only mode");
+      const readOrClaim = async () => {
+        if (claim) {
+          const claimResponse = await claimAgentAsks(
+            (path, init) => api(path, init),
+          );
+          const safeClaimOutput = sanitizeSensitiveData(claimResponse);
+          printJson(safeClaimOutput);
+        } else {
+          printJson(
+            await readAgentAsks((path, init) => api(path, init)),
+          );
+        }
+      };
+      if (lease) {
+        const heartbeat = startListeningHeartbeat(cliListeningTransport(), {
+          inheritedFence: lease,
+          inheritedFenceOwned: true,
+        });
+        await runCliListenerLifecycle(heartbeat, readOrClaim);
+      } else {
+        await readOrClaim();
+      }
       break;
     }
     case "listen": {
       console.error(`listening on ${bridgeBaseUrl()} (thread-bound lease heartbeat)`);
-      startListeningHeartbeat(async () => {
-        await api(listeningRegistrationPath(), {
-          method: "POST",
-          json: listenerRegistrationBody(arg("takeover", "false") === "true"),
-        });
-      });
-      await new Promise(() => undefined);
+      const heartbeat = startListeningHeartbeat(
+        cliListeningTransport(),
+        { takeover: arg("takeover", "false") === "true" },
+      );
+      await runCliListenerLifecycle(heartbeat, (shutdown) => shutdown.wait());
       break;
     }
     case "result": {
       const id = arg("action");
       if (!id) throw new Error("--action required");
-      console.log(
-        JSON.stringify(
-          await api(`/v1/actions/${encodeURIComponent(id)}/result`, {
-            method: "POST",
-            json: {
-              ok: arg("ok", "true") === "true",
-              message: arg("message", "done"),
-            },
-          }),
-          null,
-          2,
-        ),
+      printJson(
+        await api(`/v1/actions/${encodeURIComponent(id)}/result`, {
+          method: "POST",
+          json: {
+            ok: arg("ok", "true") === "true",
+            message: arg("message", "done"),
+          },
+        }),
       );
       break;
     }
@@ -234,7 +318,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e: unknown) => {
-  console.error(e instanceof Error ? e.message : e);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  void main().catch((e: unknown) => {
+    console.error(safeErrorMessage(e));
+    process.exitCode = 1;
+  });
+}
