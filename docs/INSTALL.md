@@ -65,6 +65,12 @@ Use the snippets in `skills/knock-knock/codex-config.toml` or
 with the checkout path. The MCP process reads `BRIDGE_AGENT_KEY` from the
 private `.env.agent` file in that checkout.
 
+For Cursor, set `KNOCK_KNOCK_CHAT_ID` to a generic id such as `cursor` and set
+`KNOCK_KNOCK_CHAT_TITLE` to `Knock Knock`. That title is what people search on
+the phone and in Agent history. Do not put a person, machine, or environment
+nickname in the title. The chat id is not a folder.
+Look in **Agent history**, not the project explorer.
+
 Paperclip should install the Skill for its agent and run the same MCP server
 through its governed Tool Gateway, with `BRIDGE_API_URL` and
 `BRIDGE_AGENT_KEY` supplied as agent-scoped secrets. The bridge receives only

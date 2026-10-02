@@ -21,3 +21,4 @@ secrets/
 *.p8
 apps/ios/VoiceAgentBridgeMLXTests/LocalModels/*
 !apps/ios/VoiceAgentBridgeMLXTests/LocalModels/README.md
+apps/mcp/build/

@@ -11,3 +11,8 @@ user must decide. Send `percent` only for a truthful progress estimate; omit it
 when unknown so the app shows indeterminate work rather than 0%. After a phone
 result, resume the same `session_id` and `chat_id` for the next question.
 Destructive actions require the phone confirmation gate.
+
+When this chat is the voice listener, rename the Cursor tab to `Knock Knock`.
+Do not use personal, machine, or staging nicknames in the tab or phone title.
+Do not tell the user to find `KNOCK_KNOCK_CHAT_ID` as a folder. The iPhone
+title and the Cursor tab title should both be `Knock Knock`.

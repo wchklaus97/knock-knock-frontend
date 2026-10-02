@@ -5,7 +5,9 @@
       "args": ["--filter", "@vab/mcp", "dev"],
       "cwd": "/path/to/voice-agent-bridge",
       "env": {
-        "BRIDGE_API_URL": "http://127.0.0.1:8787"
+        "BRIDGE_API_URL": "http://127.0.0.1:8787",
+        "KNOCK_KNOCK_CHAT_ID": "cursor",
+        "KNOCK_KNOCK_CHAT_TITLE": "Knock Knock"
       }
     }
   }
