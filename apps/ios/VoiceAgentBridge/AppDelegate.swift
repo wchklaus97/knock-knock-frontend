@@ -200,6 +200,16 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         backgroundReconciliationDispatcher.submit(request)
     }
 
+    func handleForegroundRemoteNotification(
+        _ userInfo: [AnyHashable: Any],
+        presentationCompletionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        // Use the same durable reconciliation dispatcher as background delivery.
+        // AppStore's active-scene gate is the sole owner of foreground TTS.
+        handleRemoteNotification(userInfo, fetchCompletionHandler: { _ in })
+        presentationCompletionHandler([.banner, .list, .sound, .badge])
+    }
+
     private func routeNotificationTap(_ notification: UNNotification) {
         guard let sessionId = notification.request.content.userInfo["session_id"] as? String,
               !sessionId.isEmpty
@@ -236,8 +246,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        // Show banner even while Knock Knock is in the foreground.
-        completionHandler([.banner, .list, .sound, .badge])
+        handleForegroundRemoteNotification(
+            notification.request.content.userInfo,
+            presentationCompletionHandler: completionHandler
+        )
     }
 
     func userNotificationCenter(

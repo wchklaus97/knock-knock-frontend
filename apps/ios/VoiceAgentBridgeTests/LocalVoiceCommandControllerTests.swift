@@ -37,6 +37,22 @@ private final class ControlledVoiceCapture: PushToTalkVoiceCapturing {
         onTranscript?(.init(text: text, isFinal: isFinal))
     }
 
+    func emitTranscriptFromBackground(_ text: String, isFinal: Bool) {
+        let callback = onTranscript
+        DispatchQueue.global(qos: .userInitiated).async {
+            callback?(.init(text: text, isFinal: isFinal))
+        }
+    }
+
+    func emitConcurrentFinalStopsFromBackground() {
+        let callback = onStop
+        DispatchQueue.global(qos: .userInitiated).async {
+            DispatchQueue.concurrentPerform(iterations: 2) { _ in
+                callback?(.finalTranscript)
+            }
+        }
+    }
+
     func emitStop(_ reason: PushToTalkVoiceCapture.StopReason) {
         onStop?(reason)
     }
@@ -58,6 +74,7 @@ private final class ControlledCommandGenerator: LocalCommandGenerating {
     /// Completes inside `generateCommand` so tests do not race `completeNext`.
     var cannedResult: Result<Data, Error>?
     private var completions: [(Result<Data, Error>) -> Void] = []
+    private var pendingGenerationExpectations: [XCTestExpectation] = []
 
     var transcripts: [String] {
         lock.lock()
@@ -67,18 +84,35 @@ private final class ControlledCommandGenerator: LocalCommandGenerating {
 
     func generateCommand(for transcript: String, completion: @escaping (Result<Data, Error>) -> Void) {
         let immediate: Result<Data, Error>?
+        var expectations: [XCTestExpectation] = []
         lock.lock()
         storedTranscripts.append(transcript)
         immediate = cannedResult
         if immediate == nil {
             completions.append(completion)
+            expectations = pendingGenerationExpectations
+            pendingGenerationExpectations.removeAll()
         }
         lock.unlock()
+        expectations.forEach { $0.fulfill() }
         if let immediate {
             completion(immediate)
             return
         }
         onGenerate?()
+    }
+
+    func expectPendingGeneration(_ description: String) -> XCTestExpectation {
+        let expectation = XCTestExpectation(description: description)
+        lock.lock()
+        if completions.isEmpty {
+            pendingGenerationExpectations.append(expectation)
+            lock.unlock()
+        } else {
+            lock.unlock()
+            expectation.fulfill()
+        }
+        return expectation
     }
 
     func completeNext(with result: Result<Data, Error>) {
@@ -493,6 +527,105 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
         XCTAssertEqual(controller.state, .listening)
     }
 
+    func testStartWhileAskingDoesNotStartSecondCapture() async {
+        let capture = ControlledVoiceCapture()
+        let askStarted = expectation(description: "ask started")
+        let askGate = VoiceTestBox<CheckedContinuation<Void, Never>?>(nil)
+        let controller = makeController(
+            generator: ControlledCommandGenerator(),
+            capture: capture,
+            askTarget: { VoiceAskTarget(agentID: "agt_live", label: "live-agent") },
+            submitAsk: { _, _ in
+                askStarted.fulfill()
+                await withCheckedContinuation { continuation in
+                    askGate.value = continuation
+                }
+                return PhoneAskResponse(
+                    ask_id: "ask_reentry",
+                    agent_id: "agt_live",
+                    agent_label: "live-agent",
+                    session_id: "ses_reentry",
+                    turn_sequence: 1,
+                    status: "queued"
+                )
+            }
+        ) { _ in
+            XCTFail("Ask must not submit a local command")
+            return try Self.response()
+        }
+
+        controller.start()
+        capture.emitTranscript("Help with APNs", isFinal: true)
+        capture.emitStop(.finalTranscript)
+        await fulfillment(of: [askStarted], timeout: 1)
+
+        XCTAssertEqual(controller.state, .asking("live-agent"))
+        controller.start()
+        XCTAssertEqual(capture.startCount, 1)
+        XCTAssertEqual(controller.state, .asking("live-agent"))
+
+        await waitUntil(timeout: 1) {
+            askGate.value != nil
+        }
+        let continuation = askGate.value
+        askGate.value = nil
+        continuation?.resume()
+        await waitUntil(timeout: 1) {
+            controller.state == .asked("live-agent")
+        }
+    }
+
+    func testVoiceAskAgentResolverRequiresUnambiguousListeningTarget() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let formatter = ISO8601DateFormatter()
+        func agent(_ id: String, expiresIn seconds: TimeInterval) -> Agent {
+            Agent(
+                agent_id: id,
+                user_id: "usr_test",
+                label: id,
+                host_label: nil,
+                created_at: formatter.string(from: now.addingTimeInterval(-3_600)),
+                last_seen_at: formatter.string(from: now.addingTimeInterval(-10)),
+                listener_binding_id: "binding_\(id)",
+                listener_lease_id: "lease_\(id)",
+                listener_generation: 1,
+                listener_chat_id: "chat_\(id)",
+                listener_expires_at: formatter.string(from: now.addingTimeInterval(seconds))
+            )
+        }
+
+        let stale = agent("agt_stale", expiresIn: -1)
+        let liveOne = agent("agt_one", expiresIn: 60)
+        let liveTwo = agent("agt_two", expiresIn: 120)
+
+        XCTAssertNil(VoiceAskAgentResolver.resolve(
+            selectedId: stale.agent_id,
+            agents: [stale],
+            now: now
+        ))
+        XCTAssertEqual(
+            VoiceAskAgentResolver.resolve(
+                selectedId: stale.agent_id,
+                agents: [stale, liveOne],
+                now: now
+            )?.agent_id,
+            liveOne.agent_id
+        )
+        XCTAssertNil(VoiceAskAgentResolver.resolve(
+            selectedId: stale.agent_id,
+            agents: [stale, liveOne, liveTwo],
+            now: now
+        ))
+        XCTAssertEqual(
+            VoiceAskAgentResolver.resolve(
+                selectedId: liveTwo.agent_id,
+                agents: [liveOne, liveTwo],
+                now: now
+            )?.agent_id,
+            liveTwo.agent_id
+        )
+    }
+
     func testControllerReappliesLocalRiskPolicyBeforeSubmission() async throws {
         let capture = ControlledVoiceCapture()
         let generator = ControlledCommandGenerator()
@@ -584,11 +717,15 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
         controller.start()
         capture.emitTranscript("remind me sometime", isFinal: true)
         capture.emitStop(.finalTranscript)
-        await drainTasks()
+        await waitUntil(timeout: 1) {
+            generator.transcripts == ["remind me sometime"]
+        }
         generator.completeNext(with: .failure(
             LocalCommandEnvelopeCanonicalizerError.clarificationRequired(.lowConfidence)
         ))
-        await drainTasks()
+        await waitUntil(timeout: 1) {
+            controller.state == .clarificationRequired(.generic)
+        }
 
         XCTAssertFalse(submitted.value)
         XCTAssertEqual(controller.state, .clarificationRequired(.generic))
@@ -618,6 +755,47 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
         XCTAssertEqual(controller.transcript, "partial command")
         XCTAssertTrue(generator.transcripts.isEmpty)
         XCTAssertFalse(submitted.value)
+        XCTAssertEqual(synthesizer.spoken, ["I didn't catch that."])
+    }
+
+    func testPartialOnlyTranscriptNeverPostsRemoteAsk() async {
+        let capture = ControlledVoiceCapture()
+        let generator = ControlledCommandGenerator()
+        let synthesizer = RecordingVoiceSynthesizer()
+        let askSubmitted = VoiceTestBox(false)
+        let controller = makeController(
+            generator: generator,
+            capture: capture,
+            synthesizer: synthesizer,
+            askTarget: {
+                VoiceAskTarget(agentID: "agt_codex", label: "Codex")
+            },
+            submitAsk: { _, target in
+                askSubmitted.value = true
+                return PhoneAskResponse(
+                    ask_id: "ask_partial",
+                    agent_id: target.agentID,
+                    agent_label: target.label,
+                    session_id: nil,
+                    status: "queued"
+                )
+            }
+        ) { _ in
+            XCTFail("Partial-only speech must not submit a local command")
+            return try Self.response()
+        }
+
+        controller.start()
+        capture.emitTranscript("partial remote request", isFinal: false)
+        capture.emitStop(.userReleased)
+        await waitUntil(timeout: 1) {
+            controller.state == .clarificationRequired(.generic)
+        }
+        await drainTasks()
+
+        XCTAssertEqual(controller.transcript, "partial remote request")
+        XCTAssertTrue(generator.transcripts.isEmpty)
+        XCTAssertFalse(askSubmitted.value)
         XCTAssertEqual(synthesizer.spoken, ["I didn't catch that."])
     }
 
@@ -712,16 +890,22 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
             return try Self.response()
         }
 
+        let firstGeneration = generator.expectPendingGeneration(
+            "first send generation registered"
+        )
         controller.start()
         capture.emitTranscript("Send him a message saying yes", isFinal: true)
         capture.emitStop(.finalTranscript)
-        await drainTasks()
+        await fulfillment(of: [firstGeneration], timeout: 1)
         generator.completeNext(with: .failure(
             LocalCommandEnvelopeCanonicalizerError.clarificationRequired(
                 .missingSendRecipient(body: "yes")
             )
         ))
-        await drainTasks()
+        await waitUntil(timeout: 1) {
+            controller.state == .clarificationRequired(.missingSendRecipient)
+                && synthesizer.spoken == ["Who should I send this to?"]
+        }
 
         XCTAssertEqual(
             controller.state,
@@ -735,9 +919,12 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
             controller.state == .listening && capture.startCount == 2
         }
 
+        let followUpGeneration = generator.expectPendingGeneration(
+            "recipient follow-up generation registered"
+        )
         capture.emitTranscript("John", isFinal: true)
         capture.emitStop(.silence)
-        await drainTasks()
+        await fulfillment(of: [followUpGeneration], timeout: 1)
         XCTAssertEqual(
             generator.transcripts,
             ["Send him a message saying yes", "Send John a message saying yes"]
@@ -770,10 +957,13 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
             return try Self.response()
         }
 
+        let initialGeneration = generator.expectPendingGeneration(
+            "say-him initial generation registered"
+        )
         controller.start()
         capture.emitTranscript("Say him a message", isFinal: true)
         capture.emitStop(.finalTranscript)
-        await drainTasks()
+        await fulfillment(of: [initialGeneration], timeout: 1)
         generator.completeNext(with: .failure(
             LocalCommandEnvelopeCanonicalizerError.clarificationRequired(
                 .missingSendRecipient(body: "")
@@ -814,9 +1004,12 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
                 && controller.followUpListenIsBody
         }
 
+        let completedFollowUpGeneration = generator.expectPendingGeneration(
+            "say-him completed follow-up generation registered"
+        )
         capture.emitTranscript("yes", isFinal: true)
         capture.emitStop(.silence)
-        await drainTasks()
+        await fulfillment(of: [completedFollowUpGeneration], timeout: 1)
         XCTAssertEqual(
             generator.transcripts,
             ["Say him a message", "Send John a message saying yes"]
@@ -903,10 +1096,13 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
             return try Self.response()
         }
 
+        let initialGeneration = generator.expectPendingGeneration(
+            "pronoun follow-up initial generation registered"
+        )
         controller.start()
         capture.emitTranscript("Send him a message saying yes", isFinal: true)
         capture.emitStop(.finalTranscript)
-        await drainTasks()
+        await fulfillment(of: [initialGeneration], timeout: 1)
         generator.completeNext(with: .failure(
             LocalCommandEnvelopeCanonicalizerError.clarificationRequired(
                 .missingSendRecipient(body: "yes")
@@ -1020,7 +1216,7 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
             controller.state == .listening && capture.startCount == 3
         }
 
-        capture.emitTranscript("John", isFinal: false)
+        capture.emitTranscript("John", isFinal: true)
         capture.emitStop(.silence)
         await drainTasks()
         XCTAssertEqual(
@@ -1050,16 +1246,22 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
             return try Self.response()
         }
 
+        let initialGeneration = generator.expectPendingGeneration(
+            "second-follow-up initial generation registered"
+        )
         controller.start()
         capture.emitTranscript("Send him a message saying yes", isFinal: true)
         capture.emitStop(.finalTranscript)
-        await drainTasks()
+        await fulfillment(of: [initialGeneration], timeout: 1)
         generator.completeNext(with: .failure(
             LocalCommandEnvelopeCanonicalizerError.clarificationRequired(
                 .missingSendRecipient(body: "yes")
             )
         ))
-        await drainTasks()
+        await waitUntil(timeout: 1) {
+            controller.state == .clarificationRequired(.missingSendRecipient)
+                && synthesizer.spoken == ["Who should I send this to?"]
+        }
         synthesizer.finishSpeaking()
         await waitUntil(timeout: 1) {
             controller.state == .listening && capture.startCount == 2
@@ -1115,19 +1317,46 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
         let synthesizer = RecordingVoiceSynthesizer()
         let asked = expectation(description: "posted ask")
         let received = VoiceTestBox<String?>(nil)
+        let receivedTarget = VoiceTestBox<VoiceAskTarget?>(nil)
+        let receivedClientTurnID = VoiceTestBox<String?>(nil)
+        let targetResolutionCount = VoiceTestBox(0)
+        let frozenTarget = VoiceAskTarget(
+            agentID: "agt_apns",
+            label: "apns-diagnostic",
+            bindingID: "binding_original",
+            leaseID: "lease_original",
+            generation: 7,
+            targetChatID: "chat_original"
+        )
         let controller = makeController(
             generator: generator,
             capture: capture,
             synthesizer: synthesizer,
-            askTarget: { VoiceAskTarget(agentID: "agt_apns", label: "apns-diagnostic") },
-            submitAsk: { transcript in
+            askTarget: {
+                targetResolutionCount.value += 1
+                if targetResolutionCount.value == 1 {
+                    return frozenTarget
+                }
+                return VoiceAskTarget(
+                    agentID: "agt_changed",
+                    label: "changed-agent",
+                    bindingID: "binding_changed",
+                    leaseID: "lease_changed",
+                    generation: 8,
+                    targetChatID: "chat_changed"
+                )
+            },
+            submitAskWithTurnID: { transcript, target, clientTurnID in
                 received.value = transcript
+                receivedTarget.value = target
+                receivedClientTurnID.value = clientTurnID
                 asked.fulfill()
                 return PhoneAskResponse(
                     ask_id: "ask_1",
                     agent_id: "agt_apns",
                     agent_label: "apns-diagnostic",
                     session_id: "ses_ask_1",
+                    turn_sequence: 1,
                     status: "queued"
                 )
             },
@@ -1150,9 +1379,393 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
         }
 
         XCTAssertEqual(received.value, "Help with APNs")
+        XCTAssertEqual(receivedTarget.value, frozenTarget)
+        XCTAssertNotNil(UUID(uuidString: try XCTUnwrap(receivedClientTurnID.value)))
+        XCTAssertEqual(targetResolutionCount.value, 1)
         XCTAssertTrue(generator.transcripts.isEmpty)
         XCTAssertEqual(controller.state, .asked("apns-diagnostic"))
         XCTAssertEqual(synthesizer.spoken, ["APNs is connected and ready."])
+    }
+
+    func testConcurrentBackgroundCaptureCallbacksProduceOneTerminalOutcome() async {
+        let capture = ControlledVoiceCapture()
+        let synthesizer = RecordingVoiceSynthesizer()
+        let submissionCount = VoiceTestBox(0)
+        let controller = makeController(
+            generator: ControlledCommandGenerator(),
+            capture: capture,
+            synthesizer: synthesizer,
+            askTarget: {
+                VoiceAskTarget(agentID: "agt_codex", label: "Codex")
+            },
+            submitAsk: { _, target in
+                submissionCount.value += 1
+                return PhoneAskResponse(
+                    ask_id: "ask_background",
+                    agent_id: target.agentID,
+                    agent_label: target.label,
+                    session_id: "ses_background",
+                    turn_sequence: 1,
+                    status: "queued"
+                )
+            }
+        ) { _ in
+            XCTFail("Ask must not submit a local command")
+            return try Self.response()
+        }
+
+        controller.start()
+        capture.emitTranscriptFromBackground("Check the build", isFinal: true)
+        await waitUntil(timeout: 1) {
+            controller.transcript == "Check the build"
+        }
+        capture.emitConcurrentFinalStopsFromBackground()
+        await waitUntil(timeout: 1) {
+            controller.state == .asked("Codex")
+        }
+        await drainTasks()
+
+        XCTAssertEqual(capture.startCount, 1)
+        XCTAssertEqual(submissionCount.value, 1)
+        XCTAssertEqual(controller.state, .asked("Codex"))
+        XCTAssertEqual(synthesizer.spoken, ["Sent to Codex."])
+    }
+
+    func testStaleOldTurnAskCompletionCannotChangeNewerTurn() async {
+        let capture = ControlledVoiceCapture()
+        let synthesizer = RecordingVoiceSynthesizer()
+        let firstAskStarted = expectation(description: "first ask started")
+        let firstAskReturned = expectation(description: "first ask returned")
+        let firstRelease = VoiceTestBox<CheckedContinuation<Void, Never>?>(nil)
+        let submissionCount = VoiceTestBox(0)
+        let targetCount = VoiceTestBox(0)
+        let clientTurnIDs = VoiceTestBox<[String]>([])
+        let controller = makeController(
+            generator: ControlledCommandGenerator(),
+            capture: capture,
+            synthesizer: synthesizer,
+            askTarget: {
+                targetCount.value += 1
+                let suffix = targetCount.value == 1 ? "old" : "new"
+                return VoiceAskTarget(
+                    agentID: "agt_\(suffix)",
+                    label: "\(suffix)-codex"
+                )
+            },
+            submitAskWithTurnID: { _, target, clientTurnID in
+                submissionCount.value += 1
+                clientTurnIDs.value.append(clientTurnID)
+                if submissionCount.value == 1 {
+                    await withCheckedContinuation { continuation in
+                        firstRelease.value = continuation
+                        firstAskStarted.fulfill()
+                    }
+                    firstAskReturned.fulfill()
+                }
+                return PhoneAskResponse(
+                    ask_id: "ask_\(submissionCount.value)",
+                    agent_id: target.agentID,
+                    agent_label: target.label,
+                    session_id: "ses_\(submissionCount.value)",
+                    turn_sequence: submissionCount.value,
+                    status: "queued"
+                )
+            }
+        ) { _ in
+            XCTFail("Ask must not submit a local command")
+            return try Self.response()
+        }
+
+        controller.start()
+        capture.emitTranscript("first request", isFinal: true)
+        capture.emitStop(.finalTranscript)
+        await fulfillment(of: [firstAskStarted], timeout: 1)
+
+        controller.cancel()
+        controller.start()
+        capture.emitTranscript("second request", isFinal: true)
+        capture.emitStop(.finalTranscript)
+        await waitUntil(timeout: 1) {
+            controller.state == .asked("new-codex")
+        }
+        let newerTurnSpeech = synthesizer.spoken
+
+        let continuation = firstRelease.value
+        firstRelease.value = nil
+        continuation?.resume()
+        await fulfillment(of: [firstAskReturned], timeout: 1)
+        await drainTasks()
+
+        XCTAssertEqual(clientTurnIDs.value.count, 2)
+        XCTAssertNotEqual(clientTurnIDs.value[0], clientTurnIDs.value[1])
+        XCTAssertEqual(controller.state, .asked("new-codex"))
+        XCTAssertEqual(synthesizer.spoken, newerTurnSpeech)
+        XCTAssertEqual(synthesizer.spoken, ["Sent to new-codex."])
+    }
+
+    func testTransientAskTimeoutReconcilesWithSameClientTurnID() async throws {
+        let capture = ControlledVoiceCapture()
+        let synthesizer = RecordingVoiceSynthesizer()
+        let attempts = VoiceTestBox<[(String, VoiceAskTarget, String)]>([])
+        let targetResolutionCount = VoiceTestBox(0)
+        let frozenTarget = VoiceAskTarget(
+            agentID: "agt_codex",
+            label: "Codex",
+            bindingID: "binding_1",
+            leaseID: "lease_1",
+            generation: 4,
+            targetChatID: "chat_1"
+        )
+        let controller = makeController(
+            generator: ControlledCommandGenerator(),
+            capture: capture,
+            synthesizer: synthesizer,
+            askTarget: {
+                targetResolutionCount.value += 1
+                return frozenTarget
+            },
+            submitAskWithTurnID: { transcript, target, clientTurnID in
+                attempts.value.append((transcript, target, clientTurnID))
+                if attempts.value.count == 1 {
+                    throw APIClientError.network("The request timed out.")
+                }
+                return PhoneAskResponse(
+                    ask_id: "ask_reused",
+                    agent_id: target.agentID,
+                    agent_label: target.label,
+                    session_id: "ses_reused",
+                    turn_sequence: 1,
+                    status: "queued"
+                )
+            }
+        ) { _ in
+            XCTFail("Ask must not submit a local command")
+            return try Self.response()
+        }
+
+        controller.start()
+        capture.emitTranscript("Check the build", isFinal: true)
+        capture.emitStop(.finalTranscript)
+        await waitUntil(timeout: 1) {
+            controller.state == .asked("Codex")
+        }
+
+        XCTAssertEqual(attempts.value.count, 2)
+        XCTAssertEqual(attempts.value.map(\.0), ["Check the build", "Check the build"])
+        XCTAssertEqual(attempts.value.map(\.1), [frozenTarget, frozenTarget])
+        XCTAssertEqual(Set(attempts.value.map(\.2)).count, 1)
+        XCTAssertNotNil(UUID(uuidString: try XCTUnwrap(attempts.value.first?.2)))
+        XCTAssertEqual(targetResolutionCount.value, 1)
+        XCTAssertEqual(synthesizer.spoken, ["Sent to Codex."])
+    }
+
+    func testInFlightAndAcceptedAskSuppressLateCaptureFailure() async {
+        let capture = ControlledVoiceCapture()
+        let synthesizer = RecordingVoiceSynthesizer()
+        let askStarted = expectation(description: "ask in flight")
+        let releaseAsk = VoiceTestBox<CheckedContinuation<Void, Never>?>(nil)
+        let controller = makeController(
+            generator: ControlledCommandGenerator(),
+            capture: capture,
+            synthesizer: synthesizer,
+            askTarget: { VoiceAskTarget(agentID: "agt_codex", label: "Codex") },
+            submitAsk: { _, target in
+                await withCheckedContinuation { continuation in
+                    releaseAsk.value = continuation
+                    askStarted.fulfill()
+                }
+                return PhoneAskResponse(
+                    ask_id: "ask_accepted",
+                    agent_id: target.agentID,
+                    agent_label: target.label,
+                    session_id: "ses_accepted",
+                    turn_sequence: 1,
+                    status: "queued"
+                )
+            }
+        ) { _ in
+            XCTFail("Ask must not submit a local command")
+            return try Self.response()
+        }
+
+        controller.start()
+        capture.emitTranscript("Check Codex", isFinal: true)
+        capture.emitStop(.finalTranscript)
+        await fulfillment(of: [askStarted], timeout: 1)
+
+        capture.emitError(.noSpeechDetected)
+        await drainTasks()
+        XCTAssertEqual(controller.state, .asking("Codex"))
+        XCTAssertTrue(synthesizer.spoken.isEmpty)
+
+        let continuation = releaseAsk.value
+        releaseAsk.value = nil
+        continuation?.resume()
+        await waitUntil(timeout: 1) {
+            controller.state == .asked("Codex")
+        }
+
+        capture.emitError(.recognitionFailure)
+        capture.emitStop(.noSpeech)
+        await drainTasks()
+        XCTAssertEqual(controller.state, .asked("Codex"))
+        XCTAssertEqual(synthesizer.spoken, ["Sent to Codex."])
+        XCTAssertFalse(synthesizer.spoken.contains("I didn't catch that."))
+    }
+
+    func testDuplicateAskResponseCallbacksSpeakOneTerminalMessage() async {
+        let capture = ControlledVoiceCapture()
+        let synthesizer = RecordingVoiceSynthesizer()
+        let controller = makeController(
+            generator: ControlledCommandGenerator(),
+            capture: capture,
+            synthesizer: synthesizer,
+            askTarget: { VoiceAskTarget(agentID: "agt_codex", label: "Codex") },
+            submitAsk: { _, target in
+                PhoneAskResponse(
+                    ask_id: "ask_duplicate_stream",
+                    agent_id: target.agentID,
+                    agent_label: target.label,
+                    session_id: "ses_duplicate_stream",
+                    turn_sequence: 1,
+                    status: "queued"
+                )
+            },
+            streamAskResponses: { _, onResponse in
+                await onResponse("The build passed.")
+                await onResponse("The build passed.")
+                return true
+            }
+        ) { _ in
+            XCTFail("Ask must not submit a local command")
+            return try Self.response()
+        }
+
+        controller.start()
+        capture.emitTranscript("Did the build pass?", isFinal: true)
+        capture.emitStop(.finalTranscript)
+        await waitUntil(timeout: 1) {
+            controller.state == .asked("Codex")
+        }
+
+        XCTAssertEqual(synthesizer.spoken, ["The build passed."])
+    }
+
+    func testRepeatedTransientAskFailureShowsOneDeliveryRetryMessage() async {
+        let capture = ControlledVoiceCapture()
+        let synthesizer = RecordingVoiceSynthesizer()
+        let attempts = VoiceTestBox<[String]>([])
+        let controller = makeController(
+            generator: ControlledCommandGenerator(),
+            capture: capture,
+            synthesizer: synthesizer,
+            askTarget: { VoiceAskTarget(agentID: "agt_codex", label: "Codex") },
+            submitAskWithTurnID: { _, _, clientTurnID in
+                attempts.value.append(clientTurnID)
+                throw APIClientError.network("The request timed out.")
+            }
+        ) { _ in
+            XCTFail("Ask must not submit a local command")
+            return try Self.response()
+        }
+
+        controller.start()
+        capture.emitTranscript("Check the build", isFinal: true)
+        capture.emitStop(.finalTranscript)
+        await waitUntil(timeout: 1) {
+            controller.state == .failed(
+                LocalVoiceCommandControllerError.deliveryUnconfirmed.localizedDescription
+            )
+        }
+
+        capture.emitError(.noSpeechDetected)
+        capture.emitStop(.noSpeech)
+        await drainTasks()
+
+        XCTAssertEqual(attempts.value.count, 2)
+        XCTAssertEqual(Set(attempts.value).count, 1)
+        XCTAssertEqual(
+            synthesizer.spoken,
+            [LocalVoiceCommandControllerError.deliveryUnconfirmed.localizedDescription]
+        )
+    }
+
+    func testAskResponseMissingSessionReleasesDockWithoutSuccessSpeech() async {
+        await assertMalformedAskResponseReleasesDock(PhoneAskResponse(
+            ask_id: "ask_missing_session",
+            agent_id: "agt_codex",
+            agent_label: "Codex",
+            session_id: nil,
+            turn_sequence: 1,
+            status: "queued"
+        ))
+    }
+
+    func testAskResponseMissingTurnSequenceReleasesDockWithoutSuccessSpeech() async {
+        await assertMalformedAskResponseReleasesDock(PhoneAskResponse(
+            ask_id: "ask_missing_turn",
+            agent_id: "agt_codex",
+            agent_label: "Codex",
+            session_id: "ses_missing_turn",
+            turn_sequence: nil,
+            status: "queued"
+        ))
+    }
+
+    func testAskResponseAgentMismatchReleasesDockWithoutSuccessSpeech() async {
+        await assertMalformedAskResponseReleasesDock(PhoneAskResponse(
+            ask_id: "ask_agent_mismatch",
+            agent_id: "agt_other",
+            agent_label: "Other",
+            session_id: "ses_agent_mismatch",
+            turn_sequence: 1,
+            status: "queued"
+        ))
+    }
+
+    func testMalformedAskResponseAllowsNextCaptureStart() async {
+        let capture = ControlledVoiceCapture()
+        let synthesizer = RecordingVoiceSynthesizer()
+        let attempts = VoiceTestBox(0)
+        let controller = makeController(
+            generator: ControlledCommandGenerator(),
+            capture: capture,
+            synthesizer: synthesizer,
+            askTarget: { VoiceAskTarget(agentID: "agt_codex", label: "Codex") },
+            submitAsk: { _, _ in
+                attempts.value += 1
+                return PhoneAskResponse(
+                    ask_id: "ask_next_start",
+                    agent_id: "agt_codex",
+                    agent_label: "Codex",
+                    session_id: nil,
+                    turn_sequence: 1,
+                    status: "queued"
+                )
+            }
+        ) { _ in
+            XCTFail("Ask must not submit a local command")
+            return try Self.response()
+        }
+
+        controller.start()
+        capture.emitTranscript("Check the build", isFinal: true)
+        capture.emitStop(.finalTranscript)
+        await waitUntil(timeout: 1) {
+            controller.state == .failed(
+                LocalVoiceCommandControllerError.deliveryUnconfirmed.localizedDescription
+            )
+        }
+        XCTAssertEqual(attempts.value, 2)
+
+        controller.start()
+
+        XCTAssertEqual(controller.state, .listening)
+        XCTAssertEqual(capture.startCount, 2)
+        XCTAssertEqual(
+            synthesizer.spoken,
+            [LocalVoiceCommandControllerError.deliveryUnconfirmed.localizedDescription]
+        )
     }
 
     func testChineseUnknownUtterancePostsAsk() async throws {
@@ -1166,7 +1779,7 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
             capture: capture,
             synthesizer: synthesizer,
             askTarget: { VoiceAskTarget(agentID: "agt_apns", label: "cursor-staging") },
-            submitAsk: { transcript in
+            submitAsk: { transcript, _ in
                 received.value = transcript
                 asked.fulfill()
                 return PhoneAskResponse(
@@ -1174,6 +1787,7 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
                     agent_id: "agt_apns",
                     agent_label: "cursor-staging",
                     session_id: "ses_ask_zh",
+                    turn_sequence: 1,
                     status: "queued"
                 )
             }
@@ -1207,7 +1821,7 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
             capture: capture,
             synthesizer: synthesizer,
             askTarget: { VoiceAskTarget(agentID: "agt_apns", label: "cursor-staging") },
-            submitAsk: { transcript in
+            submitAsk: { transcript, _ in
                 received.value = transcript
                 asked.fulfill()
                 return PhoneAskResponse(
@@ -1215,6 +1829,7 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
                     agent_id: "agt_apns",
                     agent_label: "cursor-staging",
                     session_id: "ses_ask_zh_send",
+                    turn_sequence: 1,
                     status: "queued"
                 )
             }
@@ -1247,7 +1862,7 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
             capture: capture,
             synthesizer: synthesizer,
             askTarget: { VoiceAskTarget(agentID: "agt_apns", label: "cursor-staging") },
-            submitAsk: { transcript in
+            submitAsk: { transcript, _ in
                 received.value = transcript
                 asked.fulfill()
                 return PhoneAskResponse(
@@ -1255,6 +1870,7 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
                     agent_id: "agt_apns",
                     agent_label: "cursor-staging",
                     session_id: "ses_ask_handoff",
+                    turn_sequence: 1,
                     status: "queued"
                 )
             }
@@ -1290,7 +1906,7 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
             generator: generator,
             capture: capture,
             synthesizer: synthesizer,
-            submitAsk: { _ in
+            submitAsk: { _, _ in
                 XCTFail("Ask must not POST when no agent is selected")
                 return PhoneAskResponse(
                     ask_id: "ask_should_not_fire",
@@ -1325,7 +1941,7 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
             capture: capture,
             synthesizer: synthesizer,
             askTarget: { VoiceAskTarget(agentID: "agt_apns", label: "apns-diagnostic") },
-            submitAsk: { _ in
+            submitAsk: { _, _ in
                 throw APIClientError.badStatus(
                     409,
                     "The selected agent is not listening.",
@@ -1354,6 +1970,64 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
         XCTAssertEqual(synthesizer.spoken, ["apns-diagnostic is not listening."])
     }
 
+    func testAskFenceMismatchRequiresSelectionWithoutRerouting() async throws {
+        let capture = ControlledVoiceCapture()
+        let generator = ControlledCommandGenerator()
+        let synthesizer = RecordingVoiceSynthesizer()
+        let targetResolutionCount = VoiceTestBox(0)
+        let submissionCount = VoiceTestBox(0)
+        let frozenTarget = VoiceAskTarget(
+            agentID: "agt_apns",
+            label: "apns-diagnostic",
+            bindingID: "binding_1",
+            leaseID: "lease_1",
+            generation: 7,
+            targetChatID: "chat_1"
+        )
+        let controller = makeController(
+            generator: generator,
+            capture: capture,
+            synthesizer: synthesizer,
+            askTarget: {
+                targetResolutionCount.value += 1
+                return frozenTarget
+            },
+            submitAsk: { _, target in
+                submissionCount.value += 1
+                XCTAssertEqual(target, frozenTarget)
+                throw APIClientError.badStatus(
+                    409,
+                    "The listener fence is no longer active.",
+                    APIErrorMetadata(
+                        retryable: false,
+                        retryAfter: nil,
+                        requestID: nil,
+                        errorCode: "ask_listener_fence_mismatch"
+                    )
+                )
+            }
+        ) { _ in
+            XCTFail("A fenced Ask must not fall back to local command submission")
+            return try Self.response()
+        }
+
+        controller.start()
+        capture.emitTranscript("Help with APNs", isFinal: true)
+        capture.emitStop(.finalTranscript)
+        await waitUntil(timeout: 1) {
+            controller.state == .clarificationRequired(.selectAgent)
+        }
+
+        XCTAssertEqual(targetResolutionCount.value, 1)
+        XCTAssertEqual(submissionCount.value, 1)
+        XCTAssertEqual(controller.state, .clarificationRequired(.selectAgent))
+        XCTAssertTrue(generator.transcripts.isEmpty)
+        XCTAssertEqual(
+            synthesizer.spoken,
+            ["The listener changed. Select the agent again."]
+        )
+    }
+
     func testIncompleteSendStaysLocalEvenWhenAnAgentIsSelected() async throws {
         let capture = ControlledVoiceCapture()
         let generator = ControlledCommandGenerator()
@@ -1370,7 +2044,7 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
             capture: capture,
             synthesizer: synthesizer,
             askTarget: { VoiceAskTarget(agentID: "agt_apns", label: "apns-diagnostic") },
-            submitAsk: { _ in
+            submitAsk: { _, _ in
                 asked.value = true
                 return PhoneAskResponse(
                     ask_id: "ask_should_not_fire",
@@ -1415,13 +2089,213 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
         XCTAssertEqual(copy.status, "Say a name")
     }
 
+    func testAskPollDeadlineReleasesDockAsWaitingWithoutCaptureFailure() async {
+        let capture = ControlledVoiceCapture()
+        let synthesizer = RecordingVoiceSynthesizer()
+        let controller = makeController(
+            generator: ControlledCommandGenerator(),
+            capture: capture,
+            synthesizer: synthesizer,
+            askTarget: { VoiceAskTarget(agentID: "agt_codex", label: "Codex") },
+            submitAsk: { _, target in
+                PhoneAskResponse(
+                    ask_id: "ask_delayed",
+                    agent_id: target.agentID,
+                    agent_label: target.label,
+                    session_id: "ses_delayed",
+                    turn_sequence: 10,
+                    status: "queued"
+                )
+            },
+            streamAskResponses: { _, _ in
+                // Deterministic stand-in for the elapsed 45-second foreground window.
+                false
+            }
+        ) { _ in
+            XCTFail("Ask must not submit a local command")
+            return try Self.response()
+        }
+
+        controller.start()
+        capture.emitTranscript("Did the build pass?", isFinal: true)
+        capture.emitStop(.finalTranscript)
+        await waitUntil(timeout: 1) {
+            controller.state == .asked("Codex")
+        }
+
+        XCTAssertEqual(controller.state, .asked("Codex"))
+        XCTAssertEqual(synthesizer.spoken, ["Sent to Codex."])
+        XCTAssertFalse(synthesizer.spoken.contains("I didn't catch that."))
+
+        controller.start()
+        XCTAssertEqual(controller.state, .listening)
+        XCTAssertEqual(capture.startCount, 2)
+    }
+
+    private func assertMalformedAskResponseReleasesDock(
+        _ response: PhoneAskResponse
+    ) async {
+        let capture = ControlledVoiceCapture()
+        let synthesizer = RecordingVoiceSynthesizer()
+        let attempts = VoiceTestBox(0)
+        let controller = makeController(
+            generator: ControlledCommandGenerator(),
+            capture: capture,
+            synthesizer: synthesizer,
+            askTarget: { VoiceAskTarget(agentID: "agt_codex", label: "Codex") },
+            submitAsk: { _, _ in
+                attempts.value += 1
+                return response
+            }
+        ) { _ in
+            XCTFail("Ask must not submit a local command")
+            return try Self.response()
+        }
+
+        controller.start()
+        capture.emitTranscript("Check the build", isFinal: true)
+        capture.emitStop(.finalTranscript)
+        await waitUntil(timeout: 1) {
+            controller.state == .failed(
+                LocalVoiceCommandControllerError.deliveryUnconfirmed.localizedDescription
+            )
+        }
+
+        XCTAssertEqual(attempts.value, 2)
+        XCTAssertEqual(
+            controller.state,
+            .failed(LocalVoiceCommandControllerError.deliveryUnconfirmed.localizedDescription)
+        )
+        XCTAssertEqual(
+            synthesizer.spoken,
+            [LocalVoiceCommandControllerError.deliveryUnconfirmed.localizedDescription]
+        )
+        XCTAssertFalse(synthesizer.spoken.contains { $0.hasPrefix("Sent to ") })
+    }
+
+    func testRetryAdoptsAlreadyAcceptedWithoutDuplicatePostOrFalseFailure() async {
+        let capture = ControlledVoiceCapture()
+        let synthesizer = RecordingVoiceSynthesizer()
+        let attempts = VoiceTestBox(0)
+        let backendPosts = VoiceTestBox(0)
+        let streamCount = VoiceTestBox(0)
+        let clientTurnIDs = VoiceTestBox<[String]>([])
+        let controller = makeController(
+            generator: ControlledCommandGenerator(),
+            capture: capture,
+            synthesizer: synthesizer,
+            askTarget: { VoiceAskTarget(agentID: "agt_codex", label: "Codex") },
+            submitAskOutcomeWithTurnID: { _, target, clientTurnID in
+                attempts.value += 1
+                clientTurnIDs.value.append(clientTurnID)
+                if attempts.value == 1 {
+                    backendPosts.value += 1
+                    throw APIClientError.network("The accepted response was lost.")
+                }
+                return .alreadyAccepted(PhoneAskResponse(
+                    ask_id: "ask_apns_accepted",
+                    agent_id: target.agentID,
+                    agent_label: target.label,
+                    session_id: "ses_apns_accepted",
+                    turn_sequence: 41,
+                    status: "queued"
+                ))
+            },
+            streamAskResponses: { response, _ in
+                streamCount.value += 1
+                XCTAssertEqual(response.ask_id, "ask_apns_accepted")
+                return false
+            }
+        ) { _ in
+            XCTFail("Ask must not submit a local command")
+            return try Self.response()
+        }
+
+        controller.start()
+        let baselineStopCount = synthesizer.stopCount
+        capture.emitTranscript("Did the build pass?", isFinal: true)
+        capture.emitStop(.finalTranscript)
+        await waitUntil(timeout: 1) {
+            controller.state == .asked("Codex")
+                && synthesizer.spoken.filter { $0.hasPrefix("Sent to ") }.count == 1
+        }
+
+        XCTAssertEqual(attempts.value, 2)
+        XCTAssertEqual(backendPosts.value, 1)
+        XCTAssertEqual(Set(clientTurnIDs.value).count, 1)
+        XCTAssertEqual(streamCount.value, 1)
+        XCTAssertEqual(controller.state, .asked("Codex"))
+        XCTAssertEqual(synthesizer.stopCount, baselineStopCount)
+        XCTAssertEqual(synthesizer.spoken.filter { $0.hasPrefix("Sent to ") }.count, 1)
+        XCTAssertFalse(synthesizer.spoken.contains(
+            LocalVoiceCommandControllerError.deliveryUnconfirmed.localizedDescription
+        ))
+    }
+
+    func testRetryAdoptsAlreadyReconciledWhileCanonicalPresentationOwnsSpeech() async {
+        let capture = ControlledVoiceCapture()
+        let synthesizer = RecordingVoiceSynthesizer()
+        let attempts = VoiceTestBox(0)
+        let backendPosts = VoiceTestBox(0)
+        let canonicalPresentationStarted = VoiceTestBox(false)
+        let stopCountAtCanonicalStart = VoiceTestBox<Int?>(nil)
+        let controller = makeController(
+            generator: ControlledCommandGenerator(),
+            capture: capture,
+            synthesizer: synthesizer,
+            askTarget: { VoiceAskTarget(agentID: "agt_codex", label: "Codex") },
+            submitAskOutcomeWithTurnID: { _, _, _ in
+                attempts.value += 1
+                if attempts.value == 1 {
+                    backendPosts.value += 1
+                    throw APIClientError.network("The accepted response was lost.")
+                }
+                canonicalPresentationStarted.value = true
+                stopCountAtCanonicalStart.value = await MainActor.run {
+                    synthesizer.stopCount
+                }
+                await Task.yield()
+                return .alreadyReconciled
+            },
+            streamAskResponses: { _, _ in
+                XCTFail("Coordinator-owned canonical presentation must not start a second stream")
+                return false
+            }
+        ) { _ in
+            XCTFail("Ask must not submit a local command")
+            return try Self.response()
+        }
+
+        controller.start()
+        capture.emitTranscript("Did the build pass?", isFinal: true)
+        capture.emitStop(.finalTranscript)
+        await waitUntil(timeout: 1) {
+            canonicalPresentationStarted.value && controller.state == .asked("Codex")
+        }
+
+        XCTAssertEqual(attempts.value, 2)
+        XCTAssertEqual(backendPosts.value, 1)
+        XCTAssertEqual(controller.state, .asked("Codex"))
+        XCTAssertEqual(synthesizer.stopCount, stopCountAtCanonicalStart.value)
+        XCTAssertTrue(synthesizer.spoken.isEmpty)
+        XCTAssertFalse(synthesizer.spoken.contains(
+            LocalVoiceCommandControllerError.deliveryUnconfirmed.localizedDescription
+        ))
+    }
+
     private func makeController(
         generator: ControlledCommandGenerator,
         capture: ControlledVoiceCapture,
         synthesizer: RecordingVoiceSynthesizer = RecordingVoiceSynthesizer(),
         generationTimeoutNanoseconds: UInt64 = 15_000_000_000,
         askTarget: @escaping () -> VoiceAskTarget? = { nil },
-        submitAsk: (@Sendable (String) async throws -> PhoneAskResponse)? = nil,
+        submitAskWithTurnID: (
+            @Sendable (String, VoiceAskTarget, String) async throws -> PhoneAskResponse
+        )? = nil,
+        submitAskOutcomeWithTurnID: (
+            @Sendable (String, VoiceAskTarget, String) async throws -> PhoneAskSubmissionOutcome
+        )? = nil,
+        submitAsk: (@Sendable (String, VoiceAskTarget) async throws -> PhoneAskResponse)? = nil,
         streamAskResponses: (
             @Sendable (
                 PhoneAskResponse,
@@ -1430,13 +2304,26 @@ final class LocalVoiceCommandControllerTests: XCTestCase {
         )? = nil,
         submit: @escaping @Sendable (CommandEnvelope) async throws -> CommandResponse
     ) -> LocalVoiceCommandController {
-        LocalVoiceCommandController(
+        let adaptedSubmitAsk: (
+            @Sendable (String, VoiceAskTarget, String) async throws -> PhoneAskResponse
+        )?
+        if let submitAskWithTurnID {
+            adaptedSubmitAsk = submitAskWithTurnID
+        } else if let submitAsk {
+            adaptedSubmitAsk = { transcript, target, _ in
+                try await submitAsk(transcript, target)
+            }
+        } else {
+            adaptedSubmitAsk = nil
+        }
+        return LocalVoiceCommandController(
             generator: generator,
             submit: submit,
             capture: capture,
             synthesizer: synthesizer,
             askTarget: askTarget,
-            submitAsk: submitAsk,
+            submitAsk: adaptedSubmitAsk,
+            submitAskOutcome: submitAskOutcomeWithTurnID,
             streamAskResponses: streamAskResponses,
             permissionsAreGranted: { true },
             requestPermissions: { _ in

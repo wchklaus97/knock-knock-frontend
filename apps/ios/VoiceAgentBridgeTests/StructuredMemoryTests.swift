@@ -496,7 +496,9 @@ final class StructuredMemoryAPIClientTests: XCTestCase {
 @MainActor
 final class AppStoreStructuredMemoryTests: XCTestCase {
     func testColdStartRestoresUserScopedOfflineSnapshot() {
-        let apiBase = URL(string: "https://offline.example.test")!
+        let apiBase = resolvedApiBaseURL(
+            URL(string: "https://offline.example.test")!
+        )
         withMemoryContext(userID: "user_offline", apiBaseURL: apiBase) {
             let url = temporarySQLiteURL("offline")
             defer { removeSQLiteArtifacts(at: url) }
@@ -516,7 +518,9 @@ final class AppStoreStructuredMemoryTests: XCTestCase {
     }
 
     func testCompleteAuthoritativeSnapshotAtomicallyReplacesOfflineCache() async {
-        let apiBase = URL(string: "https://authoritative.example.test")!
+        let apiBase = resolvedApiBaseURL(
+            URL(string: "https://authoritative.example.test")!
+        )
         await withMemoryContext(userID: "user_authoritative", apiBaseURL: apiBase) {
             let url = temporarySQLiteURL("authoritative")
             defer { removeSQLiteArtifacts(at: url) }
@@ -546,7 +550,9 @@ final class AppStoreStructuredMemoryTests: XCTestCase {
     }
 
     func testMemoryShadowReceivesOnlyDisplayTextAndDoesNotChangeSnapshotOrCommands() async {
-        let apiBase = URL(string: "https://shadow.example.test")!
+        let apiBase = resolvedApiBaseURL(
+            URL(string: "https://shadow.example.test")!
+        )
         await withMemoryContext(userID: "user_shadow", apiBaseURL: apiBase) {
             let url = temporarySQLiteURL("shadow")
             defer { removeSQLiteArtifacts(at: url) }
@@ -582,7 +588,9 @@ final class AppStoreStructuredMemoryTests: XCTestCase {
     }
 
     func testFailedMemorySnapshotDoesNotInvokeShadow() async {
-        let apiBase = URL(string: "https://shadow-failure.example.test")!
+        let apiBase = resolvedApiBaseURL(
+            URL(string: "https://shadow-failure.example.test")!
+        )
         await withMemoryContext(userID: "user_shadow_fail", apiBaseURL: apiBase) {
             let url = temporarySQLiteURL("shadow-fail")
             defer { removeSQLiteArtifacts(at: url) }
@@ -610,7 +618,9 @@ final class AppStoreStructuredMemoryTests: XCTestCase {
     }
 
     func testInactiveAppDoesNotInvokeShadow() async {
-        let apiBase = URL(string: "https://shadow-inactive.example.test")!
+        let apiBase = resolvedApiBaseURL(
+            URL(string: "https://shadow-inactive.example.test")!
+        )
         await withMemoryContext(userID: "user_shadow_inactive", apiBaseURL: apiBase) {
             let url = temporarySQLiteURL("shadow-inactive")
             defer { removeSQLiteArtifacts(at: url) }
@@ -664,7 +674,9 @@ final class AppStoreStructuredMemoryTests: XCTestCase {
     }
 
     func testSnapshotLoaderFailureThrowsAndPreservesBothSnapshots() async {
-        let apiBase = URL(string: "https://loader-failure.example.test")!
+        let apiBase = resolvedApiBaseURL(
+            URL(string: "https://loader-failure.example.test")!
+        )
         await withMemoryContext(userID: "user_failed_page", apiBaseURL: apiBase) {
             let url = temporarySQLiteURL("failed-page")
             defer { removeSQLiteArtifacts(at: url) }
@@ -701,7 +713,9 @@ final class AppStoreStructuredMemoryTests: XCTestCase {
     }
 
     func testMemoryPhoneChangeTombstoneRemovesOnlyActiveUsersCacheRow() throws {
-        let apiBase = URL(string: "https://tombstone.example.test")!
+        let apiBase = resolvedApiBaseURL(
+            URL(string: "https://tombstone.example.test")!
+        )
         try withMemoryContext(userID: "user_tombstone", apiBaseURL: apiBase) {
             let url = temporarySQLiteURL("tombstone")
             defer { removeSQLiteArtifacts(at: url) }
@@ -739,6 +753,54 @@ final class AppStoreStructuredMemoryTests: XCTestCase {
     func testSavingServerURLSwitchesSameUserToThatOriginsOfflineSnapshot() {
         let dev = URL(string: "https://dev-memory.example.test/path")!
         let staging = URL(string: "https://staging-memory.example.test/other")!
+        if DemoConfig.buildChannel == .staging {
+            let locked = resolvedApiBaseURL(dev)
+            withMemoryContext(userID: "user_origin_canary", apiBaseURL: dev) {
+                let url = temporarySQLiteURL("origin-canary-staging-lock")
+                defer { removeSQLiteArtifacts(at: url) }
+                let localStore = SQLiteStore(databaseURL: url)
+                let lockedScope = StructuredMemoryTestSupport.scope(
+                    locked.absoluteString,
+                    userID: "user_origin_canary"
+                )
+                let devScope = StructuredMemoryTestSupport.scope(
+                    dev.absoluteString,
+                    userID: "user_origin_canary"
+                )
+                XCTAssertTrue(localStore.upsertMemory(
+                    StructuredMemoryTestSupport.memory(
+                        "memory_same",
+                        displayText: "locked staging snapshot"
+                    ),
+                    in: lockedScope
+                ))
+                XCTAssertTrue(localStore.upsertMemory(
+                    StructuredMemoryTestSupport.memory(
+                        "memory_same",
+                        displayText: "dev snapshot"
+                    ),
+                    in: devScope
+                ))
+                let appStore = makeAppStore(localStore: localStore) { [] }
+                XCTAssertEqual(
+                    appStore.memories.first?.display_text,
+                    "locked staging snapshot"
+                )
+
+                appStore.apiBase = staging.absoluteString
+                XCTAssertFalse(appStore.applyApiBase())
+
+                XCTAssertEqual(
+                    appStore.memories.first?.display_text,
+                    "locked staging snapshot"
+                )
+                XCTAssertEqual(
+                    localStore.loadMemories(in: devScope).first?.display_text,
+                    "dev snapshot"
+                )
+            }
+            return
+        }
         withMemoryContext(userID: "user_origin_canary", apiBaseURL: dev) {
             let url = temporarySQLiteURL("origin-canary")
             defer { removeSQLiteArtifacts(at: url) }
@@ -771,7 +833,9 @@ final class AppStoreStructuredMemoryTests: XCTestCase {
     }
 
     func testAccountSwitchLoadsOnlyNewUsersCurrentOriginSnapshot() throws {
-        let apiBase = URL(string: "https://account-memory.example.test")!
+        let apiBase = resolvedApiBaseURL(
+            URL(string: "https://account-memory.example.test")!
+        )
         try withMemoryContext(userID: "user_a", apiBaseURL: apiBase) {
             let url = temporarySQLiteURL("account-canary")
             defer { removeSQLiteArtifacts(at: url) }
@@ -810,7 +874,9 @@ final class AppStoreStructuredMemoryTests: XCTestCase {
     }
 
     func testMemoryPageFailurePreservesOldSnapshotAndAppliedCursor() async {
-        let apiBase = URL(string: "https://cursor-page.example.test")!
+        let apiBase = resolvedApiBaseURL(
+            URL(string: "https://cursor-page.example.test")!
+        )
         await withMemoryContext(userID: "user_cursor_page", apiBaseURL: apiBase) {
             let url = temporarySQLiteURL("cursor-page")
             defer { removeSQLiteArtifacts(at: url) }
@@ -894,7 +960,9 @@ final class AppStoreStructuredMemoryTests: XCTestCase {
     }
 
     func testMemorySQLiteReplaceFailurePreservesOldSnapshotAndAppliedCursor() async {
-        let apiBase = URL(string: "https://cursor-sqlite.example.test")!
+        let apiBase = resolvedApiBaseURL(
+            URL(string: "https://cursor-sqlite.example.test")!
+        )
         await withMemoryContext(userID: "user_cursor_sqlite", apiBaseURL: apiBase) {
             let url = temporarySQLiteURL("cursor-sqlite")
             defer { removeSQLiteArtifacts(at: url) }
@@ -975,6 +1043,15 @@ final class AppStoreStructuredMemoryTests: XCTestCase {
             memoryShadow: memoryShadow,
             memoryShadowIsAllowed: memoryShadowIsAllowed
         )
+    }
+
+    private func resolvedApiBaseURL(_ persisted: URL) -> URL {
+        guard let resolved = URL(string: DemoConfig.resolvedApiBase(
+            persisted: persisted.absoluteString
+        )) else {
+            preconditionFailure("The test API base must resolve to a valid URL")
+        }
+        return resolved
     }
 
     private func withMemoryContext(

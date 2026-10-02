@@ -19,6 +19,30 @@ const apiBase = (
 ).replace(/\/+$/, "");
 const email = process.env.PAPERCLIP_TEST_EMAIL ?? "e2e-1785931570@local.test";
 const password = process.env.PAPERCLIP_TEST_PASSWORD ?? "password123";
+const PAPERCLIP_CHILD_ENV_ALLOWLIST = [
+  "HOME",
+  "PATH",
+  "TMPDIR",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "KNOCK_KNOCK_AGENT_ENV",
+] as const;
+
+function secretFreeChildEnvironment(
+  inherited: NodeJS.ProcessEnv,
+): Record<string, string> {
+  const environment: Record<string, string> = {};
+  for (const name of PAPERCLIP_CHILD_ENV_ALLOWLIST) {
+    const value = inherited[name];
+    if (typeof value === "string" && !value.includes("\0")) {
+      environment[name] = value;
+    }
+  }
+  environment.PATH ??= "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+  return environment;
+}
 
 type ToolText = { type: "text"; text: string };
 function fail(message: string): never {
@@ -60,7 +84,7 @@ const transport = new StdioClientTransport({
   args: ["--filter", "@vab/mcp", "dev"],
   cwd: root,
   env: {
-    ...process.env,
+    ...secretFreeChildEnvironment(process.env),
     KNOCK_KNOCK_API_URL: apiBase,
     BRIDGE_API_URL: apiBase,
   },

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 struct AuthUser: Decodable, Equatable {
@@ -61,10 +62,228 @@ struct Agent: Codable, Identifiable, Hashable {
     let host_label: String?
     let created_at: String
     let last_seen_at: String?
-    let listener_binding_id: String? = nil
-    let listener_chat_id: String? = nil
-    let listener_chat_title: String? = nil
-    let listener_expires_at: String? = nil
+    let listener_binding_id: String?
+    let listener_lease_id: String?
+    let listener_generation: Int?
+    let listener_chat_id: String?
+    let listener_chat_title: String?
+    let listener_expires_at: String?
+    let binding_id: String?
+    let lease_id: String?
+    let generation: Int?
+    let target_chat_id: String?
+
+    private struct ListenerFence: Equatable {
+        let bindingID: String
+        let leaseID: String
+        let generation: Int
+        let targetChatID: String
+
+        init?(
+            bindingID: String?,
+            leaseID: String?,
+            generation: Int?,
+            targetChatID: String?
+        ) {
+            guard let bindingID, !bindingID.isEmpty,
+                  let leaseID, !leaseID.isEmpty,
+                  let generation, generation > 0,
+                  let targetChatID, !targetChatID.isEmpty
+            else { return nil }
+            self.bindingID = bindingID
+            self.leaseID = leaseID
+            self.generation = generation
+            self.targetChatID = targetChatID
+        }
+    }
+
+    private let hasModernListenerPayload: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case agent_id
+        case user_id
+        case label
+        case host_label
+        case created_at
+        case last_seen_at
+        case listener_binding_id
+        case listener_lease_id
+        case listener_generation
+        case listener_chat_id
+        case listener_chat_title
+        case listener_expires_at
+        case binding_id
+        case lease_id
+        case generation
+        case target_chat_id
+    }
+
+    private static func resolveListenerFence(
+        listenerBindingID: String?,
+        listenerLeaseID: String?,
+        listenerGeneration: Int?,
+        listenerChatID: String?,
+        listenerSchemaPresent: Bool,
+        bindingID: String?,
+        leaseID: String?,
+        generation: Int?,
+        targetChatID: String?,
+        flatSchemaPresent: Bool
+    ) -> ListenerFence? {
+        let listenerFence = listenerSchemaPresent
+            ? ListenerFence(
+                bindingID: listenerBindingID,
+                leaseID: listenerLeaseID,
+                generation: listenerGeneration,
+                targetChatID: listenerChatID
+            )
+            : nil
+        let flatFence = flatSchemaPresent
+            ? ListenerFence(
+                bindingID: bindingID,
+                leaseID: leaseID,
+                generation: generation,
+                targetChatID: targetChatID
+            )
+            : nil
+
+        if listenerSchemaPresent && listenerFence == nil { return nil }
+        if flatSchemaPresent && flatFence == nil { return nil }
+
+        switch (listenerFence, flatFence) {
+        case let (listenerFence?, flatFence?):
+            return listenerFence == flatFence ? listenerFence : nil
+        case let (listenerFence?, nil):
+            return listenerFence
+        case let (nil, flatFence?):
+            return flatFence
+        case (nil, nil):
+            return nil
+        }
+    }
+
+    init(
+        agent_id: String,
+        user_id: String,
+        label: String,
+        host_label: String?,
+        created_at: String,
+        last_seen_at: String?,
+        listener_binding_id: String? = nil,
+        listener_lease_id: String? = nil,
+        listener_generation: Int? = nil,
+        listener_chat_id: String? = nil,
+        listener_chat_title: String? = nil,
+        listener_expires_at: String? = nil,
+        binding_id: String? = nil,
+        lease_id: String? = nil,
+        generation: Int? = nil,
+        target_chat_id: String? = nil
+    ) {
+        self.agent_id = agent_id
+        self.user_id = user_id
+        self.label = label
+        self.host_label = host_label
+        self.created_at = created_at
+        self.last_seen_at = last_seen_at
+        let listenerFence = Self.resolveListenerFence(
+            listenerBindingID: listener_binding_id,
+            listenerLeaseID: listener_lease_id,
+            listenerGeneration: listener_generation,
+            listenerChatID: listener_chat_id,
+            listenerSchemaPresent: listener_binding_id != nil
+                || listener_lease_id != nil
+                || listener_generation != nil
+                || listener_chat_id != nil,
+            bindingID: binding_id,
+            leaseID: lease_id,
+            generation: generation,
+            targetChatID: target_chat_id,
+            flatSchemaPresent: binding_id != nil
+                || lease_id != nil
+                || generation != nil
+                || target_chat_id != nil
+        )
+        self.listener_binding_id = listenerFence?.bindingID
+        self.listener_lease_id = listenerFence?.leaseID
+        self.listener_generation = listenerFence?.generation
+        self.listener_chat_id = listenerFence?.targetChatID
+        self.listener_chat_title = listener_chat_title
+        self.listener_expires_at = listener_expires_at
+        self.binding_id = listenerFence?.bindingID
+        self.lease_id = listenerFence?.leaseID
+        self.generation = listenerFence?.generation
+        self.target_chat_id = listenerFence?.targetChatID
+        hasModernListenerPayload = listenerFence != nil
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        agent_id = try container.decode(String.self, forKey: .agent_id)
+        user_id = try container.decode(String.self, forKey: .user_id)
+        label = try container.decode(String.self, forKey: .label)
+        host_label = try container.decodeIfPresent(String.self, forKey: .host_label)
+        created_at = try container.decode(String.self, forKey: .created_at)
+        last_seen_at = try container.decodeIfPresent(String.self, forKey: .last_seen_at)
+        let decodedListenerBindingID = try container.decodeIfPresent(
+            String.self,
+            forKey: .listener_binding_id
+        )
+        let decodedListenerLeaseID = try container.decodeIfPresent(
+            String.self,
+            forKey: .listener_lease_id
+        )
+        let decodedListenerGeneration = try container.decodeIfPresent(
+            Int.self,
+            forKey: .listener_generation
+        )
+        let decodedListenerChatID = try container.decodeIfPresent(
+            String.self,
+            forKey: .listener_chat_id
+        )
+        listener_chat_title = try container.decodeIfPresent(
+            String.self,
+            forKey: .listener_chat_title
+        )
+        listener_expires_at = try container.decodeIfPresent(
+            String.self,
+            forKey: .listener_expires_at
+        )
+        let decodedBindingID = try container.decodeIfPresent(String.self, forKey: .binding_id)
+        let decodedLeaseID = try container.decodeIfPresent(String.self, forKey: .lease_id)
+        let decodedGeneration = try container.decodeIfPresent(Int.self, forKey: .generation)
+        let decodedTargetChatID = try container.decodeIfPresent(
+            String.self,
+            forKey: .target_chat_id
+        )
+        let listenerFence = Self.resolveListenerFence(
+            listenerBindingID: decodedListenerBindingID,
+            listenerLeaseID: decodedListenerLeaseID,
+            listenerGeneration: decodedListenerGeneration,
+            listenerChatID: decodedListenerChatID,
+            listenerSchemaPresent: container.contains(.listener_binding_id)
+                || container.contains(.listener_lease_id)
+                || container.contains(.listener_generation)
+                || container.contains(.listener_chat_id),
+            bindingID: decodedBindingID,
+            leaseID: decodedLeaseID,
+            generation: decodedGeneration,
+            targetChatID: decodedTargetChatID,
+            flatSchemaPresent: container.contains(.binding_id)
+                || container.contains(.lease_id)
+                || container.contains(.generation)
+                || container.contains(.target_chat_id)
+        )
+        listener_binding_id = listenerFence?.bindingID
+        listener_lease_id = listenerFence?.leaseID
+        listener_generation = listenerFence?.generation
+        listener_chat_id = listenerFence?.targetChatID
+        binding_id = listenerFence?.bindingID
+        lease_id = listenerFence?.leaseID
+        generation = listenerFence?.generation
+        target_chat_id = listenerFence?.targetChatID
+        hasModernListenerPayload = listenerFence != nil
+    }
 
     var id: String { agent_id }
     var displayLabel: String { label.isEmpty ? (host_label ?? agent_id) : label }
@@ -74,10 +293,25 @@ struct Agent: Codable, Identifiable, Hashable {
     }
 
     func isListening(now: Date = Date()) -> Bool {
-        if listener_chat_id != nil, let expires = listener_expires_at {
-            return AgentListening.isLeaseActive(expiresAt: expires, now: now)
-        }
-        return AgentListening.isListening(lastSeenAt: last_seen_at, now: now)
+        guard hasModernListenerPayload else { return false }
+        return AgentListening.isLeaseActive(expiresAt: listener_expires_at, now: now)
+    }
+
+    func voiceAskTarget(now: Date = Date()) -> VoiceAskTarget? {
+        guard isListening(now: now),
+              let bindingID = binding_id,
+              let leaseID = lease_id,
+              let generation,
+              let targetChatID = target_chat_id
+        else { return nil }
+        return VoiceAskTarget(
+            agentID: agent_id,
+            label: voiceDisplayLabel,
+            bindingID: bindingID,
+            leaseID: leaseID,
+            generation: generation,
+            targetChatID: targetChatID
+        )
     }
 }
 
@@ -106,42 +340,64 @@ enum AgentListening {
     }
 }
 
-/// Home Ask target: keep an explicit live selection, otherwise skip a stale
-/// drawer pick (e.g. last night's Codex) and use the agent that is listening.
+enum VoiceAskTargetResolution: Equatable, Sendable {
+    case unavailable
+    case selectionRequired([VoiceAskTarget])
+    case resolved(VoiceAskTarget)
+
+    var target: VoiceAskTarget? {
+        guard case let .resolved(target) = self else { return nil }
+        return target
+    }
+}
+
+/// Home Ask target: keep an explicit usable selection, otherwise use the sole
+/// usable listener. Ambiguous or empty listening sets fail closed.
 enum VoiceAskAgentResolver {
-    static func resolve(selectedId: String?, agents: [Agent], now: Date = Date()) -> Agent? {
-        let listening = agents.filter { $0.isListening(now: now) }
-        if let selectedId,
-           let selected = agents.first(where: { $0.agent_id == selectedId }),
-           selected.isListening(now: now) || listening.isEmpty
-        {
-            return selected
+    static func targetResolution(
+        selectedId: String?,
+        agents: [Agent],
+        now: Date = Date()
+    ) -> VoiceAskTargetResolution {
+        let usable = agents.compactMap { agent -> VoiceAskTarget? in
+            agent.voiceAskTarget(now: now)
         }
-        let candidates = listening.isEmpty ? agents : listening
-        return candidates.max { lhs, rhs in
-            (lhs.last_seen_at ?? "") < (rhs.last_seen_at ?? "")
+        if let selectedId,
+           let selected = usable.first(where: { $0.agentID == selectedId })
+        {
+            return .resolved(selected)
+        }
+        switch usable.count {
+        case 0:
+            return .unavailable
+        case 1:
+            return .resolved(usable[0])
+        default:
+            return .selectionRequired(usable)
         }
     }
 
-    /// Auto-select the single live listener when the drawer pick is missing
-    /// or not listening. Leave an explicit live pick and multi-listener
-    /// ambiguity alone.
+    static func resolve(selectedId: String?, agents: [Agent], now: Date = Date()) -> Agent? {
+        guard let target = targetResolution(
+            selectedId: selectedId,
+            agents: agents,
+            now: now
+        ).target else { return nil }
+        return agents.first(where: { $0.agent_id == target.agentID })
+    }
+
+    /// Keep an explicit live pick, otherwise select only a sole modern
+    /// listener. Stale, drain-only, and ambiguous selections fail closed.
     static func defaultSelectedId(
         currentId: String?,
         agents: [Agent],
         now: Date = Date()
     ) -> String? {
-        let listening = agents.filter { $0.isListening(now: now) }
-        guard listening.count == 1, let live = listening.first else {
-            return currentId
-        }
-        if let currentId,
-           let current = agents.first(where: { $0.agent_id == currentId }),
-           current.isListening(now: now)
-        {
-            return currentId
-        }
-        return live.agent_id
+        targetResolution(
+            selectedId: currentId,
+            agents: agents,
+            now: now
+        ).target?.agentID
     }
 }
 
@@ -1186,6 +1442,112 @@ struct ActiveCommandCheckpoint: Codable, Equatable {
     }
 }
 
+/// Crash-safe identity and delivery journal for the newest selected phone Ask.
+/// Sensitive request content lives in the this-device-only Keychain; SQLite
+/// stores only its fingerprint and canonical backend delivery state.
+struct PendingAskCheckpoint: Codable, Equatable {
+    enum Phase: String, Codable {
+        case selected
+        case awaitingAnswer
+        case answerPendingAnnouncement
+        case answerPresented
+    }
+
+    var phase: Phase
+    let clientTurnID: String
+    let agentID: String
+    let agentLabel: String
+    let requestFingerprint: String?
+    var askID: String?
+    var sessionID: String?
+    var initialTurnSequence: Int?
+    var answerSequence: Int?
+    var answerText: String?
+    var lastAnnouncedSequence: Int?
+    let backendOrigin: String
+    let ownerUserID: String
+    let createdAt: Date
+
+    var isStructurallyValid: Bool {
+        guard Self.isValid(clientTurnID, maximumBytes: 128),
+              Self.isValid(agentID, maximumBytes: 128),
+              Self.isValid(agentLabel, maximumBytes: 256),
+              Self.isValid(backendOrigin, maximumBytes: 2_048),
+              Self.isValid(ownerUserID, maximumBytes: 256),
+              createdAt.timeIntervalSince1970.isFinite
+        else { return false }
+
+        switch phase {
+        case .selected:
+            return Self.isFingerprint(requestFingerprint)
+                && askID == nil
+                && sessionID == nil
+                && initialTurnSequence == nil
+                && answerSequence == nil
+                && answerText == nil
+                && lastAnnouncedSequence == nil
+        case .awaitingAnswer:
+            return (requestFingerprint == nil || Self.isFingerprint(requestFingerprint))
+                && Self.isValid(askID, maximumBytes: 128)
+                && Self.isValid(sessionID, maximumBytes: 128)
+                && initialTurnSequence.map({ $0 >= 0 }) == true
+                && answerSequence == nil
+                && answerText == nil
+                && lastAnnouncedSequence == nil
+        case .answerPendingAnnouncement:
+            guard Self.isValid(askID, maximumBytes: 128),
+                  Self.isValid(sessionID, maximumBytes: 128),
+                  let initialTurnSequence,
+                  initialTurnSequence >= 0,
+                  let answerSequence,
+                  answerSequence > initialTurnSequence,
+                  Self.isValid(answerText, maximumBytes: 65_536)
+            else { return false }
+            return lastAnnouncedSequence == nil
+                || lastAnnouncedSequence == answerSequence
+        case .answerPresented:
+            guard (requestFingerprint == nil || Self.isFingerprint(requestFingerprint)),
+                  Self.isValid(askID, maximumBytes: 128),
+                  Self.isValid(sessionID, maximumBytes: 128),
+                  let initialTurnSequence,
+                  initialTurnSequence >= 0,
+                  let answerSequence,
+                  answerSequence > initialTurnSequence
+            else { return false }
+            return (answerText == nil || Self.isValid(answerText, maximumBytes: 65_536))
+                && lastAnnouncedSequence == answerSequence
+        }
+    }
+
+    private static func isFingerprint(_ value: String?) -> Bool {
+        guard let value, value.count == 64 else { return false }
+        return value.allSatisfy { $0.isHexDigit }
+    }
+
+    private static func isValid(_ value: String?, maximumBytes: Int) -> Bool {
+        guard let value else { return false }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed == value
+            && !value.isEmpty
+            && value.utf8.count <= maximumBytes
+    }
+}
+
+/// Non-sensitive deletion debt for the singleton encrypted Ask request. This
+/// record is written before Keychain deletion and survives every failed delete
+/// so foreground/relaunch/logout can retry without storing transcript or fence.
+struct PendingAskSensitiveCleanupCheckpoint: Codable, Equatable {
+    let requestFingerprint: String
+    let clearPendingAskCheckpoint: Bool
+    let createdAt: Date
+
+    var isStructurallyValid: Bool {
+        requestFingerprint.count == 64
+            && requestFingerprint.allSatisfy(\.isHexDigit)
+            && createdAt.timeIntervalSince1970.isFinite
+    }
+}
+
 struct CommandActionMetadata: Decodable, Equatable {
     let title: String
     let risk: String
@@ -1236,6 +1598,261 @@ struct PendingAction: Decodable {
 struct VoiceAskTarget: Equatable, Sendable {
     let agentID: String
     let label: String
+    let bindingID: String?
+    let leaseID: String?
+    let generation: Int?
+    let targetChatID: String?
+
+    init(
+        agentID: String,
+        label: String,
+        chatID: String? = nil,
+        bindingID: String? = nil,
+        leaseID: String? = nil,
+        generation: Int? = nil,
+        targetChatID: String? = nil
+    ) {
+        self.agentID = agentID
+        self.label = label
+        self.bindingID = bindingID
+        self.leaseID = leaseID
+        self.generation = generation
+        self.targetChatID = targetChatID ?? chatID
+    }
+
+    var chatID: String? { targetChatID }
+
+    var hasCompleteFence: Bool {
+        guard let bindingID, !bindingID.isEmpty,
+              let leaseID, !leaseID.isEmpty,
+              let generation, generation > 0,
+              let targetChatID, !targetChatID.isEmpty
+        else { return false }
+        return true
+    }
+}
+
+enum VoiceAskSubmissionError: LocalizedError, Equatable {
+    case listenerChanged
+    case invalidRequest
+
+    var errorDescription: String? {
+        switch self {
+        case .listenerChanged:
+            return "The listener changed. Select the agent again."
+        case .invalidRequest:
+            return "The Ask could not be saved safely. Please try again."
+        }
+    }
+}
+
+struct PhoneAskRequestBody: Codable, Equatable, Sendable {
+    let transcript: String
+    let locale: String?
+    let client_turn_id: String
+    let idempotency_key: String
+    let binding_id: String
+    let lease_id: String
+    let generation: Int
+    let target_chat_id: String
+    let session_id: String?
+
+    init(
+        transcript: String,
+        locale: String?,
+        clientTurnID: String,
+        target: VoiceAskTarget,
+        sessionID: String?
+    ) throws {
+        guard target.hasCompleteFence,
+              let bindingID = target.bindingID,
+              let leaseID = target.leaseID,
+              let generation = target.generation,
+              let targetChatID = target.targetChatID
+        else { throw VoiceAskSubmissionError.listenerChanged }
+        self.init(
+            transcript: transcript,
+            locale: locale,
+            clientTurnID: clientTurnID,
+            idempotencyKey: "ask-\(clientTurnID)",
+            bindingID: bindingID,
+            leaseID: leaseID,
+            generation: generation,
+            targetChatID: targetChatID,
+            sessionID: sessionID
+        )
+    }
+
+    private init(
+        transcript: String,
+        locale: String?,
+        clientTurnID: String,
+        idempotencyKey: String,
+        bindingID: String,
+        leaseID: String,
+        generation: Int,
+        targetChatID: String,
+        sessionID: String?
+    ) {
+        self.transcript = transcript
+        self.locale = locale
+        client_turn_id = clientTurnID
+        idempotency_key = idempotencyKey
+        binding_id = bindingID
+        lease_id = leaseID
+        self.generation = generation
+        target_chat_id = targetChatID
+        session_id = sessionID
+    }
+
+    func replacingSessionID(_ sessionID: String?) -> PhoneAskRequestBody {
+        PhoneAskRequestBody(
+            transcript: transcript,
+            locale: locale,
+            clientTurnID: client_turn_id,
+            idempotencyKey: idempotency_key,
+            bindingID: binding_id,
+            leaseID: lease_id,
+            generation: generation,
+            targetChatID: target_chat_id,
+            sessionID: sessionID
+        )
+    }
+}
+
+/// The exact immutable identity of a phone Ask. The optional conversation
+/// session may be removed only for the backend's explicit 410 retry contract;
+/// every listener fence and idempotency field remains unchanged.
+struct PendingAskRequestIdentity: Codable, Equatable, Sendable {
+    let agentID: String
+    let agentLabel: String
+    let request: PhoneAskRequestBody
+
+    init(
+        transcript: String,
+        locale: String?,
+        clientTurnID: String,
+        target: VoiceAskTarget,
+        sessionID: String?
+    ) throws {
+        let normalizedTranscript = transcript
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .precomposedStringWithCanonicalMapping
+        let normalizedLocale = locale?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .precomposedStringWithCanonicalMapping
+        guard !normalizedTranscript.isEmpty,
+              normalizedTranscript.utf8.count <= 65_536
+        else { throw VoiceAskSubmissionError.invalidRequest }
+        agentID = target.agentID
+        agentLabel = target.label
+        request = try PhoneAskRequestBody(
+            transcript: normalizedTranscript,
+            locale: normalizedLocale?.isEmpty == false ? normalizedLocale : nil,
+            clientTurnID: clientTurnID,
+            target: target,
+            sessionID: sessionID
+        )
+        guard isStructurallyValid else {
+            throw VoiceAskSubmissionError.invalidRequest
+        }
+    }
+
+    private init(
+        agentID: String,
+        agentLabel: String,
+        request: PhoneAskRequestBody
+    ) {
+        self.agentID = agentID
+        self.agentLabel = agentLabel
+        self.request = request
+    }
+
+    var clientTurnID: String { request.client_turn_id }
+
+    var fingerprint: String {
+        struct FingerprintPayload: Encodable {
+            let agentID: String
+            let agentLabel: String
+            let transcript: String
+            let locale: String?
+            let clientTurnID: String
+            let idempotencyKey: String
+            let bindingID: String
+            let leaseID: String
+            let generation: Int
+            let targetChatID: String
+        }
+        let payload = FingerprintPayload(
+            agentID: agentID,
+            agentLabel: agentLabel,
+            transcript: request.transcript,
+            locale: request.locale,
+            clientTurnID: request.client_turn_id,
+            idempotencyKey: request.idempotency_key,
+            bindingID: request.binding_id,
+            leaseID: request.lease_id,
+            generation: request.generation,
+            targetChatID: request.target_chat_id
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(payload) else { return "" }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    var isStructurallyValid: Bool {
+        Self.isNormalized(agentID, maximumBytes: 128)
+            && Self.isNormalized(agentLabel, maximumBytes: 256)
+            && Self.isNormalized(request.transcript, maximumBytes: 65_536)
+            && (request.locale.map {
+                Self.isNormalized($0, maximumBytes: 35)
+            } ?? true)
+            && Self.isNormalized(request.client_turn_id, maximumBytes: 128)
+            && request.idempotency_key == "ask-\(request.client_turn_id)"
+            && Self.isNormalized(request.idempotency_key, maximumBytes: 160)
+            && Self.isNormalized(request.binding_id, maximumBytes: 128)
+            && Self.isNormalized(request.lease_id, maximumBytes: 128)
+            && request.generation > 0
+            && Self.isNormalized(request.target_chat_id, maximumBytes: 128)
+            && (request.session_id.map {
+                Self.isNormalized($0, maximumBytes: 128)
+            } ?? true)
+            && fingerprint.count == 64
+    }
+
+    func replacingSessionID(_ sessionID: String?) -> PendingAskRequestIdentity {
+        PendingAskRequestIdentity(
+            agentID: agentID,
+            agentLabel: agentLabel,
+            request: request.replacingSessionID(sessionID)
+        )
+    }
+
+    func hasSameFrozenIdentity(as other: PendingAskRequestIdentity) -> Bool {
+        fingerprint == other.fingerprint
+    }
+
+    private static func isNormalized(_ value: String, maximumBytes: Int) -> Bool {
+        let normalized = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .precomposedStringWithCanonicalMapping
+        return normalized == value
+            && !value.isEmpty
+            && value.utf8.count <= maximumBytes
+    }
+}
+
+enum PhoneAskResponseValidationError: LocalizedError, Equatable {
+    case missingAskID
+    case missingSession
+    case missingTurnSequence
+    case agentMismatch
+    case checkpointChanged
+
+    var errorDescription: String? {
+        "The server response could not confirm this Ask. Retry to reconcile the same request."
+    }
 }
 
 struct PhoneAskResponse: Decodable, Equatable, Sendable {
@@ -1261,6 +1878,37 @@ struct PhoneAskResponse: Decodable, Equatable, Sendable {
         self.turn_sequence = turn_sequence
         self.status = status
     }
+
+    func validate(expectedAgentID: String) throws {
+        let normalizedAskID = ask_id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalizedAskID == ask_id,
+              !ask_id.isEmpty,
+              ask_id.utf8.count <= 128
+        else { throw PhoneAskResponseValidationError.missingAskID }
+        guard agent_id == expectedAgentID else {
+            throw PhoneAskResponseValidationError.agentMismatch
+        }
+        guard let sessionID = session_id,
+              sessionID == sessionID.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sessionID.isEmpty,
+              sessionID.utf8.count <= 128
+        else { throw PhoneAskResponseValidationError.missingSession }
+        guard let turnSequence = turn_sequence, turnSequence >= 0 else {
+            throw PhoneAskResponseValidationError.missingTurnSequence
+        }
+    }
+}
+
+enum PendingAskBeginOutcome: Equatable, Sendable {
+    case selected(PendingAskRequestIdentity)
+    case alreadyAccepted(PhoneAskResponse)
+    case alreadyReconciled
+}
+
+enum PhoneAskSubmissionOutcome: Equatable, Sendable {
+    case accepted(PhoneAskResponse)
+    case alreadyAccepted(PhoneAskResponse)
+    case alreadyReconciled
 }
 
 struct APIErrorBody: Decodable {

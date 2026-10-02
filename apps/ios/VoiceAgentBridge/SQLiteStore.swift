@@ -307,6 +307,92 @@ final class SQLiteStore {
         }
     }
 
+    func loadPendingAskCheckpoint() -> PendingAskCheckpoint? {
+        queue.sync {
+            guard let value = metadataLocked(key: "pending_ask_checkpoint"),
+                  let data = value.data(using: .utf8),
+                  let checkpoint = try? JSONDecoder().decode(
+                      PendingAskCheckpoint.self,
+                      from: data
+                  ),
+                  checkpoint.isStructurallyValid
+            else {
+                _ = executeLocked(
+                    "DELETE FROM metadata WHERE key = ?",
+                    bindings: [.text("pending_ask_checkpoint")]
+                )
+                return nil
+            }
+            return checkpoint
+        }
+    }
+
+    @discardableResult
+    func savePendingAskCheckpoint(_ checkpoint: PendingAskCheckpoint) -> Bool {
+        guard checkpoint.isStructurallyValid,
+              let data = try? JSONEncoder().encode(checkpoint),
+              let value = String(data: data, encoding: .utf8)
+        else { return false }
+        return queue.sync {
+            setMetadataLocked(key: "pending_ask_checkpoint", value: value)
+        }
+    }
+
+    @discardableResult
+    func clearPendingAskCheckpoint() -> Bool {
+        queue.sync {
+            executeLocked(
+                "DELETE FROM metadata WHERE key = ?",
+                bindings: [.text("pending_ask_checkpoint")]
+            )
+        }
+    }
+
+    func loadPendingAskSensitiveCleanupCheckpoint()
+        -> PendingAskSensitiveCleanupCheckpoint?
+    {
+        queue.sync {
+            guard let value = metadataLocked(key: "pending_ask_sensitive_cleanup"),
+                  let data = value.data(using: .utf8),
+                  let checkpoint = try? JSONDecoder().decode(
+                      PendingAskSensitiveCleanupCheckpoint.self,
+                      from: data
+                  ),
+                  checkpoint.isStructurallyValid
+            else {
+                _ = executeLocked(
+                    "DELETE FROM metadata WHERE key = ?",
+                    bindings: [.text("pending_ask_sensitive_cleanup")]
+                )
+                return nil
+            }
+            return checkpoint
+        }
+    }
+
+    @discardableResult
+    func savePendingAskSensitiveCleanupCheckpoint(
+        _ checkpoint: PendingAskSensitiveCleanupCheckpoint
+    ) -> Bool {
+        guard checkpoint.isStructurallyValid,
+              let data = try? JSONEncoder().encode(checkpoint),
+              let value = String(data: data, encoding: .utf8)
+        else { return false }
+        return queue.sync {
+            setMetadataLocked(key: "pending_ask_sensitive_cleanup", value: value)
+        }
+    }
+
+    @discardableResult
+    func clearPendingAskSensitiveCleanupCheckpoint() -> Bool {
+        queue.sync {
+            executeLocked(
+                "DELETE FROM metadata WHERE key = ?",
+                bindings: [.text("pending_ask_sensitive_cleanup")]
+            )
+        }
+    }
+
     /// Upserts one live canonical item. Deletions arrive separately as
     /// user-scoped phone-change tombstones.
     @discardableResult
@@ -591,7 +677,7 @@ final class SQLiteStore {
                 guard executeLocked("DELETE FROM pending_sync_events") else { return false }
                 guard executeLocked("DELETE FROM sync_state") else { return false }
                 return executeLocked(
-                    "DELETE FROM metadata WHERE key IN ('cursor', 'applied_cursor', 'pending_command_confirmation', 'active_command_id', 'active_command_checkpoint')"
+                    "DELETE FROM metadata WHERE key IN ('cursor', 'applied_cursor', 'pending_command_confirmation', 'active_command_id', 'active_command_checkpoint', 'pending_ask_checkpoint', 'pending_ask_sensitive_cleanup')"
                 )
             }
         }

@@ -26,10 +26,10 @@
     },
     {
       "name": "get_user_asks",
-      "description": "Poll hold-to-speak asks bound to this concrete Codex thread. The MCP host registers CODEX_THREAD_ID and renews a listener lease; another thread cannot claim these asks.",
+      "description": "Claim hold-to-speak asks bound to this concrete Codex thread. The MCP tool internally uses an immediate bodyless POST /v1/agents/me/asks/claim under the active lease-v2 authority; callers do not provide a claim argument. Passive wake observation uses read-only GET /v1/agents/me/asks and any wait_ms delay is MCP-side.",
       "http": {
-        "method": "GET",
-        "path": "/v1/agents/me/asks",
+        "method": "POST",
+        "path": "/v1/agents/me/asks/claim",
         "auth": "AgentKey"
       },
       "push": false,
@@ -37,7 +37,6 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "claim": { "type": "boolean", "default": true },
           "wait_ms": { "type": "integer", "minimum": 0, "maximum": 30000 }
         }
       }
@@ -64,7 +63,11 @@
           },
           "message": { "type": "string", "maxLength": 280 },
           "percent": { "type": "number", "minimum": 0, "maximum": 100 },
-          "facts": { "type": "object", "additionalProperties": true }
+          "facts": { "type": "object", "additionalProperties": true },
+          "ask_id": {
+            "type": "string",
+            "description": "Canonical phone.ask id when this progress write belongs to an Ask"
+          }
         }
       }
     },
@@ -85,10 +88,18 @@
           "session_id": { "type": "string" },
           "status": {
             "type": "string",
-            "enum": ["needs_user", "succeeded", "failed"],
+            "enum": ["info", "needs_user", "succeeded", "failed"],
             "description": "EventStatus — may push"
           },
           "idempotency_key": { "type": "string", "minLength": 1 },
+          "ask_id": {
+            "type": "string",
+            "description": "Canonical phone.ask id"
+          },
+          "in_reply_to_ask_id": {
+            "type": "string",
+            "description": "Compatibility Ask identity accepted by report_event"
+          },
           "summary": { "type": "string", "maxLength": 280 },
           "facts": {
             "type": "object",

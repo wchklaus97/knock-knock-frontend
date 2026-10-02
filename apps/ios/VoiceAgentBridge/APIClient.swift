@@ -107,17 +107,10 @@ final class APIClient: @unchecked Sendable {
     var baseURL: URL? {
         get {
             let persisted = UserDefaults.standard.string(forKey: "vab.apiBase")
-            let configured = DemoConfig.runtimeApiBaseOverride()
-                ?? (DemoConfig.shouldIgnorePersistedDevelopmentApiBase(persisted: persisted) ? nil : persisted)
-                ?? DemoConfig.defaultApiBase
+            let configured = DemoConfig.resolvedApiBase(persisted: persisted)
             let raw = configured
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            #if DEBUG
-            let requiresHTTPS = false
-            #else
-            let requiresHTTPS = true
-            #endif
-            guard DemoConfig.isValidApiBase(raw, requireHTTPS: requiresHTTPS),
+            guard DemoConfig.isValidApiBase(raw, requireHTTPS: DemoConfig.requiresHTTPS),
                   let url = URL(string: raw)
             else {
                 return nil
@@ -125,6 +118,10 @@ final class APIClient: @unchecked Sendable {
             return url
         }
         set {
+            if DemoConfig.buildChannel == .staging {
+                UserDefaults.standard.removeObject(forKey: "vab.apiBase")
+                return
+            }
             if let newValue {
                 UserDefaults.standard.set(newValue.absoluteString, forKey: "vab.apiBase")
             } else {

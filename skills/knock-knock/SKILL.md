@@ -53,6 +53,22 @@ The MCP host binds voice intake to the concrete Codex thread from
 agent-wide voice listener. The phone shows the bound thread title and the
 backend rejects claims or replies from another thread.
 
+### Cursor: where the listener chat is
+
+`KNOCK_KNOCK_CHAT_ID` is a private binding id (`cursor` on a typical Mac).
+It is **not** a folder and must not be a person's name or a machine nickname.
+The only public name is **Knock Knock**: use that for the Cursor tab and for
+`KNOCK_KNOCK_CHAT_TITLE` so the iPhone matches.
+
+When this chat becomes the voice listener:
+
+1. Rename the Cursor tab to `Knock Knock`.
+2. Keep `KNOCK_KNOCK_CHAT_TITLE=Knock Knock`.
+3. Tell the user to search **Knock Knock** in Agent history, not the file tree.
+
+The file tree only shows the repo. A git worktree path is a local checkout,
+not something a new teammate must discover to talk to the phone.
+
 1. At the beginning of a long or decision-bearing task, call
    `create_or_resume_session` and save the returned `session_id` in the agent
    run context.
